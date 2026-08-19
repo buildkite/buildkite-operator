@@ -1,5 +1,5 @@
 # Tools a human needs to bootstrap this repo. Everything else the build depends on
-# (controller-gen, setup-envtest, golangci-lint, kind) is installed into bin/ by the
+# (controller-gen, setup-envtest, golangci-lint) is installed into bin/ by the
 # Makefile, so CI only needs Go and Docker.
 [tools]
 go = "1.26.5"
