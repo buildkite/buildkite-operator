@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Buildkite Pty Ltd
+// SPDX-License-Identifier: MIT
+
 package utils
 
 import (

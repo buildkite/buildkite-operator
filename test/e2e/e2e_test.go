@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Buildkite Pty Ltd
+// SPDX-License-Identifier: MIT
+
 //go:build e2e
 // +build e2e
 
