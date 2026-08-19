@@ -1,21 +1,37 @@
 # CI for buildkite-operator.
 #
-# No `agents:` targeting — steps run on whatever queue this pipeline is
-# configured with. That queue needs a Linux agent with Go and a usable Docker
-# socket: the e2e step creates a kind cluster and builds an image, which is why
-# these steps run directly on the agent rather than inside the docker plugin.
+# Steps run inside a golang container rather than directly on the agent, so the
+# only thing the agent needs is Docker. Keep the image's Go version in step with
+# mise.toml — the Makefile shells out to `go` while it is still parsing, so a
+# missing or wrong toolchain fails every target instantly.
 #
-# Every tool the build needs (controller-gen, setup-envtest, golangci-lint) is
-# installed into bin/ by the Makefile, so there is nothing to preinstall.
+# Everything else the build needs (controller-gen, setup-envtest, golangci-lint)
+# is installed into bin/ by the Makefile, so there is nothing to preinstall.
+#
+# HOME is redirected to /tmp because the container runs as the agent's uid, which
+# has no home directory of its own; Go and golangci-lint put their caches under
+# it. propagate-uid-gid keeps build artefacts out of root ownership so the agent
+# can still clean the checkout afterwards.
+#
+# When an e2e step is added it will need the host's Docker socket to create a
+# kind cluster, so it will not fit this container and should run on the agent.
 
 steps:
   - label: ":golang: lint"
     command: make lint
+    plugins: &go_container
+      - docker#v5.14.0:
+          image: golang:1.26.5
+          propagate-uid-gid: true
+          environment:
+            - HOME=/tmp
 
   - label: ":wrench: codegen is up to date"
     command:
       - make manifests generate fmt vet
       - git diff --exit-code
+    plugins: *go_container
 
   - label: ":test_tube: test"
     command: make test
+    plugins: *go_container
