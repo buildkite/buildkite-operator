@@ -28,3 +28,6 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# Intermediate kustomize output; dist/chart is generated from it and is committed
+dist/install.yaml
