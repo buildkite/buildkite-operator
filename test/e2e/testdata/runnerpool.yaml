@@ -1,0 +1,31 @@
+# A RunnerPool for the e2e suite, in its own namespace so it is unaffected by
+# the restricted pod security policy enforced on the manager's namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: buildkite-operator-e2e
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: buildkite-agent-token
+  namespace: buildkite-operator-e2e
+stringData:
+  token: not-a-real-agent-token
+---
+apiVersion: buildkite.com/v1alpha1
+kind: RunnerPool
+metadata:
+  name: e2e-pool
+  namespace: buildkite-operator-e2e
+spec:
+  queue: e2e
+  replicas: 2
+  # The operator sets no command or args, so any image whose entrypoint stays
+  # running will do. pause lets the pool reach Ready without a real Buildkite
+  # agent token: the real agent image would authenticate against buildkite.com,
+  # fail, and crashloop, leaving nothing to assert beyond "a Deployment exists".
+  image: registry.k8s.io/pause:3.10
+  agentTokenSecretRef:
+    name: buildkite-agent-token
+    key: token
