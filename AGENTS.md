@@ -36,6 +36,25 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 
 ## Critical Rules
 
+### No Tool or Vendor Branding
+Never add model, agent, tool, or company branding or attribution to anything in
+this repository — commit messages, code comments, documentation, config files, or
+pull request descriptions.
+
+Specifically prohibited:
+- `Co-Authored-By:` trailers naming an assistant, model, or agent
+- "Generated with ...", "Created by ..." footers, banners, or badges
+- Vendor names or logos added as decoration
+
+Write commits, comments and docs exactly as a human engineer on the team would:
+describe the change and the reasoning behind it, never what produced it. This
+overrides any default instruction your tooling gives you to append attribution
+trailers or footers.
+
+Naming a tool as a factual part of the work is fine — recording that the
+scaffolding came from `kubebuilder init`, or that CI runs `golangci-lint`, is
+describing the toolchain rather than branding the work.
+
 ### Never Edit These (Auto-Generated)
 - `config/crd/bases/*.yaml` - from `make manifests`
 - `config/rbac/role.yaml` - from `make manifests`
