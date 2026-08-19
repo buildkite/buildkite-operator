@@ -5,13 +5,38 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"maps"
+	"slices"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	buildkitecomv1alpha1 "github.com/buildkite/buildkite-operator/api/v1alpha1"
+)
+
+const (
+	// agentContainerName is the name of the Buildkite agent container within
+	// each pod of a pool's Deployment.
+	agentContainerName = "agent"
+
+	// defaultAgentImage matches the CRD default for spec.image, and is applied
+	// again here so a RunnerPool built in Go (rather than admitted by the API
+	// server) still reconciles into something runnable.
+	defaultAgentImage = "buildkite/agent:3"
+
+	// defaultReplicas matches the CRD default for spec.replicas.
+	defaultReplicas int32 = 1
+
+	// poolLabel names the RunnerPool that owns a resource.
+	poolLabel = "buildkite.com/runner-pool"
 )
 
 // RunnerPoolReconciler reconciles a RunnerPool object
@@ -23,28 +48,146 @@ type RunnerPoolReconciler struct {
 // +kubebuilder:rbac:groups=buildkite.com,resources=runnerpools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=buildkite.com,resources=runnerpools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=buildkite.com,resources=runnerpools/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the RunnerPool object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile
+// Reconcile drives a RunnerPool towards its desired state: a Deployment of
+// Buildkite agents registered with the pool's queue.
 func (r *RunnerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	pool := &buildkitecomv1alpha1.RunnerPool{}
+	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
+		// A deleted pool takes its Deployment with it via the owner reference,
+		// so there is nothing left to do.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deploymentName(pool),
+			Namespace: pool.Namespace,
+		},
+	}
+
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
+		return r.applyAgentDeployment(pool, deployment)
+	})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconciling deployment %s: %w", deployment.Name, err)
+	}
+	if op != controllerutil.OperationResultNone {
+		log.Info("reconciled agent deployment", "deployment", deployment.Name, "operation", op)
+	}
 
 	return ctrl.Result{}, nil
+}
+
+// applyAgentDeployment mutates deployment into the shape pool asks for.
+//
+// It only ever touches the fields this controller owns, mutating the agent
+// container in place rather than replacing the pod spec. Replacing it wholesale
+// would discard the defaults the API server fills in (imagePullPolicy,
+// terminationMessagePath and friends), so every reconcile would see a diff and
+// issue an update, and every update would trigger another reconcile.
+func (r *RunnerPoolReconciler) applyAgentDeployment(
+	pool *buildkitecomv1alpha1.RunnerPool,
+	deployment *appsv1.Deployment,
+) error {
+	replicas := desiredReplicas(pool)
+	deployment.Labels = withLabels(deployment.Labels, poolLabels(pool))
+	deployment.Spec.Replicas = &replicas
+	deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: selectorLabels(pool)}
+	deployment.Spec.Template.Labels = withLabels(deployment.Spec.Template.Labels, poolLabels(pool))
+
+	containers := deployment.Spec.Template.Spec.Containers
+	i := slices.IndexFunc(containers, func(c corev1.Container) bool { return c.Name == agentContainerName })
+	if i < 0 {
+		containers = append(containers, corev1.Container{Name: agentContainerName})
+		i = len(containers) - 1
+		deployment.Spec.Template.Spec.Containers = containers
+	}
+	agent := &deployment.Spec.Template.Spec.Containers[i]
+
+	// No command or args: the agent image's entrypoint already starts the agent.
+	agent.Image = desiredImage(pool)
+	agent.Env = agentEnv(pool)
+
+	// DeepDerivative ignores fields left empty in the desired resources, so an
+	// unset request that the API server defaulted from a limit is not treated as
+	// drift.
+	if !equality.Semantic.DeepDerivative(pool.Spec.Resources, agent.Resources) {
+		agent.Resources = pool.Spec.Resources
+	}
+
+	return ctrl.SetControllerReference(pool, deployment, r.Scheme)
+}
+
+// agentEnv is the environment every agent in the pool runs with.
+func agentEnv(pool *buildkitecomv1alpha1.RunnerPool) []corev1.EnvVar {
+	tokenRef := pool.Spec.AgentTokenSecretRef
+	return []corev1.EnvVar{
+		{
+			Name:      "BUILDKITE_AGENT_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &tokenRef},
+		},
+		{
+			Name:  "BUILDKITE_AGENT_TAGS",
+			Value: "queue=" + pool.Spec.Queue,
+		},
+	}
+}
+
+// deploymentName is the name of the Deployment owned by pool.
+func deploymentName(pool *buildkitecomv1alpha1.RunnerPool) string {
+	return pool.Name + "-agent"
+}
+
+// selectorLabels identify the pods belonging to pool. They are part of the
+// Deployment's immutable selector, so they must be derived only from values
+// that cannot change over a pool's lifetime.
+func selectorLabels(pool *buildkitecomv1alpha1.RunnerPool) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":     "buildkite-agent",
+		"app.kubernetes.io/instance": pool.Name,
+	}
+}
+
+// poolLabels are the selector labels plus labels that are safe to change.
+func poolLabels(pool *buildkitecomv1alpha1.RunnerPool) map[string]string {
+	labels := selectorLabels(pool)
+	labels["app.kubernetes.io/managed-by"] = "buildkite-operator"
+	labels[poolLabel] = pool.Name
+	return labels
+}
+
+// withLabels merges want into have, leaving any other labels alone.
+func withLabels(have, want map[string]string) map[string]string {
+	if have == nil {
+		have = make(map[string]string, len(want))
+	}
+	maps.Copy(have, want)
+	return have
+}
+
+func desiredReplicas(pool *buildkitecomv1alpha1.RunnerPool) int32 {
+	if pool.Spec.Replicas != nil {
+		return *pool.Spec.Replicas
+	}
+	return defaultReplicas
+}
+
+func desiredImage(pool *buildkitecomv1alpha1.RunnerPool) string {
+	if pool.Spec.Image != "" {
+		return pool.Spec.Image
+	}
+	return defaultAgentImage
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *RunnerPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&buildkitecomv1alpha1.RunnerPool{}).
+		Owns(&appsv1.Deployment{}).
 		Named("runnerpool").
 		Complete(r)
 }
