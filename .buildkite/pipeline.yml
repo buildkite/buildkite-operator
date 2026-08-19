@@ -1,0 +1,21 @@
+# CI for buildkite-operator.
+#
+# No `agents:` targeting — steps run on whatever queue this pipeline is
+# configured with. That queue needs a Linux agent with Go and a usable Docker
+# socket: the e2e step creates a kind cluster and builds an image, which is why
+# these steps run directly on the agent rather than inside the docker plugin.
+#
+# Every tool the build needs (controller-gen, setup-envtest, golangci-lint) is
+# installed into bin/ by the Makefile, so there is nothing to preinstall.
+
+steps:
+  - label: ":golang: lint"
+    command: make lint
+
+  - label: ":wrench: codegen is up to date"
+    command:
+      - make manifests generate fmt vet
+      - git diff --exit-code
+
+  - label: ":test_tube: test"
+    command: make test
