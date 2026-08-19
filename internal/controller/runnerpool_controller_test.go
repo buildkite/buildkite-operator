@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
@@ -154,6 +155,84 @@ var _ = Describe("RunnerPool Controller", func() {
 		reconcileNow()
 
 		Expect(deployment().ResourceVersion).To(Equal(before))
+	})
+
+	Describe("status", func() {
+		// envtest runs no Deployment controller, so the Deployment's status is
+		// whatever this test writes to it.
+		setDeploymentStatus := func(ready int32, available corev1.ConditionStatus, reason, message string) {
+			GinkgoHelper()
+			deploy := deployment()
+			deploy.Status.Replicas = ready
+			deploy.Status.ReadyReplicas = ready
+			deploy.Status.Conditions = []appsv1.DeploymentCondition{{
+				Type:               appsv1.DeploymentAvailable,
+				Status:             available,
+				Reason:             reason,
+				Message:            message,
+				LastTransitionTime: metav1.Now(),
+			}}
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+		}
+
+		pool := func() *buildkitecomv1alpha1.RunnerPool {
+			GinkgoHelper()
+			p := &buildkitecomv1alpha1.RunnerPool{}
+			Expect(k8sClient.Get(ctx, poolKey, p)).To(Succeed())
+			return p
+		}
+
+		It("reports Ready as unknown until the Deployment says anything", func() {
+			reconcileNow()
+
+			ready := meta.FindStatusCondition(pool().Status.Conditions, buildkitecomv1alpha1.RunnerPoolConditionReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(ready.Reason).To(Equal("DeploymentPending"))
+		})
+
+		It("becomes Ready with the Deployment's ready replica count", func() {
+			reconcileNow()
+			setDeploymentStatus(1, corev1.ConditionTrue, "MinimumReplicasAvailable", "")
+			reconcileNow()
+
+			status := pool().Status
+			Expect(status.ReadyReplicas).To(BeEquivalentTo(1))
+			Expect(status.ObservedGeneration).To(Equal(pool().Generation))
+
+			ready := meta.FindStatusCondition(status.Conditions, buildkitecomv1alpha1.RunnerPoolConditionReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready.Reason).To(Equal("AgentsAvailable"))
+			Expect(ready.Message).To(Equal("1 of 1 agents ready"))
+		})
+
+		It("becomes not Ready, surfacing the Deployment's reason", func() {
+			reconcileNow()
+			setDeploymentStatus(0, corev1.ConditionFalse, "MinimumReplicasUnavailable", "Deployment does not have minimum availability.")
+			reconcileNow()
+
+			status := pool().Status
+			Expect(status.ReadyReplicas).To(BeZero())
+
+			ready := meta.FindStatusCondition(status.Conditions, buildkitecomv1alpha1.RunnerPoolConditionReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("MinimumReplicasUnavailable"))
+			Expect(ready.Message).To(Equal("Deployment does not have minimum availability."))
+		})
+
+		It("does not rewrite an unchanged status", func() {
+			// Status writes wake the controller through its own watch, so an
+			// unconditional update would spin.
+			reconcileNow()
+			setDeploymentStatus(1, corev1.ConditionTrue, "MinimumReplicasAvailable", "")
+			reconcileNow()
+			before := pool().ResourceVersion
+
+			reconcileNow()
+			reconcileNow()
+
+			Expect(pool().ResourceVersion).To(Equal(before))
+		})
 	})
 
 	It("ignores a pool that no longer exists", func() {

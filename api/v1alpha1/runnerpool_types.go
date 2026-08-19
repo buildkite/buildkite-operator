@@ -9,6 +9,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// RunnerPoolConditionReady is the condition type reporting whether a pool's
+// agents are running and available.
+const RunnerPoolConditionReady = "Ready"
+
 // RunnerPoolSpec defines the desired state of RunnerPool
 type RunnerPoolSpec struct {
 	// queue is the Buildkite queue that agents in this pool register with.
@@ -62,6 +66,11 @@ type RunnerPoolStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.readyReplicas
+// +kubebuilder:printcolumn:name="Queue",type=string,JSONPath=`.spec.queue`
+// +kubebuilder:printcolumn:name="Desired",type=integer,JSONPath=`.spec.replicas`
+// +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // RunnerPool is the Schema for the runnerpools API
 type RunnerPool struct {

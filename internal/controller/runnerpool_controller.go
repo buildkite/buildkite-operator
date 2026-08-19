@@ -4,6 +4,7 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -12,6 +13,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -79,7 +82,84 @@ func (r *RunnerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		log.Info("reconciled agent deployment", "deployment", deployment.Name, "operation", op)
 	}
 
+	if err := r.reconcileStatus(ctx, pool, deployment); err != nil {
+		// A conflict means someone else wrote the pool first; the next reconcile
+		// recomputes status from fresh state.
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("updating status of runnerpool %s: %w", pool.Name, err)
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// reconcileStatus reports what the pool's Deployment is actually doing. It
+// writes only when something changed, so that a status update does not wake the
+// controller into writing an identical status again.
+func (r *RunnerPoolReconciler) reconcileStatus(
+	ctx context.Context,
+	pool *buildkitecomv1alpha1.RunnerPool,
+	deployment *appsv1.Deployment,
+) error {
+	updated := pool.DeepCopy()
+	updated.Status.ReadyReplicas = deployment.Status.ReadyReplicas
+	updated.Status.ObservedGeneration = pool.Generation
+	meta.SetStatusCondition(&updated.Status.Conditions, readyCondition(pool, deployment))
+
+	if equality.Semantic.DeepEqual(pool.Status, updated.Status) {
+		return nil
+	}
+	return r.Status().Update(ctx, updated)
+}
+
+// readyCondition translates the Deployment's Available condition into the
+// pool's Ready condition.
+func readyCondition(
+	pool *buildkitecomv1alpha1.RunnerPool,
+	deployment *appsv1.Deployment,
+) metav1.Condition {
+	condition := metav1.Condition{
+		Type:               buildkitecomv1alpha1.RunnerPoolConditionReady,
+		ObservedGeneration: pool.Generation,
+	}
+
+	available := deploymentCondition(deployment, appsv1.DeploymentAvailable)
+	switch {
+	case available == nil:
+		condition.Status = metav1.ConditionUnknown
+		condition.Reason = "DeploymentPending"
+		condition.Message = fmt.Sprintf("Waiting for deployment %s to report availability", deployment.Name)
+
+	case available.Status == corev1.ConditionTrue:
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "AgentsAvailable"
+		condition.Message = fmt.Sprintf("%d of %d agents ready",
+			deployment.Status.ReadyReplicas, desiredReplicas(pool))
+
+	default:
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = cmp.Or(available.Reason, "DeploymentUnavailable")
+		condition.Message = cmp.Or(available.Message,
+			fmt.Sprintf("Deployment %s is not available", deployment.Name))
+	}
+
+	return condition
+}
+
+// deploymentCondition returns the named condition, or nil if the Deployment has
+// not reported it yet.
+func deploymentCondition(
+	deployment *appsv1.Deployment,
+	conditionType appsv1.DeploymentConditionType,
+) *appsv1.DeploymentCondition {
+	i := slices.IndexFunc(deployment.Status.Conditions, func(c appsv1.DeploymentCondition) bool {
+		return c.Type == conditionType
+	})
+	if i < 0 {
+		return nil
+	}
+	return &deployment.Status.Conditions[i]
 }
 
 // applyAgentDeployment mutates deployment into the shape pool asks for.

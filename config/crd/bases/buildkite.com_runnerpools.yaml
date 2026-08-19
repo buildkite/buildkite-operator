@@ -14,7 +14,20 @@ spec:
     singular: runnerpool
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.queue
+      name: Queue
+      type: string
+    - jsonPath: .spec.replicas
+      name: Desired
+      type: integer
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: RunnerPool is the Schema for the runnerpools API
@@ -229,4 +242,7 @@ spec:
     served: true
     storage: true
     subresources:
+      scale:
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.readyReplicas
       status: {}
