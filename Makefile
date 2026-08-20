@@ -83,7 +83,11 @@ setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	# The e2e tests shell out to a bare `kubectl`, expected on PATH (managed by
+	# mise; see mise.toml). CertManager is skipped because the operator ships no
+	# webhooks and therefore needs no cert injection.
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) CERT_MANAGER_INSTALL_SKIP=true \
+		go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
@@ -117,7 +121,11 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	# --load exports the image to the local image store so `kind load` can find
+	# it. Without it, a buildx docker-container driver (as used on CI agents)
+	# leaves the image in the builder cache only, and kind load fails with
+	# "image not present locally".
+	$(CONTAINER_TOOL) build --load -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
