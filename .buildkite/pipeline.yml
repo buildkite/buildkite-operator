@@ -1,0 +1,22 @@
+common:
+  go_container: &go_container
+    - docker#v5.14.0:
+        image: golang:1.26.5
+        propagate-uid-gid: true
+        environment:
+          - HOME=/tmp
+
+steps:
+  - label: ":golang: lint"
+    command: make lint
+    plugins: *go_container
+
+  - label: ":wrench: codegen is up to date"
+    command:
+      - make manifests generate fmt vet
+      - test -z "$(git status --porcelain)"
+    plugins: *go_container
+
+  - label: ":test_tube: test"
+    command: make test
+    plugins: *go_container
