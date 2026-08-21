@@ -192,11 +192,14 @@ func (r *RunnerPoolReconciler) applyAgentDeployment(
 	agent.Image = desiredImage(pool)
 	agent.Env = agentEnv(pool)
 
-	// DeepDerivative ignores fields left empty in the desired resources, so an
-	// unset request that the API server defaulted from a limit is not treated as
-	// drift.
-	if !equality.Semantic.DeepDerivative(pool.Spec.Resources, agent.Resources) {
-		agent.Resources = pool.Spec.Resources
+	// The API server defaults an unset request to its matching limit, so
+	// normalize the desired resources the same way and compare with DeepEqual.
+	// DeepDerivative would treat every omitted request, limit or map entry as
+	// already satisfied, so removing requests.cpu (or clearing resources
+	// entirely) would never reconcile and the stale value would linger on the
+	// Deployment forever.
+	if want := desiredResources(pool); !equality.Semantic.DeepEqual(want, agent.Resources) {
+		agent.Resources = want
 	}
 
 	return ctrl.SetControllerReference(pool, deployment, r.Scheme)
@@ -261,6 +264,29 @@ func desiredImage(pool *buildkitecomv1alpha1.RunnerPool) string {
 		return pool.Spec.Image
 	}
 	return defaultAgentImage
+}
+
+// desiredResources returns the resource requirements the controller wants on
+// the agent container, normalized the way the API server normalizes them.
+//
+// Kubernetes defaults an unset request to its matching limit. Replaying that
+// defaulting here means a Deployment whose requests were filled in from limits
+// does not read as drift, while a genuine change (including removing a request
+// or a limit) still does, so it can be reconciled with a full DeepEqual.
+func desiredResources(pool *buildkitecomv1alpha1.RunnerPool) corev1.ResourceRequirements {
+	want := *pool.Spec.Resources.DeepCopy()
+	if len(want.Limits) == 0 {
+		return want
+	}
+	if want.Requests == nil {
+		want.Requests = make(corev1.ResourceList, len(want.Limits))
+	}
+	for name, quantity := range want.Limits {
+		if _, ok := want.Requests[name]; !ok {
+			want.Requests[name] = quantity.DeepCopy()
+		}
+	}
+	return want
 }
 
 // SetupWithManager sets up the controller with the Manager.
