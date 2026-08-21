@@ -124,6 +124,20 @@ func readyCondition(
 		ObservedGeneration: pool.Generation,
 	}
 
+	// The Deployment's conditions describe whatever spec its controller last
+	// observed. Until observedGeneration catches up to the current generation,
+	// an Available=True left over from the previous rollout would report the
+	// new queue, image, or replica count as ready before it has rolled out, so
+	// hold Ready at Unknown until the Deployment observes its current spec.
+	if deployment.Status.ObservedGeneration < deployment.Generation {
+		condition.Status = metav1.ConditionUnknown
+		condition.Reason = "DeploymentProgressing"
+		condition.Message = fmt.Sprintf(
+			"Waiting for deployment %s to observe generation %d",
+			deployment.Name, deployment.Generation)
+		return condition
+	}
+
 	available := deploymentCondition(deployment, appsv1.DeploymentAvailable)
 	switch {
 	case available == nil:

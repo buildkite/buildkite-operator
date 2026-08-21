@@ -77,6 +77,9 @@ spec:
                 - key
                 type: object
                 x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: agentTokenSecretRef.name must not be empty
+                  rule: has(self.name) && size(self.name) > 0
               image:
                 default: buildkite/agent:3
                 description: image is the Buildkite agent container image to run.
@@ -94,7 +97,12 @@ spec:
                 minimum: 0
                 type: integer
               resources:
-                description: resources are the compute resources for each agent container.
+                description: |-
+                  resources are the compute resources for each agent container.
+
+                  resources.claims is not supported: the controller does not model the
+                  corresponding pod-level spec.resourceClaims, so a container claim would
+                  have nothing to reference and the resulting Deployment would be rejected.
                 properties:
                   claims:
                     description: |-
@@ -152,6 +160,9 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+                x-kubernetes-validations:
+                - message: resources.claims is not supported
+                  rule: '!has(self.claims)'
             required:
             - agentTokenSecretRef
             - queue

@@ -35,10 +35,16 @@ type RunnerPoolSpec struct {
 	// agentTokenSecretRef references the secret key holding the Buildkite agent
 	// token that agents in this pool authenticate with.
 	// +required
+	// +kubebuilder:validation:XValidation:rule="has(self.name) && size(self.name) > 0",message="agentTokenSecretRef.name must not be empty"
 	AgentTokenSecretRef corev1.SecretKeySelector `json:"agentTokenSecretRef"`
 
 	// resources are the compute resources for each agent container.
+	//
+	// resources.claims is not supported: the controller does not model the
+	// corresponding pod-level spec.resourceClaims, so a container claim would
+	// have nothing to reference and the resulting Deployment would be rejected.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="!has(self.claims)",message="resources.claims is not supported"
 	Resources corev1.ResourceRequirements `json:"resources,omitzero"`
 }
 

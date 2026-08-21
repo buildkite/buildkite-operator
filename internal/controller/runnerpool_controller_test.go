@@ -24,6 +24,7 @@ import (
 var _ = Describe("RunnerPool Controller", func() {
 	const (
 		poolName             = "test-pool"
+		queueName            = "macos-arm64"
 		agentTokenSecretName = "buildkite-agent-token"
 		agentTokenSecretKey  = "token"
 	)
@@ -68,7 +69,7 @@ var _ = Describe("RunnerPool Controller", func() {
 		Expect(k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName, Namespace: namespace},
 			Spec: buildkitecomv1alpha1.RunnerPoolSpec{
-				Queue: "macos-arm64",
+				Queue: queueName,
 				Image: "buildkite/agent:3.90.0",
 				AgentTokenSecretRef: corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
@@ -170,6 +171,10 @@ var _ = Describe("RunnerPool Controller", func() {
 			deploy := deployment()
 			deploy.Status.Replicas = ready
 			deploy.Status.ReadyReplicas = ready
+			// envtest runs no Deployment controller, so simulate one that has
+			// observed the current spec; otherwise the pool holds Ready at
+			// Unknown while observedGeneration lags the generation.
+			deploy.Status.ObservedGeneration = deploy.Generation
 			deploy.Status.Conditions = []appsv1.DeploymentCondition{{
 				Type:               appsv1.DeploymentAvailable,
 				Status:             available,
@@ -190,10 +195,38 @@ var _ = Describe("RunnerPool Controller", func() {
 		It("reports Ready as unknown until the Deployment says anything", func() {
 			reconcileNow()
 
+			// Mark the Deployment as having observed its current spec but not
+			// yet reporting any condition, isolating the pending-availability
+			// path from the generation-mismatch guard.
+			deploy := deployment()
+			deploy.Status.ObservedGeneration = deploy.Generation
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+			reconcileNow()
+
 			ready := meta.FindStatusCondition(pool().Status.Conditions, buildkitecomv1alpha1.RunnerPoolConditionReady)
 			Expect(ready).NotTo(BeNil())
 			Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 			Expect(ready.Reason).To(Equal("DeploymentPending"))
+		})
+
+		It("reports Ready as unknown while the Deployment's status is stale", func() {
+			// A Deployment whose template was just updated still carries the
+			// previous rollout's Available=True until its controller observes
+			// the new generation. That stale condition must not be copied
+			// through as a current-generation Ready=True.
+			reconcileNow()
+			setDeploymentStatus(1, corev1.ConditionTrue, "MinimumReplicasAvailable", "")
+			reconcileNow()
+
+			deploy := deployment()
+			deploy.Status.ObservedGeneration = deploy.Generation - 1
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+			reconcileNow()
+
+			ready := meta.FindStatusCondition(pool().Status.Conditions, buildkitecomv1alpha1.RunnerPoolConditionReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(ready.Reason).To(Equal("DeploymentProgressing"))
 		})
 
 		It("becomes Ready with the Deployment's ready replica count", func() {
@@ -248,7 +281,7 @@ var _ = Describe("RunnerPool Controller", func() {
 		err := k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
 			ObjectMeta: metav1.ObjectMeta{Name: tooLong, Namespace: namespace},
 			Spec: buildkitecomv1alpha1.RunnerPoolSpec{
-				Queue: "macos-arm64",
+				Queue: queueName,
 				AgentTokenSecretRef: corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
 					Key:                  agentTokenSecretKey,
@@ -257,6 +290,28 @@ var _ = Describe("RunnerPool Controller", func() {
 		})
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("63 characters"))
+	})
+
+	It("rejects resources.claims", func() {
+		// The controller copies resources onto the agent container but never
+		// models the corresponding pod-level spec.resourceClaims, so a
+		// container claim would reference nothing and the Deployment would be
+		// rejected. Disallow claims at admission instead.
+		err := k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
+			ObjectMeta: metav1.ObjectMeta{Name: "with-claims", Namespace: namespace},
+			Spec: buildkitecomv1alpha1.RunnerPoolSpec{
+				Queue: queueName,
+				AgentTokenSecretRef: corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
+					Key:                  agentTokenSecretKey,
+				},
+				Resources: corev1.ResourceRequirements{
+					Claims: []corev1.ResourceClaim{{Name: "gpu"}},
+				},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("resources.claims is not supported"))
 	})
 
 	It("ignores a pool that no longer exists", func() {
