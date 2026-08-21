@@ -3,7 +3,7 @@
 A Kubernetes operator for Buildkite runners.
 
 Declare a pool of Buildkite agents as a Kubernetes resource, and the operator
-keeps a Deployment of agents running against the queue you name:
+keeps a warm buffer of idle agent Pods against the queue you name:
 
 ```yaml
 apiVersion: buildkite.com/v1alpha1
@@ -12,7 +12,9 @@ metadata:
   name: linux-builders
 spec:
   queue: linux-amd64
-  replicas: 3
+  maxReplicas: 20
+  minIdle: 3
+  idleTimeoutSeconds: 30
   agentTokenSecretRef:
     name: buildkite-agent-token
     key: token
@@ -20,13 +22,13 @@ spec:
 
 ```console
 $ kubectl get runnerpools
-NAME             QUEUE         DESIRED   READY   AGE
-linux-builders   linux-amd64   3         3       2m
+NAME             MAX   IDLE   BUSY   TOTAL   AGE
+linux-builders   20    3      7      10      2m
 ```
 
 > **Status: early.** The API is `v1alpha1` and will change. The operator does not
-> talk to the Buildkite API yet — it reconciles Kubernetes resources only, and
-> passes your agent token through to the agents by secret reference.
+> query Buildkite queue depth. It polls each agent's local status endpoint and
+> passes your agent token through by secret reference.
 
 ## Quickstart
 
@@ -70,27 +72,52 @@ make helm-deploy IMG=<your-registry>/buildkite-operator:tag
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
 | `spec.queue` | yes | — | The Buildkite queue agents register with, passed to agents as `BUILDKITE_AGENT_TAGS=queue=<queue>`. |
-| `spec.replicas` | no | `1` | Number of agents to run. Also settable with `kubectl scale runnerpool/<name> --replicas=N`. |
-| `spec.image` | no | `buildkite/agent:3` | Agent container image. No command or args are set, so the image's entrypoint has to start the agent. |
+| `spec.maxReplicas` | yes | — | Hard cap on the total number of agent Pods. Must be at least `1`. |
+| `spec.minIdle` | no | `1` | Number of confirmed-idle agents to keep warm. Must not exceed `maxReplicas`. |
+| `spec.idleTimeoutSeconds` | no | `10` | How long an agent must be observed idle before surplus capacity is removed. |
+| `spec.terminationGracePeriodSeconds` | no | `3600` | Time Kubernetes allows an agent to finish a job after SIGTERM before forcefully stopping it. |
+| `spec.image` | no | `buildkite/agent:3` | Agent image. It must provide the Buildkite agent health server and graceful SIGTERM behavior; Buildkite agent v3.72.0 or newer is required. |
 | `spec.agentTokenSecretRef` | yes | — | Secret name and key holding the Buildkite agent token, exposed to agents as `BUILDKITE_AGENT_TOKEN`. |
 | `spec.resources` | no | — | Compute resources for each agent container. |
 
-Status reports `readyReplicas`, `observedGeneration`, and a `Ready` condition
-derived from the underlying Deployment's availability — when agents can't run,
-the Deployment's own reason is surfaced:
+The operator polls each Pod's `/status.json`. A busy agent causes another warm
+agent to be created, up to `maxReplicas`. A confirmed-idle surplus is removed
+after `idleTimeoutSeconds`; warming or unreachable Pods count toward the total
+but are never treated as idle scale-down candidates. Each eviction is rechecked
+immediately before deletion, and the agent's first SIGTERM drains any job that
+raced with that check.
+
+`minIdle: 0` allows scale-to-zero. Because this operator deliberately does not
+query queue depth, a pool at zero remains dormant until `minIdle` is increased.
+Idle duration is observational: a short job entirely between polls may not reset
+the timer, but graceful termination still prevents that job from being lost.
+
+Status reports `totalReplicas`, `idleReplicas`, `busyReplicas`, `readyReplicas`,
+`observedGeneration`, and a `Ready` condition. `idleReplicas` includes only
+Kubernetes-ready Pods confirmed idle; unreachable and warming Pods are the
+difference between the total and the confirmed busy/idle counts:
 
 ```bash
 kubectl describe runnerpool linux-builders
 ```
 
-Each pool owns one Deployment named `<pool>-agent`, labelled
-`buildkite.com/runner-pool=<pool>`. Deleting the pool deletes the Deployment.
+Each pool directly owns Pods named `<pool>-agent-*`, labelled
+`buildkite.com/runner-pool=<pool>`. Changes to the queue, image, token reference,
+resources, or termination grace period roll through idle Pods without
+interrupting busy agents. `maxReplicas` remains a hard cap, so a replacement at
+the cap can briefly reduce the warm buffer by one. Deleting the pool gracefully
+terminates all of its Pods through owner-reference garbage collection.
+
+This version replaces the earlier Deployment-based `v1alpha1` implementation
+without an in-place migration. Delete and recreate existing RunnerPools when
+upgrading so their legacy Deployments do not continue running alongside the new
+directly managed Pods.
 
 ## Development
 
 ```bash
 make test        # unit tests against envtest
-make test-e2e    # deploys to a throwaway kind cluster and asserts a pool goes Ready
+make test-e2e    # deploys to a throwaway kind cluster and checks Pod ownership/lifecycle
 make lint        # golangci-lint
 make build       # regenerate manifests and build the manager binary
 ```

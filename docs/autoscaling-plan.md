@@ -18,19 +18,26 @@ own busy/idle state:
 Each reconcile:
 
 ```
-busy         = count of pods reporting aggregate_status == "busy"
-total        = count of non-terminating owned pods
-idle         = total - busy                      # includes warming pods
-desiredTotal = min(busy + minIdle, maxReplicas)
+busy          = count of pods reporting aggregate_status == "busy"
+confirmedIdle = count of ready pods reporting aggregate_status == "idle"
+unknown       = warming, unreachable, or unready pods
+total         = busy + confirmedIdle + unknown
+desiredTotal  = min(busy + minIdle, maxReplicas)
 ```
 
 - If `total < desiredTotal` → create `desiredTotal - total` pods.
-- Else if `idle > minIdle` → terminate up to `idle - minIdle` pods that have been
-  continuously idle for at least `idleTimeoutSeconds`, re-confirming idle
-  immediately before deletion.
+- Else if `total > desiredTotal` → terminate up to
+  `confirmedIdle - minIdle` pods observed idle for at least
+  `idleTimeoutSeconds`, re-confirming idle immediately before deletion.
+
+Unknown pods count toward the total so an unreachable health endpoint cannot
+cause an unbounded scale-up, but they are never scale-down candidates and never
+consume the confirmed-idle floor.
 
 `minIdle` is the only floor, so **scale-to-zero happens when `minIdle = 0`**.
-One scale direction is applied per reconcile; `RequeueAfter` drives convergence.
+Because there is no queue-depth signal, a pool at zero remains dormant until
+`minIdle` is increased. One scale direction is applied per reconcile;
+`RequeueAfter` drives convergence.
 
 ## Busy/idle detection: agent `/status.json`
 
@@ -54,6 +61,15 @@ synchronously around every job. The operator polls each pod at
 as safe-to-evict. No Buildkite API/metrics token is required — state comes from
 the pods, not Buildkite's backend.
 
+The endpoint is available in Buildkite agent v3.72.0 and newer. Compatible
+custom images must provide the same endpoint and graceful SIGTERM behavior.
+Readiness uses the health server's `/agent/1` heartbeat endpoint.
+
+Idle duration is observational rather than mathematically continuous: a short
+job entirely between polls can be missed. Any observed busy state or failed
+status check clears `buildkite.com/idle-since`; immediate re-confirmation plus
+graceful SIGTERM protects a job even when its busy interval was not sampled.
+
 Considered and rejected: OTEL spans (push-based, sampled, needs a collector,
 laggy), Prometheus `/metrics` (coarser), and polling Buildkite's central API
 (rate-limited, not per-pod-cheap).
@@ -65,6 +81,13 @@ deletes directly. A Deployment cannot reliably terminate a *specific* idle pod o
 scale-down (the ReplicaSet controller picks victims; `pod-deletion-cost` is only
 best-effort and races with job pickup). Managing pods directly lets the operator
 select a confirmed-idle pod and delete exactly it.
+
+Because most Pod template fields are immutable, each Pod carries a hash of its
+desired template. Changes to image, queue, token reference, resources, or
+termination grace roll through stale Pods without deleting a busy agent. The
+controller surges by one when below `maxReplicas`; at the hard cap it deletes one
+confirmed-idle stale Pod first, briefly allowing the pool to fall below
+`minIdle`, then creates its replacement on the next reconcile.
 
 ## Graceful termination: no data loss
 
@@ -90,40 +113,56 @@ Remove:
 
 Add flat, top-level spec fields:
 - `maxReplicas int32` — required, `Minimum=1`. Hard cap on total pods.
-- `minIdle int32` — optional, default `1`, `Minimum=0`. Warm idle buffer / floor.
-- `idleTimeoutSeconds int32` — optional, default `10`, `Minimum=0`. Continuous
-  idle duration before a pod is eligible for termination.
+- `minIdle *int32` — optional, default `1`, `Minimum=0`. Warm idle buffer / floor.
+  The pointer preserves an explicit zero through Go client updates.
+- `idleTimeoutSeconds *int32` — optional, default `10`, `Minimum=0`. Observed
+  idle duration before a pod is eligible for termination. The pointer preserves
+  an explicit zero through Go client updates.
 - `terminationGracePeriodSeconds *int64` — optional, default `3600`, `Minimum=1`.
 - CEL cross-field validation: `minIdle <= maxReplicas`.
 
 Status: keep `conditions`, `observedGeneration`; add `totalReplicas`,
-`idleReplicas`, `busyReplicas`, `readyReplicas`. Printcolumns: `Max`, `Idle`,
-`Busy`, `Total`, `Age`.
+`idleReplicas`, `busyReplicas`, `readyReplicas`. `idleReplicas` counts only ready,
+confirmed-idle Pods, so unknown Pods are the difference between total and
+confirmed busy/idle counts. `Ready=True` when the desired total is present, all
+active Pods are Kubernetes Ready, and no template rollout is pending; an
+intentional zero-Pod pool is Ready. Printcolumns: `Max`, `Idle`, `Busy`, `Total`,
+`Age`.
 
 This is a breaking change, accepted at `v1alpha1`.
+
+There is no in-place migration from the earlier Deployment-based prototype.
+Existing RunnerPools must be deleted and recreated during upgrade so legacy
+Deployments cannot continue running alongside directly managed Pods.
 
 ## Controller changes (`internal/controller/runnerpool_controller.go`)
 
 Reconcile flow:
 1. Fetch `RunnerPool` (NotFound → nothing to do; cascade GC handles pods).
-2. List owned pods (label selector + owner ref), excluding terminating ones.
+2. List owned pods (label selector + owner ref), excluding terminating ones;
+   remove terminal pods so they can be replaced.
 3. Query each pod's `/status.json`:
    - busy → clear `buildkite.com/idle-since` annotation, count busy.
-   - idle → set `buildkite.com/idle-since` to now if absent; eligible for
-     eviction when `now - idleSince >= idleTimeoutSeconds`.
-   - unreachable / no pod IP (warming) → counts toward total, not evictable.
-4. Compute `busy`, `total`, `idle`, `desiredTotal`.
+   - ready + idle → set `buildkite.com/idle-since` to now if absent; eligible
+     for eviction when `now - idleSince >= idleTimeoutSeconds`.
+   - unreachable, unready, or no pod IP → clear idle-since, count as unknown.
+4. Compute `busy`, `confirmedIdle`, `unknown`, `total`, `desiredTotal`.
 5. Scale up: create pods (`generateName: <pool>-agent-`) up to `desiredTotal`.
-6. Scale down: else terminate up to `idle - minIdle` eviction-eligible pods,
-   re-confirming idle via `/status.json` immediately before deletion.
-7. Update status; `RequeueAfter` a poll interval (~10s, `<= idleTimeoutSeconds`).
+6. Scale down: else terminate up to `confirmedIdle - minIdle`
+   eviction-eligible pods, re-confirming idle via `/status.json` immediately
+   before deletion.
+7. If the total is otherwise correct, roll stale Pod templates using the
+   bounded surge/delete behavior above.
+8. Update status; `RequeueAfter` a ~10s poll interval, shortened to a positive
+   `idleTimeoutSeconds` when smaller.
 
 Pod template (`agent` container):
 - Image/resources from spec (reuse existing defaulting helpers).
 - Env: `BUILDKITE_AGENT_TOKEN`, `BUILDKITE_AGENT_TAGS=queue=<queue>`, and
   `BUILDKITE_AGENT_HEALTH_CHECK_ADDR=0.0.0.0:<healthPort>` (new constant).
 - `terminationGracePeriodSeconds` from spec; `health` container port + readiness
-  probe on the health server; no `--kubernetes-exec`; owner reference set.
+  probe on `/agent/1`; no `--kubernetes-exec`; owner reference and desired
+  template hash set.
 
 Testability: introduce an `AgentStatusChecker` interface
 (`Check(ctx, podIP, port) (AgentStatus, error)`) as a reconciler field; default
@@ -150,16 +189,18 @@ client/timeout.
 - Rewrite `internal/controller/runnerpool_controller_test.go` (Ginkgo) with the
   fake status checker: scale up to buffer, never below `minIdle`, cap at
   `maxReplicas`, evict only after `idleTimeoutSeconds`, never evict busy, scale to
-  zero when `minIdle = 0`.
+  zero when `minIdle = 0`, distinguish unknown Pods, replace terminal Pods, and
+  roll template changes without interrupting busy agents.
 - Update `test/e2e/e2e_test.go` for pod-based ownership/cascade.
 
 ## Generated artifacts (run after code edits)
 
 ```
 make manifests   # CRD + RBAC from markers
-make generate    # deepcopy for new *int64 field
+make generate    # deepcopy for new pointer fields
 make lint-fix
 make test
+make helm        # generated installer and Helm chart
 ```
 
 ## Assumptions
