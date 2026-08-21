@@ -6,6 +6,19 @@ cliVersion: 4.15.0
 domain: buildkite.com
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  helm.kubebuilder.io/v2-alpha:
+    manifests: dist/install.yaml
+    output: dist
 projectName: buildkite-operator
 repo: github.com/buildkite/buildkite-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: buildkite.com
+  kind: RunnerPool
+  path: github.com/buildkite/buildkite-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

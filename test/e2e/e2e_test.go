@@ -23,6 +23,15 @@ import (
 // namespace where the project is deployed in
 const namespace = "buildkite-operator-system"
 
+// poolNamespace is where the e2e RunnerPool lives, kept separate from the
+// manager's namespace so the agent pods are not subject to its restricted pod
+// security policy.
+const poolNamespace = "buildkite-operator-e2e"
+
+// runnerPoolManifest is the RunnerPool fixture, applied relative to the project
+// root that utils.Run executes in.
+const runnerPoolManifest = "test/e2e/testdata/runnerpool.yaml"
+
 // serviceAccountName created for the project
 const serviceAccountName = "buildkite-operator-controller-manager"
 
@@ -256,16 +265,62 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
+	})
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+	Context("RunnerPool", func() {
+		It("reconciles a RunnerPool into a ready Deployment of agents", func() {
+			By("applying a RunnerPool and the agent token secret it references")
+			cmd := exec.Command("kubectl", "apply", "-f", runnerPoolManifest)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the RunnerPool")
+
+			DeferCleanup(func() {
+				By("deleting the RunnerPool namespace")
+				cmd := exec.Command("kubectl", "delete", "-f", runnerPoolManifest, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("waiting for the agent Deployment to become available")
+			cmd = exec.Command("kubectl", "wait", "deployment/e2e-pool-agent",
+				"--for=condition=Available", "-n", poolNamespace, "--timeout=3m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Agent deployment never became available")
+
+			By("waiting for the RunnerPool to report Ready")
+			cmd = exec.Command("kubectl", "wait", "runnerpool/e2e-pool",
+				"--for=condition=Ready", "-n", poolNamespace, "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "RunnerPool never reported Ready")
+
+			By("reporting both agents as ready in its status")
+			verifyReadyReplicas := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "runnerpool/e2e-pool",
+					"-o", "jsonpath={.status.readyReplicas}", "-n", poolNamespace)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("2"), "RunnerPool did not report 2 ready agents")
+			}
+			Eventually(verifyReadyReplicas, time.Minute).Should(Succeed())
+
+			By("passing the queue through to the agents as a tag")
+			cmd = exec.Command("kubectl", "get", "deployment/e2e-pool-agent", "-n", poolNamespace,
+				"-o", "jsonpath={.spec.template.spec.containers[0].env[?(@.name=='BUILDKITE_AGENT_TAGS')].value}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("queue=e2e"))
+
+			By("garbage collecting the Deployment when the pool is deleted")
+			cmd = exec.Command("kubectl", "delete", "runnerpool/e2e-pool", "-n", poolNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete the RunnerPool")
+
+			verifyDeploymentGone := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment/e2e-pool-agent", "-n", poolNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "Agent deployment outlived its RunnerPool")
+			}
+			Eventually(verifyDeploymentGone, 2*time.Minute).Should(Succeed())
+		})
 	})
 })
 

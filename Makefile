@@ -72,11 +72,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 KIND_CLUSTER ?= buildkite-operator-test-e2e
 
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
+setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
 	@case "$$($(KIND) get clusters)" in \
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
@@ -87,7 +83,11 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	# The e2e tests shell out to a bare `kubectl`, expected on PATH (managed by
+	# mise; see mise.toml). CertManager is skipped because the operator ships no
+	# webhooks and therefore needs no cert injection.
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) CERT_MANAGER_INSTALL_SKIP=true \
+		go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
@@ -121,7 +121,11 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	# --load exports the image to the local image store so `kind load` can find
+	# it. Without it, a buildx docker-container driver (as used on CI agents)
+	# leaves the image in the builder cache only, and kind load fails with
+	# "image not present locally".
+	$(CONTAINER_TOOL) build --load -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -143,6 +147,16 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm buildkite-operator-builder
 	rm Dockerfile.cross
+
+.PHONY: helm
+helm: ## Regenerate the Helm chart in dist/chart from config/.
+	$(MAKE) build-installer
+	$(KUBEBUILDER) edit --plugins=helm/v2-alpha --force
+	# --force restores the stock rbac.namespaced toggle, which is unusable here
+	# (the manager runs an all-namespaces cache). Strip it back out. See a6d8374.
+	./hack/patch-helm-chart.sh
+	# --force also scaffolds a chart-test CI workflow we do not use. Remove it.
+	./hack/remove-generated-workflows.sh
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
@@ -184,7 +198,8 @@ $(LOCALBIN):
 
 ## Tool Binaries
 KUBECTL ?= kubectl
-KIND ?= kind
+KUBEBUILDER ?= kubebuilder
+KIND ?= $(LOCALBIN)/kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
@@ -205,6 +220,12 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.12.2
+KIND_VERSION ?= v0.32.0
+.PHONY: kind
+kind: $(KIND) ## Download kind locally if necessary.
+$(KIND): $(LOCALBIN)
+	$(call go-install-tool,$(KIND),sigs.k8s.io/kind,$(KIND_VERSION))
+
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
@@ -257,3 +278,50 @@ endef
 define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
+
+##@ Helm Deployment
+
+## Helm binary to use for deploying the chart
+HELM ?= helm
+## Namespace to deploy the Helm release
+HELM_NAMESPACE ?= buildkite-operator-system
+## Name of the Helm release
+HELM_RELEASE ?= buildkite-operator
+## Path to the Helm chart directory
+HELM_CHART_DIR ?= dist/chart
+## Additional arguments to pass to helm commands
+HELM_EXTRA_ARGS ?=
+
+.PHONY: install-helm
+install-helm: ## Install the latest version of Helm.
+	@command -v $(HELM) >/dev/null 2>&1 || { \
+		echo "Installing Helm..." && \
+		curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash; \
+	}
+
+.PHONY: helm-deploy
+helm-deploy: install-helm ## Deploy manager to the K8s cluster via Helm. Specify an image with IMG.
+	$(HELM) upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) \
+		--namespace $(HELM_NAMESPACE) \
+		--create-namespace \
+		--set manager.image.repository=$${IMG%:*} \
+		--set manager.image.tag=$${IMG##*:} \
+		--wait \
+		--timeout 5m \
+		$(HELM_EXTRA_ARGS)
+
+.PHONY: helm-uninstall
+helm-uninstall: ## Uninstall the Helm release from the K8s cluster.
+	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-status
+helm-status: ## Show Helm release status.
+	$(HELM) status $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-history
+helm-history: ## Show Helm release history.
+	$(HELM) history $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-rollback
+helm-rollback: ## Rollback to previous Helm release.
+	$(HELM) rollback $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)

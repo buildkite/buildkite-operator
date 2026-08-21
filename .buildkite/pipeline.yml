@@ -20,3 +20,13 @@ steps:
   - label: ":test_tube: test"
     command: make test
     plugins: *go_container
+
+  # Runs on a bare agent (needs Docker and Kind, so not in the go container).
+  # mise provides Go, kubebuilder and kubectl; `mise exec` puts them on PATH for
+  # make and the kubectl calls the e2e tests shell out to.
+  - label: ":kubernetes: e2e"
+    command:
+      - curl -fsSL https://mise.run | sh
+      - export PATH="$$HOME/.local/bin:$$PATH"
+      - mise install
+      - mise exec -- make test-e2e

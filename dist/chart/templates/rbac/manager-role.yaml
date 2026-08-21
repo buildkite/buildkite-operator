@@ -1,0 +1,43 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "buildkite-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+rules:
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - buildkite.com
+  resources:
+  - runnerpools
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - buildkite.com
+  resources:
+  - runnerpools/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - buildkite.com
+  resources:
+  - runnerpools/status
+  verbs:
+  - get
+  - patch
+  - update

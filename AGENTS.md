@@ -308,10 +308,19 @@ make helm-rollback                                       # Rollback to previous 
 helm install my-release ./<output-dir>/chart/ --namespace <ns> --create-namespace
 ```
 
-**Important:** If you add webhooks or modify manifests after initial chart generation:
-1. Backup any customizations in `<output-dir>/chart/values.yaml` and `<output-dir>/chart/manager/manager.yaml`
-2. Re-run: `kubebuilder edit --plugins=helm/v2-alpha --force` (use same `--output-dir` if customized)
-3. Manually restore your custom values from the backup
+**Important:** Regenerate the chart with `make helm` (not `kubebuilder edit` directly). Because
+`--force` re-scaffolds `dist/chart/` from Kubebuilder's stock templates, the target runs two
+post-processing scripts afterwards to reproduce the committed tree:
+
+- `hack/patch-helm-chart.sh` reapplies chart customizations. Currently it strips the stock
+  `rbac.namespaced` toggle: the manager runs an all-namespaces cache, so the namespace-scoped
+  Role/RoleBinding it renders can never be granted enough permission to run (see commit a6d8374).
+- `hack/remove-generated-workflows.sh` deletes CI workflows the plugin scaffolds but we do not use
+  (currently `.github/workflows/test-chart.yml`).
+
+If you add a new customization or generated file that `--force` would clobber, extend the relevant
+script so `make helm` keeps reproducing the committed tree. Verify with
+`make helm && git status --short` (should be clean apart from intended source-driven changes).
 
 ### Publish Container Image
 
