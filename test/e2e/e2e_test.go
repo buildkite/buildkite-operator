@@ -268,7 +268,7 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 
 	Context("RunnerPool", func() {
-		It("reconciles a RunnerPool into a ready Deployment of agents", func() {
+		It("reconciles a RunnerPool into directly owned agent Pods", func() {
 			By("applying a RunnerPool and the agent token secret it references")
 			cmd := exec.Command("kubectl", "apply", "-f", runnerPoolManifest)
 			_, err := utils.Run(cmd)
@@ -280,46 +280,62 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = utils.Run(cmd)
 			})
 
-			By("waiting for the agent Deployment to become available")
-			cmd = exec.Command("kubectl", "wait", "deployment/e2e-pool-agent",
-				"--for=condition=Available", "-n", poolNamespace, "--timeout=3m")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Agent deployment never became available")
-
-			By("waiting for the RunnerPool to report Ready")
-			cmd = exec.Command("kubectl", "wait", "runnerpool/e2e-pool",
-				"--for=condition=Ready", "-n", poolNamespace, "--timeout=2m")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "RunnerPool never reported Ready")
-
-			By("reporting both agents as ready in its status")
-			verifyReadyReplicas := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "runnerpool/e2e-pool",
-					"-o", "jsonpath={.status.readyReplicas}", "-n", poolNamespace)
+			By("waiting for the operator to create an agent Pod")
+			var agentPodName string
+			verifyAgentPodRunning := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "buildkite.com/runner-pool=e2e-pool",
+					"-o", "jsonpath={.items[0].metadata.name}", "-n", poolNamespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("2"), "RunnerPool did not report 2 ready agents")
+				g.Expect(output).NotTo(BeEmpty())
+				agentPodName = output
+
+				cmd = exec.Command("kubectl", "get", "pod/"+agentPodName,
+					"-o", "jsonpath={.status.phase}", "-n", poolNamespace)
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
 			}
-			Eventually(verifyReadyReplicas, time.Minute).Should(Succeed())
+			Eventually(verifyAgentPodRunning, 3*time.Minute).Should(Succeed())
+
+			By("reporting the agent Pod in RunnerPool status")
+			verifyTotalReplicas := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "runnerpool/e2e-pool",
+					"-o", "jsonpath={.status.totalReplicas}", "-n", poolNamespace)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("1"), "RunnerPool did not report its agent Pod")
+			}
+			Eventually(verifyTotalReplicas, time.Minute).Should(Succeed())
+
+			By("setting a controller owner reference on the agent Pod")
+			cmd = exec.Command("kubectl", "get", "pod/"+agentPodName, "-n", poolNamespace,
+				"-o", "jsonpath={.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("RunnerPool/e2e-pool"))
 
 			By("passing the queue through to the agents as a tag")
-			cmd = exec.Command("kubectl", "get", "deployment/e2e-pool-agent", "-n", poolNamespace,
-				"-o", "jsonpath={.spec.template.spec.containers[0].env[?(@.name=='BUILDKITE_AGENT_TAGS')].value}")
-			output, err := utils.Run(cmd)
+			cmd = exec.Command("kubectl", "get", "pod/"+agentPodName, "-n", poolNamespace,
+				"-o", "jsonpath={.spec.containers[0].env[?(@.name=='BUILDKITE_AGENT_TAGS')].value}")
+			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(Equal("queue=e2e"))
 
-			By("garbage collecting the Deployment when the pool is deleted")
+			By("garbage collecting agent Pods when the pool is deleted")
 			cmd = exec.Command("kubectl", "delete", "runnerpool/e2e-pool", "-n", poolNamespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete the RunnerPool")
 
-			verifyDeploymentGone := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "deployment/e2e-pool-agent", "-n", poolNamespace)
-				_, err := utils.Run(cmd)
-				g.Expect(err).To(HaveOccurred(), "Agent deployment outlived its RunnerPool")
+			verifyAgentPodsGone := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "buildkite.com/runner-pool=e2e-pool", "--no-headers", "-n", poolNamespace)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(BeEmpty(), "Agent Pods outlived their RunnerPool")
 			}
-			Eventually(verifyDeploymentGone, 2*time.Minute).Should(Succeed())
+			Eventually(verifyAgentPodsGone, 2*time.Minute).Should(Succeed())
 		})
 	})
 })
