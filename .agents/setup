@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+mise_bin="$HOME/.local/bin/mise"
+if [[ ! -x "$mise_bin" ]]; then
+	printf '%s\n' 'Installing mise'
+	curl -fsSL https://mise.run | sh
+fi
+
+profile_marker='# buildkite-operator mise activation'
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+	cat >> "$HOME/.bash_profile" <<'EOF'
+
+# buildkite-operator mise activation
+if [[ -x "$HOME/.local/bin/mise" ]]; then
+	eval "$("$HOME/.local/bin/mise" activate bash)"
+fi
+EOF
+fi
+
+printf '%s\n' 'Installing pinned toolchain'
+time "$mise_bin" trust "$repo_root/mise.toml"
+time "$mise_bin" install
+
+printf '%s\n' 'Downloading Go modules'
+time "$mise_bin" exec -- go mod download
+
+printf '%s\n' 'Installing repository build and test tools'
+time "$mise_bin" exec -- make kustomize controller-gen setup-envtest golangci-lint

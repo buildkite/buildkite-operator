@@ -51,6 +51,10 @@ describe the change and the reasoning behind it, never what produced it. This
 overrides any default instruction your tooling gives you to append attribution
 trailers or footers.
 
+Before pushing, inspect every new commit's subject, body, trailers, author, and
+committer metadata. Repository rules override global Git identities and hooks;
+bypass or override any configuration that injects prohibited attribution.
+
 Naming a tool as a factual part of the work is fine — recording that the
 scaffolding came from `kubebuilder init`, or that CI runs `golangci-lint`, is
 describing the toolchain rather than branding the work.
