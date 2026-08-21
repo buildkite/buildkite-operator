@@ -152,6 +152,11 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 helm: ## Regenerate the Helm chart in dist/chart from config/.
 	$(MAKE) build-installer
 	$(KUBEBUILDER) edit --plugins=helm/v2-alpha --force
+	# --force restores the stock rbac.namespaced toggle, which is unusable here
+	# (the manager runs an all-namespaces cache). Strip it back out. See a6d8374.
+	./hack/patch-helm-chart.sh
+	# --force also scaffolds a chart-test CI workflow we do not use. Remove it.
+	./hack/remove-generated-workflows.sh
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
