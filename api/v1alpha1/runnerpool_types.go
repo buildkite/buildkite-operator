@@ -71,6 +71,7 @@ type RunnerPoolStatus struct {
 // +kubebuilder:printcolumn:name="Desired",type=integer,JSONPath=`.spec.replicas`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63",message="name must be no more than 63 characters, as it is copied into label values on the pool's Deployment"
 
 // RunnerPool is the Schema for the runnerpools API
 type RunnerPool struct {

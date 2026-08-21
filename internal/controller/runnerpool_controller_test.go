@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -21,7 +22,11 @@ import (
 )
 
 var _ = Describe("RunnerPool Controller", func() {
-	const poolName = "test-pool"
+	const (
+		poolName             = "test-pool"
+		agentTokenSecretName = "buildkite-agent-token"
+		agentTokenSecretKey  = "token"
+	)
 
 	var (
 		ctx        context.Context
@@ -66,8 +71,8 @@ var _ = Describe("RunnerPool Controller", func() {
 				Queue: "macos-arm64",
 				Image: "buildkite/agent:3.90.0",
 				AgentTokenSecretRef: corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "buildkite-agent-token"},
-					Key:                  "token",
+					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
+					Key:                  agentTokenSecretKey,
 				},
 			},
 		})).To(Succeed())
@@ -93,8 +98,8 @@ var _ = Describe("RunnerPool Controller", func() {
 		Expect(agent.Env).To(ContainElement(corev1.EnvVar{
 			Name: "BUILDKITE_AGENT_TOKEN",
 			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "buildkite-agent-token"},
-				Key:                  "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
+				Key:                  agentTokenSecretKey,
 			}},
 		}))
 		Expect(agent.Env).To(ContainElement(corev1.EnvVar{
@@ -233,6 +238,25 @@ var _ = Describe("RunnerPool Controller", func() {
 
 			Expect(pool().ResourceVersion).To(Equal(before))
 		})
+	})
+
+	It("rejects a name too long to fit in a label value", func() {
+		// Label values are capped at 63 characters, and pool.Name is copied
+		// into both the selector and pool labels, so a longer name could
+		// never be reconciled.
+		tooLong := strings.Repeat("a", 64)
+		err := k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
+			ObjectMeta: metav1.ObjectMeta{Name: tooLong, Namespace: namespace},
+			Spec: buildkitecomv1alpha1.RunnerPoolSpec{
+				Queue: "macos-arm64",
+				AgentTokenSecretRef: corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
+					Key:                  agentTokenSecretKey,
+				},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("63 characters"))
 	})
 
 	It("ignores a pool that no longer exists", func() {

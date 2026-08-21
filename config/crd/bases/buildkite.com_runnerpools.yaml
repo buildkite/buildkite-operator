@@ -239,6 +239,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: name must be no more than 63 characters, as it is copied into label
+            values on the pool's Deployment
+          rule: size(self.metadata.name) <= 63
     served: true
     storage: true
     subresources:
