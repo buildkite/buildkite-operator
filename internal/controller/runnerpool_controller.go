@@ -18,7 +18,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	buildkitecomv1alpha1 "github.com/buildkite/buildkite-operator/api/v1alpha1"
 )
@@ -38,6 +40,7 @@ const (
 	poolLabel                 = "buildkite.com/runner-pool"
 	idleSinceAnnotation       = "buildkite.com/idle-since"
 	podTemplateHashAnnotation = "buildkite.com/pod-template-hash"
+	runnerPoolCacheStoreIndex = "spec.cacheStoreRef.name"
 )
 
 // RunnerPoolReconciler reconciles a RunnerPool object.
@@ -61,21 +64,31 @@ func (r *RunnerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	templateHash, err := desiredPodTemplateHash(pool)
+	store, cacheStoreCondition, err := r.resolveCacheStore(ctx, pool)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("hashing Pod template for RunnerPool %s: %w", pool.Name, err)
+		return ctrl.Result{}, err
+	}
+	managePods := pool.Spec.CacheStoreRef == nil || store != nil
+	templateHash := ""
+	if managePods {
+		templateHash, err = desiredPodTemplateHash(pool, store)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("hashing Pod template for RunnerPool %s: %w", pool.Name, err)
+		}
 	}
 
-	pods, err := r.observeAgentPods(ctx, pool, templateHash)
+	pods, err := r.observeAgentPods(ctx, pool, templateHash, managePods)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileRunners(ctx, pool, pods, templateHash); err != nil {
-		return ctrl.Result{}, err
+	if managePods {
+		if err := r.reconcileRunners(ctx, pool, store, pods, templateHash); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
-	if err := r.reconcileStatus(ctx, pool, pods); err != nil {
+	if err := r.reconcileStatus(ctx, pool, pods, cacheStoreCondition); err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
@@ -89,6 +102,7 @@ func (r *RunnerPoolReconciler) observeAgentPods(
 	ctx context.Context,
 	pool *buildkitecomv1alpha1.RunnerPool,
 	templateHash string,
+	managePods bool,
 ) ([]observedPod, error) {
 	log := logf.FromContext(ctx)
 	podList := &corev1.PodList{}
@@ -114,7 +128,7 @@ func (r *RunnerPoolReconciler) observeAgentPods(
 			observed = append(observed, observedPod{pod: pod, terminating: true})
 			continue
 		}
-		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		if managePods && (pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed) {
 			if err := r.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
 				return nil, fmt.Errorf("deleting terminal agent Pod %s: %w", pod.Name, err)
 			}
@@ -125,11 +139,13 @@ func (r *RunnerPoolReconciler) observeAgentPods(
 		state := observedPod{
 			pod:   pod,
 			ready: podReady(pod),
-			stale: pod.Annotations[podTemplateHashAnnotation] != templateHash,
+			stale: managePods && pod.Annotations[podTemplateHashAnnotation] != templateHash,
 		}
 		if pod.Status.PodIP == "" || !state.ready {
-			if err := r.clearIdleSince(ctx, pod); err != nil {
-				return nil, err
+			if managePods {
+				if err := r.clearIdleSince(ctx, pod); err != nil {
+					return nil, err
+				}
 			}
 			observed = append(observed, state)
 			continue
@@ -138,8 +154,10 @@ func (r *RunnerPoolReconciler) observeAgentPods(
 		status, err := r.checkAgentStatus(ctx, pod)
 		if err != nil {
 			log.Info("Could not check agent Pod status", "pod", pod.Name, "error", err)
-			if err := r.clearIdleSince(ctx, pod); err != nil {
-				return nil, err
+			if managePods {
+				if err := r.clearIdleSince(ctx, pod); err != nil {
+					return nil, err
+				}
 			}
 			observed = append(observed, state)
 			continue
@@ -148,17 +166,21 @@ func (r *RunnerPoolReconciler) observeAgentPods(
 		switch status {
 		case AgentStatusBusy:
 			state.busy = true
-			if err := r.clearIdleSince(ctx, pod); err != nil {
-				return nil, err
+			if managePods {
+				if err := r.clearIdleSince(ctx, pod); err != nil {
+					return nil, err
+				}
 			}
 
 		case AgentStatusIdle:
 			state.idle = true
-			state.idleSince, err = r.ensureIdleSince(ctx, pod, now)
-			if err != nil {
-				return nil, err
+			if managePods {
+				state.idleSince, err = r.ensureIdleSince(ctx, pod, now)
+				if err != nil {
+					return nil, err
+				}
+				state.eligible = state.stale || !now.Before(state.idleSince.Add(idleTimeout))
 			}
-			state.eligible = state.stale || !now.Before(state.idleSince.Add(idleTimeout))
 		}
 
 		observed = append(observed, state)
@@ -214,6 +236,7 @@ func (r *RunnerPoolReconciler) clearIdleSince(ctx context.Context, pod *corev1.P
 func (r *RunnerPoolReconciler) reconcileRunners(
 	ctx context.Context,
 	pool *buildkitecomv1alpha1.RunnerPool,
+	store *buildkitecomv1alpha1.CacheStore,
 	pods []observedPod,
 	templateHash string,
 ) error {
@@ -221,7 +244,7 @@ func (r *RunnerPoolReconciler) reconcileRunners(
 	desired := desiredTotal(pool, pods)
 
 	if total < desired {
-		return r.createAgentPods(ctx, pool, templateHash, desired-total)
+		return r.createAgentPods(ctx, pool, store, templateHash, desired-total)
 	}
 
 	if total > desired {
@@ -247,7 +270,7 @@ func (r *RunnerPoolReconciler) reconcileRunners(
 	// one when the hard cap permits it; at the cap, remove one idle stale Pod
 	// first and replace it on the next reconcile.
 	if total < pool.Spec.MaxRunners {
-		return r.createAgentPods(ctx, pool, templateHash, 1)
+		return r.createAgentPods(ctx, pool, store, templateHash, 1)
 	}
 	return r.deleteAgentPods(ctx, pods, templateHash, 1, true)
 }
@@ -255,12 +278,13 @@ func (r *RunnerPoolReconciler) reconcileRunners(
 func (r *RunnerPoolReconciler) createAgentPods(
 	ctx context.Context,
 	pool *buildkitecomv1alpha1.RunnerPool,
+	store *buildkitecomv1alpha1.CacheStore,
 	templateHash string,
 	count int32,
 ) error {
 	log := logf.FromContext(ctx)
 	for range count {
-		pod, err := r.agentPod(pool, templateHash)
+		pod, err := r.agentPod(pool, store, templateHash)
 		if err != nil {
 			return fmt.Errorf("building agent Pod for RunnerPool %s: %w", pool.Name, err)
 		}
@@ -354,6 +378,7 @@ func (r *RunnerPoolReconciler) reconcileStatus(
 	ctx context.Context,
 	pool *buildkitecomv1alpha1.RunnerPool,
 	pods []observedPod,
+	cacheStoreCondition *metav1.Condition,
 ) error {
 	updated := pool.DeepCopy()
 	updated.Status.TotalRunners = countNonTerminating(pods)
@@ -362,6 +387,12 @@ func (r *RunnerPoolReconciler) reconcileStatus(
 	updated.Status.ReadyRunners = countReady(pods)
 	updated.Status.ObservedGeneration = pool.Generation
 	meta.SetStatusCondition(&updated.Status.Conditions, readyCondition(pool, pods))
+	if cacheStoreCondition == nil {
+		meta.RemoveStatusCondition(&updated.Status.Conditions,
+			buildkitecomv1alpha1.RunnerPoolConditionCacheStoreReady)
+	} else {
+		meta.SetStatusCondition(&updated.Status.Conditions, *cacheStoreCondition)
+	}
 
 	if equality.Semantic.DeepEqual(pool.Status, updated.Status) {
 		return nil
@@ -416,11 +447,83 @@ func (r *RunnerPoolReconciler) pollInterval(pool *buildkitecomv1alpha1.RunnerPoo
 	return interval
 }
 
+func (r *RunnerPoolReconciler) resolveCacheStore(
+	ctx context.Context,
+	pool *buildkitecomv1alpha1.RunnerPool,
+) (*buildkitecomv1alpha1.CacheStore, *metav1.Condition, error) {
+	if pool.Spec.CacheStoreRef == nil {
+		return nil, nil, nil
+	}
+	store := &buildkitecomv1alpha1.CacheStore{}
+	key := client.ObjectKey{Name: pool.Spec.CacheStoreRef.Name, Namespace: pool.Namespace}
+	if err := r.Get(ctx, key, store); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, &metav1.Condition{
+				Type:               buildkitecomv1alpha1.RunnerPoolConditionCacheStoreReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: pool.Generation,
+				Reason:             "CacheStoreNotFound",
+				Message:            fmt.Sprintf("CacheStore %s was not found", key.Name),
+			}, nil
+		}
+		return nil, nil, fmt.Errorf("getting CacheStore %s: %w", key.Name, err)
+	}
+
+	condition := metav1.Condition{
+		Type:               buildkitecomv1alpha1.RunnerPoolConditionCacheStoreReady,
+		Status:             metav1.ConditionUnknown,
+		ObservedGeneration: pool.Generation,
+		Reason:             "CacheStorePending",
+		Message:            fmt.Sprintf("Waiting for CacheStore %s to report readiness", store.Name),
+	}
+	ready := meta.FindStatusCondition(store.Status.Conditions, buildkitecomv1alpha1.CacheStoreConditionReady)
+	if ready != nil && ready.ObservedGeneration == store.Generation {
+		condition.Status = ready.Status
+		condition.Reason = ready.Reason
+		condition.Message = ready.Message
+	}
+	return store, &condition, nil
+}
+
+func (r *RunnerPoolReconciler) runnerPoolsForCacheStore(
+	ctx context.Context,
+	object client.Object,
+) []reconcile.Request {
+	pools := &buildkitecomv1alpha1.RunnerPoolList{}
+	if err := r.List(ctx, pools, client.InNamespace(object.GetNamespace()), client.MatchingFields{
+		runnerPoolCacheStoreIndex: object.GetName(),
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "Could not list RunnerPools for CacheStore",
+			"cacheStore", object.GetName())
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(pools.Items))
+	for i := range pools.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&pools.Items[i])})
+	}
+	slices.SortFunc(requests, func(a, b reconcile.Request) int {
+		return cmp.Compare(a.String(), b.String())
+	})
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *RunnerPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &buildkitecomv1alpha1.RunnerPool{},
+		runnerPoolCacheStoreIndex, func(object client.Object) []string {
+			pool := object.(*buildkitecomv1alpha1.RunnerPool)
+			if pool.Spec.CacheStoreRef == nil {
+				return nil
+			}
+			return []string{pool.Spec.CacheStoreRef.Name}
+		}); err != nil {
+		return fmt.Errorf("indexing RunnerPools by CacheStore: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&buildkitecomv1alpha1.RunnerPool{}).
 		Owns(&corev1.Pod{}).
+		Watches(&buildkitecomv1alpha1.CacheStore{}, handler.EnqueueRequestsFromMapFunc(r.runnerPoolsForCacheStore)).
 		Named("runnerpool").
 		Complete(r)
 }

@@ -1,7 +1,6 @@
-# A minimal RunnerPool, together with the agent token secret it references so
-# that `kubectl apply -f config/samples/v1alpha1_runnerpool.yaml` is
-# self-contained. Replace the token with a real Buildkite agent token to have
-# these agents actually connect.
+# A cache-enabled RunnerPool and its agent token Secret. Apply it together with
+# v1alpha1_cachestore.yaml using `kubectl apply -k config/samples/`. Replace the
+# token with a real Buildkite agent token to have these agents connect.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -24,7 +23,9 @@ spec:
   maxRunners: 20
   minIdleRunners: 3
   idleTimeoutSeconds: 10
-  image: buildkite/agent:3
+  image: buildkite/agent:3.128.0
   agentTokenSecretRef:
     name: buildkite-agent-token
     key: token
+  cacheStoreRef:
+    name: build-cache

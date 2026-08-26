@@ -6,7 +6,41 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
   - pods
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
   verbs:
   - create
   - delete
@@ -18,6 +52,7 @@ rules:
 - apiGroups:
   - buildkite.com
   resources:
+  - cachestores
   - runnerpools
   verbs:
   - create
@@ -30,12 +65,14 @@ rules:
 - apiGroups:
   - buildkite.com
   resources:
+  - cachestores/finalizers
   - runnerpools/finalizers
   verbs:
   - update
 - apiGroups:
   - buildkite.com
   resources:
+  - cachestores/status
   - runnerpools/status
   verbs:
   - get

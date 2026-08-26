@@ -9,6 +9,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,9 @@ const poolNamespace = "buildkite-operator-e2e"
 // runnerPoolManifest is the RunnerPool fixture, applied relative to the project
 // root that utils.Run executes in.
 const runnerPoolManifest = "test/e2e/testdata/runnerpool.yaml"
+
+// cacheClientManifest exercises Garage's S3 API after the lifecycle rule is ready.
+const cacheClientManifest = "test/e2e/testdata/cache-client.yaml"
 
 // serviceAccountName created for the project
 const serviceAccountName = "buildkite-operator-controller-manager"
@@ -267,9 +271,9 @@ var _ = Describe("Manager", Ordered, func() {
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 
-	Context("RunnerPool", func() {
-		It("reconciles a RunnerPool into directly owned agent Pods", func() {
-			By("applying a RunnerPool and the agent token secret it references")
+	Context("CacheStore and RunnerPool", func() {
+		It("serves an agent-managed cache to directly owned agent Pods", func() {
+			By("applying a CacheStore, RunnerPool, and their immutable Secrets")
 			cmd := exec.Command("kubectl", "apply", "-f", runnerPoolManifest)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply the RunnerPool")
@@ -279,6 +283,39 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "delete", "-f", runnerPoolManifest, "--ignore-not-found")
 				_, _ = utils.Run(cmd)
 			})
+
+			By("waiting for Garage and its lifecycle rule to become ready")
+			cmd = exec.Command("kubectl", "wait", "--for=create", "statefulset/e2e-cache",
+				"-n", poolNamespace, "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Garage StatefulSet was not created")
+			cmd = exec.Command("kubectl", "rollout", "status", "statefulset/e2e-cache",
+				"-n", poolNamespace, "--timeout=5m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Garage StatefulSet never became ready")
+			cmd = exec.Command("kubectl", "wait", "cachestore/e2e-cache",
+				"--for=condition=Ready", "-n", poolNamespace, "--timeout=5m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "CacheStore never reported Ready")
+
+			By("retaining the PVC on CacheStore deletion and scale-down")
+			cmd = exec.Command("kubectl", "get", "statefulset/e2e-cache", "-n", poolNamespace,
+				"-o", "jsonpath={.spec.persistentVolumeClaimRetentionPolicy.whenDeleted}/{.spec.persistentVolumeClaimRetentionPolicy.whenScaled}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("Retain/Retain"))
+
+			By("exposing only RPC through the headless Service and S3 through the client Service")
+			cmd = exec.Command("kubectl", "get", "service/e2e-cache-rpc", "-n", poolNamespace,
+				"-o", "jsonpath={.spec.clusterIP}/{.spec.ports[0].port}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("None/3901"))
+			cmd = exec.Command("kubectl", "get", "service/e2e-cache", "-n", poolNamespace,
+				"-o", "jsonpath={.spec.ports[*].port}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("3900"))
 
 			By("waiting for the operator to create an agent Pod")
 			var agentPodName string
@@ -312,7 +349,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("setting a controller owner reference on the agent Pod")
 			cmd = exec.Command("kubectl", "get", "pod/"+agentPodName, "-n", poolNamespace,
 				"-o", "jsonpath={.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}")
-			output, err := utils.Run(cmd)
+			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(Equal("RunnerPool/e2e-pool"))
 
@@ -322,6 +359,61 @@ var _ = Describe("Manager", Ordered, func() {
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(Equal("queue=e2e"))
+
+			By("reporting CacheStore readiness on the RunnerPool")
+			cmd = exec.Command("kubectl", "wait", "runnerpool/e2e-pool",
+				"--for=condition=CacheStoreReady", "-n", poolNamespace, "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "RunnerPool never reported CacheStoreReady")
+
+			By("injecting the encoded S3 URL and credential references")
+			cmd = exec.Command("kubectl", "get", "pod/"+agentPodName, "-n", poolNamespace,
+				"-o", "jsonpath={.spec.containers[0].env[?(@.name=='BUILDKITE_AGENT_CACHE_STORE_URL')].value}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cacheURL, err := url.Parse(output)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cacheURL.Scheme).To(Equal("s3"))
+			Expect(cacheURL.Host).To(Equal("buildkite-cache"))
+			Expect(cacheURL.Query().Get("region")).To(Equal("garage"))
+			Expect(cacheURL.Query().Get("endpoint")).To(Equal(
+				"http://e2e-cache.buildkite-operator-e2e.svc:3900"))
+			Expect(cacheURL.Query().Get("use_path_style")).To(Equal("true"))
+			cmd = exec.Command("kubectl", "get", "pod/"+agentPodName, "-n", poolNamespace,
+				"-o", "jsonpath={.spec.containers[0].env[?(@.name=='AWS_ACCESS_KEY_ID')].valueFrom.secretKeyRef.name}/{.spec.containers[0].env[?(@.name=='AWS_ACCESS_KEY_ID')].valueFrom.secretKeyRef.key}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("e2e-cache-credentials/access-key-id"))
+
+			By("exercising put, head, get, self-copy, multipart upload, and lifecycle APIs")
+			cmd = exec.Command("kubectl", "apply", "-f", cacheClientManifest)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the S3 client Job")
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "-f", cacheClientManifest, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			})
+			cmd = exec.Command("kubectl", "wait", "job/cache-store-client", "--for=condition=Complete",
+				"-n", poolNamespace, "--timeout=5m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "S3 client Job did not complete")
+			cmd = exec.Command("kubectl", "logs", "job/cache-store-client", "-n", poolNamespace)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("CACHE_STORE_E2E_OK"))
+
+			By("leaving the Garage PVC behind when the CacheStore is deleted")
+			cmd = exec.Command("kubectl", "delete", "cachestore/e2e-cache", "-n", poolNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset/e2e-cache", "-n", poolNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred())
+			}).Should(Succeed())
+			cmd = exec.Command("kubectl", "get", "pvc/data-e2e-cache-0", "-n", poolNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Garage PVC was deleted with its CacheStore")
 
 			By("garbage collecting agent Pods when the pool is deleted")
 			cmd = exec.Command("kubectl", "delete", "runnerpool/e2e-pool", "-n", poolNamespace)

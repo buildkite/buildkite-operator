@@ -83,6 +83,18 @@ spec:
                 x-kubernetes-validations:
                 - message: agentTokenSecretRef.name must not be empty
                   rule: has(self.name) && size(self.name) > 0
+              cacheStoreRef:
+                description: |-
+                  cacheStoreRef optionally references a CacheStore in this RunnerPool's
+                  namespace. Cache-enabled agents require Buildkite agent 3.128.0 or newer.
+                properties:
+                  name:
+                    description: name is the name of the CacheStore.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               idleTimeoutSeconds:
                 default: 10
                 description: |-
@@ -214,6 +226,7 @@ spec:
 
                   Condition types used by this controller:
                   - "Ready": the pool's agents are running and available
+                  - "CacheStoreReady": the configured CacheStore is available
 
                   The status of each condition is one of True, False, or Unknown.
                 items:

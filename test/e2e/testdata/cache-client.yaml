@@ -1,0 +1,86 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cache-store-client
+  namespace: buildkite-operator-e2e
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: aws
+        image: public.ecr.aws/aws-cli/aws-cli:2.27.41
+        command: [/bin/sh, -ec]
+        args:
+        - |
+          printf 'garage e2e payload' >/tmp/payload
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3api put-object \
+            --bucket "$BUCKET" --key cache/object --body /tmp/payload
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3api head-object \
+            --bucket "$BUCKET" --key cache/object
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3api get-object \
+            --bucket "$BUCKET" --key cache/object /tmp/restored
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3api copy-object \
+            --bucket "$BUCKET" --key cache/object --copy-source "$BUCKET/cache/object"
+
+          upload_id="$(aws --endpoint-url "$AWS_ENDPOINT_URL" s3api create-multipart-upload \
+            --bucket "$BUCKET" --key cache/multipart --query UploadId --output text)"
+          etag="$(aws --endpoint-url "$AWS_ENDPOINT_URL" s3api upload-part \
+            --bucket "$BUCKET" --key cache/multipart --part-number 1 \
+            --upload-id "$upload_id" --body /tmp/payload --query ETag --output text)"
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3api complete-multipart-upload \
+            --bucket "$BUCKET" --key cache/multipart --upload-id "$upload_id" \
+            --multipart-upload "{\"Parts\":[{\"ETag\":$etag,\"PartNumber\":1}]}"
+
+          test "$(aws --endpoint-url "$AWS_ENDPOINT_URL" s3api get-bucket-lifecycle-configuration \
+            --bucket "$BUCKET" \
+            --query 'length(Rules[?ID==`"buildkite-cache-retention"` && Status==`"Enabled"` && Expiration.Days==`2` && AbortIncompleteMultipartUpload.DaysAfterInitiation==`1`])' \
+            --output text)" = "1"
+          echo CACHE_STORE_E2E_OK
+        workingDir: /tmp
+        env:
+        - name: AWS_ENDPOINT_URL
+          value: http://e2e-cache.buildkite-operator-e2e.svc:3900
+        - name: AWS_DEFAULT_REGION
+          value: garage
+        - name: AWS_EC2_METADATA_DISABLED
+          value: "true"
+        - name: AWS_PAGER
+          value: ""
+        - name: HOME
+          value: /tmp
+        - name: BUCKET
+          value: buildkite-cache
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: e2e-cache-credentials
+              key: access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: e2e-cache-credentials
+              key: secret-access-key
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}

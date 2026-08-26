@@ -3,7 +3,8 @@
 A Kubernetes operator for Buildkite runners.
 
 Declare a pool of Buildkite agents as a Kubernetes resource, and the operator
-keeps a warm buffer of idle agent Pods against the queue you name:
+keeps a warm buffer of idle agent Pods against the queue you name. Pools can
+optionally share an operator-managed, Garage-backed S3 cache:
 
 ```yaml
 apiVersion: buildkite.com/v1alpha1
@@ -15,9 +16,12 @@ spec:
   maxRunners: 20
   minIdleRunners: 3
   idleTimeoutSeconds: 30
+  image: buildkite/agent:3.128.0
   agentTokenSecretRef:
     name: buildkite-agent-token
     key: token
+  cacheStoreRef:
+    name: build-cache
 ```
 
 ```console
@@ -43,15 +47,16 @@ Install the CRD and run the operator against your current kube context:
 make install && make run
 ```
 
-Then, in another shell, create an agent token secret and a pool:
+Then, in another shell, replace the placeholder credentials in
+`config/samples/` and apply the resources:
 
 ```bash
-kubectl create secret generic buildkite-agent-token --from-literal=token=$YOUR_AGENT_TOKEN
-kubectl apply -f config/samples/v1alpha1_runnerpool.yaml
+kubectl apply -k config/samples/
 ```
 
-The sample includes a placeholder token secret of its own, so it applies
-cleanly on a throwaway cluster — the agents will just fail to authenticate.
+The samples apply as-is on a throwaway cluster, but the agents cannot
+authenticate to Buildkite until the placeholder token is replaced. Replace all
+sample credentials before using them elsewhere.
 
 To run the operator *in* the cluster instead of on your laptop, build and push
 an image, then deploy it:
@@ -79,6 +84,7 @@ make helm-deploy IMG=<your-registry>/buildkite-operator:tag
 | `spec.image` | no | `buildkite/agent:3` | Agent image. It must provide the Buildkite agent health server and graceful SIGTERM behavior; Buildkite agent v3.72.0 or newer is required. |
 | `spec.agentTokenSecretRef` | yes | — | Secret name and key holding the Buildkite agent token, exposed to agents as `BUILDKITE_AGENT_TOKEN`. |
 | `spec.resources` | no | — | Compute resources for each agent container. |
+| `spec.cacheStoreRef.name` | no | — | Name of a `CacheStore` in the same namespace. Cache-enabled pools require Buildkite agent 3.128.0 or newer. |
 
 The operator polls each Pod's `/status.json`. A busy agent causes another warm
 agent to be created, up to `maxRunners`. A confirmed-idle surplus is removed
@@ -106,21 +112,67 @@ kubectl describe runnerpool linux-builders
 
 Each pool directly owns Pods named `<pool>-agent-*`, labelled
 `buildkite.com/runner-pool=<pool>`. Changes to the queue, image, token reference,
-resources, or termination grace period roll through idle Pods without
-interrupting busy agents. `maxRunners` remains a hard cap, so a replacement at
-the cap can briefly reduce the warm buffer by one. Deleting the pool gracefully
-terminates all of its Pods through owner-reference garbage collection.
+resources, termination grace period, or cache configuration roll through idle
+Pods without interrupting busy agents. `maxRunners` remains a hard cap, so a
+replacement at the cap can briefly reduce the warm buffer by one. Deleting the
+pool gracefully terminates all of its Pods through owner-reference garbage
+collection.
+
+When a referenced `CacheStore` exists, the operator injects its S3 URL and
+credential Secret references even while the store starts. A store outage does
+not stop agents. If the reference is missing, a new pool waits and all existing
+agent Pods are left untouched. `CacheStoreReady` reports this dependency
+separately from the agent `Ready` condition. Removing the reference rolls the
+cache variables out through confirmed-idle Pods.
+
+Buildkite must also be configured with an `agent_managed` cache registry, and
+pipelines must explicitly save and restore cache entries. The operator cannot
+configure that Buildkite-side registry using an agent token.
 
 This version replaces the earlier Deployment-based `v1alpha1` implementation
 without an in-place migration. Delete and recreate existing RunnerPools when
 upgrading so their legacy Deployments do not continue running alongside the new
 directly managed Pods.
 
+## CacheStore
+
+`CacheStore` runs a persistent, single-node Garage v2.3 instance and configures
+an S3 lifecycle rule for Buildkite agent cache objects. A store can be shared
+by multiple `RunnerPool` resources in its namespace.
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `spec.image` | no | `dxflrs/garage:v2.3.0` | Garage image; override for a private mirror. |
+| `spec.bucket` | no | `buildkite-cache` | Immutable S3 bucket name. |
+| `spec.rpcSecretRef` | yes | — | Immutable Secret and key containing exactly 64 hexadecimal characters. |
+| `spec.credentialsSecretRef` | yes | — | Immutable Secret and keys containing Garage's S3 access-key ID and secret key. |
+| `spec.storage.size` | yes | — | Immutable capacity of the single `ReadWriteOnce` PVC. |
+| `spec.storage.storageClassName` | no | cluster default | Immutable StorageClass name. |
+| `spec.retentionDays` | no | `2` | Object expiry in day boundaries; two days is approximately 24–48 hours. |
+| `spec.resources` | no | — | Compute resources for Garage. |
+| `spec.lifecycleImage` | no | `public.ecr.aws/aws-cli/aws-cli:2.27.41` | Pinned AWS CLI image used by the lifecycle Job. |
+
+Both credential Secrets must set `immutable: true`. Garage access-key IDs must
+contain at least eight ASCII letters, digits, `.`, `_`, or `-`; secret keys
+must contain at least 16 printable ASCII characters. Garage cannot rotate an
+existing key's secret on a retained data volume. To change credentials, create
+a new `CacheStore` or deliberately remove the old PVC and its data.
+
+The store expires objects after `retentionDays` and aborts incomplete multipart
+uploads after one day. Garage evaluates lifecycle rules daily. Buildkite's
+restore-time self-copy refreshes hot objects' modification times.
+
+The StatefulSet explicitly retains its PVC on deletion and scale-down. Deleting
+a `CacheStore` removes its workloads and Services but leaves
+`data-<store>-0`; delete or snapshot that PVC manually when appropriate. The
+store is single-node and non-HA, uses plaintext HTTP inside the cluster, and
+does not provide backup, restore, TLS, or credential rotation.
+
 ## Development
 
 ```bash
 make test        # unit tests against envtest
-make test-e2e    # deploys to a throwaway kind cluster and checks Pod ownership/lifecycle
+make test-e2e    # deploys to a throwaway kind cluster and checks Pods and cache storage
 make lint        # golangci-lint
 make build       # regenerate manifests and build the manager binary
 ```
@@ -128,9 +180,8 @@ make build       # regenerate manifests and build the manager binary
 CI runs `lint`, a codegen drift check, `test` and `test-e2e` — see
 [.buildkite/pipeline.yml](.buildkite/pipeline.yml). The drift check fails if
 generated CRDs, RBAC or deepcopy code are stale, so run `make manifests generate`
-after touching [api/v1alpha1/runnerpool_types.go](api/v1alpha1/runnerpool_types.go)
-or the `+kubebuilder:rbac` markers in
-[internal/controller/runnerpool_controller.go](internal/controller/runnerpool_controller.go).
+after touching API types under [api/v1alpha1](api/v1alpha1) or
+`+kubebuilder:rbac` markers under [internal/controller](internal/controller).
 
 The Helm chart in `dist/chart` is generated from `config/`, not maintained by
 hand. Regenerate it after any API or RBAC change:
@@ -146,3 +197,6 @@ point back at your own cluster.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Managed stores run Garage, which is AGPL-3.0 software distributed separately
+in the `dxflrs/garage` container image.

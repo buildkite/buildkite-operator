@@ -46,6 +46,9 @@ strip_namespaced_blocks() {
 for f in \
 	"${RBAC_DIR}/manager-role.yaml" \
 	"${RBAC_DIR}/manager-rolebinding.yaml" \
+	"${RBAC_DIR}/cachestore-admin-role.yaml" \
+	"${RBAC_DIR}/cachestore-editor-role.yaml" \
+	"${RBAC_DIR}/cachestore-viewer-role.yaml" \
 	"${RBAC_DIR}/runnerpool-admin-role.yaml" \
 	"${RBAC_DIR}/runnerpool-editor-role.yaml" \
 	"${RBAC_DIR}/runnerpool-viewer-role.yaml"; do

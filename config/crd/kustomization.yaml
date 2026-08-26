@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/buildkite.com_runnerpools.yaml
+- bases/buildkite.com_cachestores.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

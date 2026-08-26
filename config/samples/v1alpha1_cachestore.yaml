@@ -1,0 +1,45 @@
+# Garage does not generate or rotate credentials. Both referenced Secrets must
+# be immutable and must be backed up together with the retained Garage PVC.
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: build-cache-rpc
+immutable: true
+stringData:
+  # Generate with: openssl rand -hex 32
+  rpc-secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: build-cache-credentials
+immutable: true
+stringData:
+  # Replace both values before using this sample outside a throwaway cluster.
+  access-key-id: GK0123456789abcdef0123456789abcdef
+  secret-access-key: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+---
+apiVersion: buildkite.com/v1alpha1
+kind: CacheStore
+metadata:
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: build-cache
+spec:
+  rpcSecretRef:
+    name: build-cache-rpc
+    key: rpc-secret
+  credentialsSecretRef:
+    name: build-cache-credentials
+    accessKeyIDKey: access-key-id
+    secretAccessKeyKey: secret-access-key
+  storage:
+    size: 20Gi
+  retentionDays: 2

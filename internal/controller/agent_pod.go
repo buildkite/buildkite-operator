@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +19,7 @@ import (
 
 func (r *RunnerPoolReconciler) agentPod(
 	pool *buildkitecomv1alpha1.RunnerPool,
+	store *buildkitecomv1alpha1.CacheStore,
 	templateHash string,
 ) (*corev1.Pod, error) {
 	pod := &corev1.Pod{
@@ -29,7 +31,7 @@ func (r *RunnerPoolReconciler) agentPod(
 				podTemplateHashAnnotation: templateHash,
 			},
 		},
-		Spec: desiredAgentPodSpec(pool),
+		Spec: desiredAgentPodSpec(pool, store),
 	}
 	if err := ctrl.SetControllerReference(pool, pod, r.Scheme); err != nil {
 		return nil, err
@@ -37,14 +39,17 @@ func (r *RunnerPoolReconciler) agentPod(
 	return pod, nil
 }
 
-func desiredAgentPodSpec(pool *buildkitecomv1alpha1.RunnerPool) corev1.PodSpec {
+func desiredAgentPodSpec(
+	pool *buildkitecomv1alpha1.RunnerPool,
+	store *buildkitecomv1alpha1.CacheStore,
+) corev1.PodSpec {
 	return corev1.PodSpec{
 		TerminationGracePeriodSeconds: desiredTerminationGracePeriodSeconds(pool),
 		Containers: []corev1.Container{
 			{
 				Name:      agentContainerName,
 				Image:     desiredImage(pool),
-				Env:       agentEnv(pool),
+				Env:       agentEnv(pool, store),
 				Resources: desiredResources(pool),
 				Ports: []corev1.ContainerPort{
 					{
@@ -67,8 +72,11 @@ func desiredAgentPodSpec(pool *buildkitecomv1alpha1.RunnerPool) corev1.PodSpec {
 	}
 }
 
-func desiredPodTemplateHash(pool *buildkitecomv1alpha1.RunnerPool) (string, error) {
-	template, err := json.Marshal(desiredAgentPodSpec(pool))
+func desiredPodTemplateHash(
+	pool *buildkitecomv1alpha1.RunnerPool,
+	store *buildkitecomv1alpha1.CacheStore,
+) (string, error) {
+	template, err := json.Marshal(desiredAgentPodSpec(pool, store))
 	if err != nil {
 		return "", err
 	}
@@ -76,22 +84,61 @@ func desiredPodTemplateHash(pool *buildkitecomv1alpha1.RunnerPool) (string, erro
 }
 
 // agentEnv is the environment every agent in the pool runs with.
-func agentEnv(pool *buildkitecomv1alpha1.RunnerPool) []corev1.EnvVar {
+func agentEnv(
+	pool *buildkitecomv1alpha1.RunnerPool,
+	store *buildkitecomv1alpha1.CacheStore,
+) []corev1.EnvVar {
 	tokenRef := pool.Spec.AgentTokenSecretRef
-	return []corev1.EnvVar{
-		{
+	environment := make([]corev1.EnvVar, 0, 6)
+	environment = append(environment,
+		corev1.EnvVar{
 			Name:      "BUILDKITE_AGENT_TOKEN",
 			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &tokenRef},
 		},
-		{
+		corev1.EnvVar{
 			Name:  "BUILDKITE_AGENT_TAGS",
 			Value: "queue=" + pool.Spec.Queue,
 		},
-		{
+		corev1.EnvVar{
 			Name:  "BUILDKITE_AGENT_HEALTH_CHECK_ADDR",
 			Value: fmt.Sprintf("0.0.0.0:%d", agentHealthPort),
 		},
+	)
+	if store == nil {
+		return environment
 	}
+
+	accessKeyRef := corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: store.Spec.CredentialsSecretRef.Name},
+		Key:                  store.Spec.CredentialsSecretRef.AccessKeyIDKey,
+	}
+	secretKeyRef := corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: store.Spec.CredentialsSecretRef.Name},
+		Key:                  store.Spec.CredentialsSecretRef.SecretAccessKeyKey,
+	}
+	return append(environment,
+		corev1.EnvVar{Name: "BUILDKITE_AGENT_CACHE_STORE_URL", Value: cacheStoreURL(store)},
+		corev1.EnvVar{
+			Name:      "AWS_ACCESS_KEY_ID",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &accessKeyRef},
+		},
+		corev1.EnvVar{
+			Name:      "AWS_SECRET_ACCESS_KEY",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &secretKeyRef},
+		},
+	)
+}
+
+func cacheStoreURL(store *buildkitecomv1alpha1.CacheStore) string {
+	query := url.Values{}
+	query.Set("region", garageRegion)
+	query.Set("endpoint", garageS3Endpoint(store))
+	query.Set("use_path_style", "true")
+	return (&url.URL{
+		Scheme:   "s3",
+		Host:     desiredCacheBucket(store),
+		RawQuery: query.Encode(),
+	}).String()
 }
 
 func poolLabels(pool *buildkitecomv1alpha1.RunnerPool) map[string]string {
@@ -134,7 +181,11 @@ func desiredIdleTimeoutSeconds(pool *buildkitecomv1alpha1.RunnerPool) int32 {
 
 // desiredResources normalizes resource requirements the same way as the API server.
 func desiredResources(pool *buildkitecomv1alpha1.RunnerPool) corev1.ResourceRequirements {
-	want := *pool.Spec.Resources.DeepCopy()
+	return normalizedResources(pool.Spec.Resources)
+}
+
+func normalizedResources(resources corev1.ResourceRequirements) corev1.ResourceRequirements {
+	want := *resources.DeepCopy()
 	if len(want.Limits) == 0 {
 		return want
 	}

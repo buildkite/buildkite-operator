@@ -1,0 +1,24 @@
+{{- if .Values.rbac.helpers.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  name: {{ include "buildkite-operator.resourceName" (dict "suffix" "cachestore-admin-role" "context" $) }}
+rules:
+- apiGroups:
+  - buildkite.com
+  resources:
+  - cachestores
+  verbs:
+  - '*'
+- apiGroups:
+  - buildkite.com
+  resources:
+  - cachestores/status
+  verbs:
+  - get
+{{- end }}

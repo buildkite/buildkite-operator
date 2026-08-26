@@ -21,10 +21,12 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	buildkitecomv1alpha1 "github.com/buildkite/buildkite-operator/api/v1alpha1"
@@ -182,12 +184,39 @@ var _ = Describe("RunnerPool Controller", func() {
 	createAgentPod := func() corev1.Pod {
 		GinkgoHelper()
 		pool := currentPool()
-		templateHash, err := desiredPodTemplateHash(pool)
+		templateHash, err := desiredPodTemplateHash(pool, nil)
 		Expect(err).NotTo(HaveOccurred())
-		pod, err := reconciler.agentPod(pool, templateHash)
+		pod, err := reconciler.agentPod(pool, nil, templateHash)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 		return *pod
+	}
+
+	createCacheStore := func(name string) *buildkitecomv1alpha1.CacheStore {
+		GinkgoHelper()
+		store := &buildkitecomv1alpha1.CacheStore{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: buildkitecomv1alpha1.CacheStoreSpec{
+				RPCSecretRef: buildkitecomv1alpha1.CacheStoreRPCSecretReference{
+					Name: "garage-rpc", Key: "rpc-secret",
+				},
+				CredentialsSecretRef: buildkitecomv1alpha1.CacheStoreCredentialsSecretReference{
+					Name:               "garage-credentials",
+					AccessKeyIDKey:     "access-key-id",
+					SecretAccessKeyKey: "secret-access-key",
+				},
+				Storage: buildkitecomv1alpha1.CacheStoreStorage{Size: resource.MustParse("1Gi")},
+			},
+		}
+		Expect(k8sClient.Create(ctx, store)).To(Succeed())
+		return store
+	}
+
+	setCacheStoreRef := func(name string) {
+		GinkgoHelper()
+		pool := currentPool()
+		pool.Spec.CacheStoreRef = &buildkitecomv1alpha1.CacheStoreReference{Name: name}
+		Expect(k8sClient.Update(ctx, pool)).To(Succeed())
 	}
 
 	BeforeEach(func() {
@@ -522,6 +551,193 @@ var _ = Describe("RunnerPool Controller", func() {
 		Expect(currentPool().ResourceVersion).To(Equal(before))
 	})
 
+	Describe("CacheStore integration", func() {
+		It("injects deterministic cache configuration while the store is starting", func() {
+			store := createCacheStore("build-cache")
+			setCacheStoreRef(store.Name)
+			reconcileNow()
+
+			pods := agentPods()
+			Expect(pods).To(HaveLen(1))
+			agent := pods[0].Spec.Containers[0]
+			cacheURL := envVar(agent.Env, "BUILDKITE_AGENT_CACHE_STORE_URL")
+			Expect(cacheURL).NotTo(BeNil())
+			parsed, err := url.Parse(cacheURL.Value)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(parsed.Scheme).To(Equal("s3"))
+			Expect(parsed.Host).To(Equal(defaultCacheBucket))
+			Expect(parsed.Query()).To(Equal(url.Values{
+				"endpoint":       []string{"http://build-cache." + namespace + ".svc:3900"},
+				"region":         []string{garageRegion},
+				"use_path_style": []string{"true"},
+			}))
+			Expect(envVar(agent.Env, "AWS_ACCESS_KEY_ID").ValueFrom.SecretKeyRef).To(Equal(
+				&corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "garage-credentials"},
+					Key:                  "access-key-id",
+				}))
+			Expect(envVar(agent.Env, "AWS_SECRET_ACCESS_KEY").ValueFrom.SecretKeyRef.Key).To(Equal(
+				"secret-access-key"))
+
+			ready := meta.FindStatusCondition(currentPool().Status.Conditions,
+				buildkitecomv1alpha1.RunnerPoolConditionCacheStoreReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(ready.Reason).To(Equal("CacheStorePending"))
+		})
+
+		It("reflects store readiness without rolling agent Pods", func() {
+			store := createCacheStore("build-cache")
+			setCacheStoreRef(store.Name)
+			reconcileNow()
+			before := agentPods()[0]
+
+			meta.SetStatusCondition(&store.Status.Conditions, metav1.Condition{
+				Type:               buildkitecomv1alpha1.CacheStoreConditionReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: store.Generation,
+				Reason:             "LifecycleConfigurationFailed",
+				Message:            "Lifecycle configuration failed",
+			})
+			store.Status.ObservedGeneration = store.Generation
+			Expect(k8sClient.Status().Update(ctx, store)).To(Succeed())
+
+			reconcileNow()
+			after := agentPods()[0]
+			Expect(after.Name).To(Equal(before.Name))
+			Expect(after.ResourceVersion).To(Equal(before.ResourceVersion))
+			ready := meta.FindStatusCondition(currentPool().Status.Conditions,
+				buildkitecomv1alpha1.RunnerPoolConditionCacheStoreReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("LifecycleConfigurationFailed"))
+		})
+
+		It("waits for a missing store without creating or modifying agent Pods", func() {
+			setCacheStoreRef("missing-cache")
+			reconcileNow()
+			Expect(agentPods()).To(BeEmpty())
+
+			pool := currentPool()
+			pool.Spec.CacheStoreRef = nil
+			Expect(k8sClient.Update(ctx, pool)).To(Succeed())
+			reconcileNow()
+			before := agentPods()[0]
+
+			pool = currentPool()
+			pool.Spec.CacheStoreRef = &buildkitecomv1alpha1.CacheStoreReference{Name: "missing-cache"}
+			pool.Spec.Image = updatedAgentImage
+			pool.Spec.Queue = "changed"
+			Expect(k8sClient.Update(ctx, pool)).To(Succeed())
+			reconcileNow()
+
+			pods := agentPods()
+			Expect(pods).To(HaveLen(1))
+			Expect(pods[0].Name).To(Equal(before.Name))
+			Expect(pods[0].ResourceVersion).To(Equal(before.ResourceVersion))
+			Expect(pods[0].Spec.Containers[0].Image).To(Equal("buildkite/agent:3.90.0"))
+			Expect(envVar(pods[0].Spec.Containers[0].Env,
+				"BUILDKITE_AGENT_CACHE_STORE_URL")).To(BeNil())
+			ready := meta.FindStatusCondition(currentPool().Status.Conditions,
+				buildkitecomv1alpha1.RunnerPoolConditionCacheStoreReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("CacheStoreNotFound"))
+		})
+
+		It("rolls cache configuration through idle Pods without interrupting busy agents", func() {
+			reconcileNow()
+			oldPod := setPodStatus(agentPods()[0], AgentStatusBusy, true)
+			store := createCacheStore("build-cache")
+			setCacheStoreRef(store.Name)
+
+			reconcileNow()
+			pods := agentPods()
+			Expect(pods).To(HaveLen(2))
+			newIndex := slices.IndexFunc(pods, func(pod corev1.Pod) bool { return pod.Name != oldPod.Name })
+			Expect(newIndex).To(BeNumerically(">=", 0))
+			newPod := pods[newIndex]
+			Expect(envVar(newPod.Spec.Containers[0].Env,
+				"BUILDKITE_AGENT_CACHE_STORE_URL")).NotTo(BeNil())
+			newPod = setPodStatus(newPod, AgentStatusIdle, true)
+
+			reconcileNow()
+			Expect(agentPods()).To(HaveLen(2))
+			setPodStatus(oldPod, AgentStatusIdle, true)
+			reconcileNow()
+
+			pods = agentPods()
+			Expect(pods).To(HaveLen(1))
+			Expect(pods[0].Name).To(Equal(newPod.Name))
+		})
+
+		It("rolls cache configuration out and removes its status condition", func() {
+			store := createCacheStore("build-cache")
+			setCacheStoreRef(store.Name)
+			reconcileNow()
+			oldPod := setPodStatus(agentPods()[0], AgentStatusIdle, true)
+
+			pool := currentPool()
+			pool.Spec.CacheStoreRef = nil
+			Expect(k8sClient.Update(ctx, pool)).To(Succeed())
+			reconcileNow()
+			pods := agentPods()
+			Expect(pods).To(HaveLen(2))
+			newIndex := slices.IndexFunc(pods, func(pod corev1.Pod) bool { return pod.Name != oldPod.Name })
+			Expect(newIndex).To(BeNumerically(">=", 0))
+			newPod := setPodStatus(pods[newIndex], AgentStatusIdle, true)
+
+			reconcileNow()
+			pods = agentPods()
+			Expect(pods).To(HaveLen(1))
+			Expect(pods[0].Name).To(Equal(newPod.Name))
+			Expect(envVar(pods[0].Spec.Containers[0].Env,
+				"BUILDKITE_AGENT_CACHE_STORE_URL")).To(BeNil())
+			Expect(meta.FindStatusCondition(currentPool().Status.Conditions,
+				buildkitecomv1alpha1.RunnerPoolConditionCacheStoreReady)).To(BeNil())
+		})
+
+		It("enqueues every pool sharing a changed CacheStore", func() {
+			store := &buildkitecomv1alpha1.CacheStore{
+				ObjectMeta: metav1.ObjectMeta{Name: "shared-cache", Namespace: namespace},
+			}
+			objects := []client.Object{
+				&buildkitecomv1alpha1.RunnerPool{
+					ObjectMeta: metav1.ObjectMeta{Name: "pool-a", Namespace: namespace},
+					Spec: buildkitecomv1alpha1.RunnerPoolSpec{
+						CacheStoreRef: &buildkitecomv1alpha1.CacheStoreReference{Name: store.Name},
+					},
+				},
+				&buildkitecomv1alpha1.RunnerPool{
+					ObjectMeta: metav1.ObjectMeta{Name: "pool-b", Namespace: namespace},
+					Spec: buildkitecomv1alpha1.RunnerPoolSpec{
+						CacheStoreRef: &buildkitecomv1alpha1.CacheStoreReference{Name: store.Name},
+					},
+				},
+				&buildkitecomv1alpha1.RunnerPool{
+					ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: namespace},
+					Spec: buildkitecomv1alpha1.RunnerPoolSpec{
+						CacheStoreRef: &buildkitecomv1alpha1.CacheStoreReference{Name: "other-cache"},
+					},
+				},
+			}
+			indexedClient := fake.NewClientBuilder().WithScheme(k8sClient.Scheme()).
+				WithObjects(objects...).
+				WithIndex(&buildkitecomv1alpha1.RunnerPool{}, runnerPoolCacheStoreIndex,
+					func(object client.Object) []string {
+						pool := object.(*buildkitecomv1alpha1.RunnerPool)
+						if pool.Spec.CacheStoreRef == nil {
+							return nil
+						}
+						return []string{pool.Spec.CacheStoreRef.Name}
+					}).
+				Build()
+			requests := (&RunnerPoolReconciler{Client: indexedClient}).runnerPoolsForCacheStore(ctx, store)
+
+			Expect(requests).To(Equal([]reconcile.Request{
+				{NamespacedName: types.NamespacedName{Name: "pool-a", Namespace: namespace}},
+				{NamespacedName: types.NamespacedName{Name: "pool-b", Namespace: namespace}},
+			}))
+		})
+	})
+
 	It("rejects minIdleRunners greater than maxRunners", func() {
 		err := k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
 			ObjectMeta: metav1.ObjectMeta{Name: "invalid-scaling", Namespace: namespace},
@@ -619,3 +835,11 @@ var _ = Describe("HTTPAgentStatusChecker", func() {
 })
 
 func ptrTo[T any](value T) *T { return &value }
+
+func envVar(environment []corev1.EnvVar, name string) *corev1.EnvVar {
+	i := slices.IndexFunc(environment, func(variable corev1.EnvVar) bool { return variable.Name == name })
+	if i < 0 {
+		return nil
+	}
+	return &environment[i]
+}

@@ -13,6 +13,42 @@ metadata:
 stringData:
   token: not-a-real-agent-token
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: e2e-cache-rpc
+  namespace: buildkite-operator-e2e
+immutable: true
+stringData:
+  rpc-secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: e2e-cache-credentials
+  namespace: buildkite-operator-e2e
+immutable: true
+stringData:
+  access-key-id: GK0123456789abcdef0123456789abcdef
+  secret-access-key: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+---
+apiVersion: buildkite.com/v1alpha1
+kind: CacheStore
+metadata:
+  name: e2e-cache
+  namespace: buildkite-operator-e2e
+spec:
+  rpcSecretRef:
+    name: e2e-cache-rpc
+    key: rpc-secret
+  credentialsSecretRef:
+    name: e2e-cache-credentials
+    accessKeyIDKey: access-key-id
+    secretAccessKeyKey: secret-access-key
+  storage:
+    size: 1Gi
+  retentionDays: 2
+---
 apiVersion: buildkite.com/v1alpha1
 kind: RunnerPool
 metadata:
@@ -31,3 +67,5 @@ spec:
   agentTokenSecretRef:
     name: buildkite-agent-token
     key: token
+  cacheStoreRef:
+    name: e2e-cache

@@ -9,9 +9,23 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// RunnerPoolConditionReady is the condition type reporting whether a pool's
-// agents are running and available.
-const RunnerPoolConditionReady = "Ready"
+const (
+	// RunnerPoolConditionReady is the condition type reporting whether a pool's
+	// agents are running and available.
+	RunnerPoolConditionReady = "Ready"
+
+	// RunnerPoolConditionCacheStoreReady reports the state of the optional
+	// CacheStore used by a pool.
+	RunnerPoolConditionCacheStoreReady = "CacheStoreReady"
+)
+
+// CacheStoreReference identifies a CacheStore in the RunnerPool's namespace.
+type CacheStoreReference struct {
+	// name is the name of the CacheStore.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Name string `json:"name"`
+}
 
 // +kubebuilder:validation:XValidation:rule="self.minIdleRunners <= self.maxRunners",message="minIdleRunners must be less than or equal to maxRunners"
 
@@ -70,6 +84,11 @@ type RunnerPoolSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="!has(self.claims)",message="resources.claims is not supported"
 	Resources corev1.ResourceRequirements `json:"resources,omitzero"`
+
+	// cacheStoreRef optionally references a CacheStore in this RunnerPool's
+	// namespace. Cache-enabled agents require Buildkite agent 3.128.0 or newer.
+	// +optional
+	CacheStoreRef *CacheStoreReference `json:"cacheStoreRef,omitempty"`
 }
 
 // RunnerPoolStatus defines the observed state of RunnerPool.
@@ -78,6 +97,7 @@ type RunnerPoolStatus struct {
 	//
 	// Condition types used by this controller:
 	// - "Ready": the pool's agents are running and available
+	// - "CacheStoreReady": the configured CacheStore is available
 	//
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map
