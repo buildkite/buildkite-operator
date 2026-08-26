@@ -6,15 +6,8 @@ package controller
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
 	"slices"
-	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -23,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -48,78 +40,12 @@ const (
 	podTemplateHashAnnotation = "buildkite.com/pod-template-hash"
 )
 
-// AgentStatus is the job occupancy reported by a Buildkite agent.
-type AgentStatus string
-
-const (
-	AgentStatusIdle AgentStatus = "idle"
-	AgentStatusBusy AgentStatus = "busy"
-)
-
-// AgentStatusChecker reads the current job occupancy of an agent Pod.
-type AgentStatusChecker interface {
-	Check(ctx context.Context, podIP string, port int32) (AgentStatus, error)
-}
-
-// HTTPAgentStatusChecker reads a Buildkite agent's /status.json endpoint.
-type HTTPAgentStatusChecker struct {
-	Client *http.Client
-}
-
-// Check returns the aggregate status reported by the agent at podIP.
-func (c *HTTPAgentStatusChecker) Check(ctx context.Context, podIP string, port int32) (AgentStatus, error) {
-	statusURL := url.URL{
-		Scheme: "http",
-		Host:   net.JoinHostPort(podIP, strconv.Itoa(int(port))),
-		Path:   "/status.json",
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL.String(), nil)
-	if err != nil {
-		return "", fmt.Errorf("building status request: %w", err)
-	}
-
-	httpClient := c.Client
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("requesting agent status: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("agent status returned HTTP %d", resp.StatusCode)
-	}
-
-	var response struct {
-		AggregateStatus AgentStatus `json:"aggregate_status"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&response); err != nil {
-		return "", fmt.Errorf("decoding agent status: %w", err)
-	}
-	if response.AggregateStatus != AgentStatusIdle && response.AggregateStatus != AgentStatusBusy {
-		return "", fmt.Errorf("agent returned unknown aggregate status %q", response.AggregateStatus)
-	}
-	return response.AggregateStatus, nil
-}
-
 // RunnerPoolReconciler reconciles a RunnerPool object.
 type RunnerPoolReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	StatusChecker AgentStatusChecker
 	PollInterval  time.Duration
-}
-
-type observedPod struct {
-	pod       *corev1.Pod
-	busy      bool
-	idle      bool
-	ready     bool
-	stale     bool
-	eligible  bool
-	idleSince time.Time
 }
 
 // +kubebuilder:rbac:groups=buildkite.com,resources=runnerpools,verbs=get;list;watch;create;update;patch;delete
@@ -469,202 +395,6 @@ func readyCondition(pool *buildkitecomv1alpha1.RunnerPool, pods []observedPod) m
 
 func desiredTotal(pool *buildkitecomv1alpha1.RunnerPool, pods []observedPod) int32 {
 	return min(countBusy(pods)+desiredMinIdleRunners(pool), pool.Spec.MaxRunners)
-}
-
-func countBusy(pods []observedPod) int32 {
-	var count int32
-	for i := range pods {
-		if pods[i].busy {
-			count++
-		}
-	}
-	return count
-}
-
-func countIdle(pods []observedPod) int32 {
-	var count int32
-	for i := range pods {
-		if pods[i].idle {
-			count++
-		}
-	}
-	return count
-}
-
-func countReady(pods []observedPod) int32 {
-	var count int32
-	for i := range pods {
-		if pods[i].ready {
-			count++
-		}
-	}
-	return count
-}
-
-func countStale(pods []observedPod) int32 {
-	var count int32
-	for i := range pods {
-		if pods[i].stale {
-			count++
-		}
-	}
-	return count
-}
-
-func countCurrent(pods []observedPod) (total int32, busy int32) {
-	for i := range pods {
-		if pods[i].stale {
-			continue
-		}
-		total++
-		if pods[i].busy {
-			busy++
-		}
-	}
-	return total, busy
-}
-
-func podReady(pod *corev1.Pod) bool {
-	for i := range pod.Status.Conditions {
-		condition := &pod.Status.Conditions[i]
-		if condition.Type == corev1.PodReady {
-			return condition.Status == corev1.ConditionTrue
-		}
-	}
-	return false
-}
-
-func (r *RunnerPoolReconciler) agentPod(
-	pool *buildkitecomv1alpha1.RunnerPool,
-	templateHash string,
-) (*corev1.Pod, error) {
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: pool.Name + "-agent-",
-			Namespace:    pool.Namespace,
-			Labels:       poolLabels(pool),
-			Annotations: map[string]string{
-				podTemplateHashAnnotation: templateHash,
-			},
-		},
-		Spec: desiredAgentPodSpec(pool),
-	}
-	if err := ctrl.SetControllerReference(pool, pod, r.Scheme); err != nil {
-		return nil, err
-	}
-	return pod, nil
-}
-
-func desiredAgentPodSpec(pool *buildkitecomv1alpha1.RunnerPool) corev1.PodSpec {
-	return corev1.PodSpec{
-		TerminationGracePeriodSeconds: desiredTerminationGracePeriodSeconds(pool),
-		Containers: []corev1.Container{
-			{
-				Name:      agentContainerName,
-				Image:     desiredImage(pool),
-				Env:       agentEnv(pool),
-				Resources: desiredResources(pool),
-				Ports: []corev1.ContainerPort{
-					{
-						Name:          agentHealthPortName,
-						ContainerPort: agentHealthPort,
-						Protocol:      corev1.ProtocolTCP,
-					},
-				},
-				ReadinessProbe: &corev1.Probe{
-					ProbeHandler: corev1.ProbeHandler{
-						HTTPGet: &corev1.HTTPGetAction{
-							Path:   "/agent/1",
-							Port:   intstr.FromString(agentHealthPortName),
-							Scheme: corev1.URISchemeHTTP,
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func desiredPodTemplateHash(pool *buildkitecomv1alpha1.RunnerPool) (string, error) {
-	template, err := json.Marshal(desiredAgentPodSpec(pool))
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(template)), nil
-}
-
-// agentEnv is the environment every agent in the pool runs with.
-func agentEnv(pool *buildkitecomv1alpha1.RunnerPool) []corev1.EnvVar {
-	tokenRef := pool.Spec.AgentTokenSecretRef
-	return []corev1.EnvVar{
-		{
-			Name:      "BUILDKITE_AGENT_TOKEN",
-			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &tokenRef},
-		},
-		{
-			Name:  "BUILDKITE_AGENT_TAGS",
-			Value: "queue=" + pool.Spec.Queue,
-		},
-		{
-			Name:  "BUILDKITE_AGENT_HEALTH_CHECK_ADDR",
-			Value: fmt.Sprintf("0.0.0.0:%d", agentHealthPort),
-		},
-	}
-}
-
-func poolLabels(pool *buildkitecomv1alpha1.RunnerPool) map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":       "buildkite-agent",
-		"app.kubernetes.io/instance":   pool.Name,
-		"app.kubernetes.io/managed-by": "buildkite-operator",
-		poolLabel:                      pool.Name,
-	}
-}
-
-func desiredImage(pool *buildkitecomv1alpha1.RunnerPool) string {
-	if pool.Spec.Image != "" {
-		return pool.Spec.Image
-	}
-	return defaultAgentImage
-}
-
-func desiredTerminationGracePeriodSeconds(pool *buildkitecomv1alpha1.RunnerPool) *int64 {
-	if pool.Spec.TerminationGracePeriodSeconds != nil {
-		return pool.Spec.TerminationGracePeriodSeconds
-	}
-	gracePeriod := defaultTerminationGracePeriodSeconds
-	return &gracePeriod
-}
-
-func desiredMinIdleRunners(pool *buildkitecomv1alpha1.RunnerPool) int32 {
-	if pool.Spec.MinIdleRunners != nil {
-		return *pool.Spec.MinIdleRunners
-	}
-	return defaultMinIdleRunners
-}
-
-func desiredIdleTimeoutSeconds(pool *buildkitecomv1alpha1.RunnerPool) int32 {
-	if pool.Spec.IdleTimeoutSeconds != nil {
-		return *pool.Spec.IdleTimeoutSeconds
-	}
-	return defaultIdleTimeoutSeconds
-}
-
-// desiredResources normalizes resource requirements the same way as the API server.
-func desiredResources(pool *buildkitecomv1alpha1.RunnerPool) corev1.ResourceRequirements {
-	want := *pool.Spec.Resources.DeepCopy()
-	if len(want.Limits) == 0 {
-		return want
-	}
-	if want.Requests == nil {
-		want.Requests = make(corev1.ResourceList, len(want.Limits))
-	}
-	for name, quantity := range want.Limits {
-		if _, ok := want.Requests[name]; !ok {
-			want.Requests[name] = quantity.DeepCopy()
-		}
-	}
-	return want
 }
 
 func (r *RunnerPoolReconciler) pollInterval(pool *buildkitecomv1alpha1.RunnerPool) time.Duration {
