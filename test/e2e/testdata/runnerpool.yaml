@@ -20,8 +20,8 @@ metadata:
   namespace: buildkite-operator-e2e
 spec:
   queue: e2e
-  maxReplicas: 2
-  minIdle: 1
+  maxRunners: 2
+  minIdleRunners: 1
   idleTimeoutSeconds: 10
   terminationGracePeriodSeconds: 5
   # This fixture verifies Pod ownership and lifecycle without contacting

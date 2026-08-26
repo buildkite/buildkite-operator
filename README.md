@@ -12,8 +12,8 @@ metadata:
   name: linux-builders
 spec:
   queue: linux-amd64
-  maxReplicas: 20
-  minIdle: 3
+  maxRunners: 20
+  minIdleRunners: 3
   idleTimeoutSeconds: 30
   agentTokenSecretRef:
     name: buildkite-agent-token
@@ -72,8 +72,8 @@ make helm-deploy IMG=<your-registry>/buildkite-operator:tag
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
 | `spec.queue` | yes | — | The Buildkite queue agents register with, passed to agents as `BUILDKITE_AGENT_TAGS=queue=<queue>`. |
-| `spec.maxReplicas` | yes | — | Hard cap on the total number of agent Pods. Must be at least `1`. |
-| `spec.minIdle` | no | `1` | Number of confirmed-idle agents to keep warm. Must not exceed `maxReplicas`. |
+| `spec.maxRunners` | yes | — | Hard cap on the total number of agent Pods. Must be at least `1`. |
+| `spec.minIdleRunners` | no | `1` | Number of confirmed-idle agents to keep warm. Must not exceed `maxRunners`. |
 | `spec.idleTimeoutSeconds` | no | `10` | How long an agent must be observed idle before surplus capacity is removed. |
 | `spec.terminationGracePeriodSeconds` | no | `3600` | Time Kubernetes allows an agent to finish a job after SIGTERM before forcefully stopping it. |
 | `spec.image` | no | `buildkite/agent:3` | Agent image. It must provide the Buildkite agent health server and graceful SIGTERM behavior; Buildkite agent v3.72.0 or newer is required. |
@@ -81,19 +81,20 @@ make helm-deploy IMG=<your-registry>/buildkite-operator:tag
 | `spec.resources` | no | — | Compute resources for each agent container. |
 
 The operator polls each Pod's `/status.json`. A busy agent causes another warm
-agent to be created, up to `maxReplicas`. A confirmed-idle surplus is removed
+agent to be created, up to `maxRunners`. A confirmed-idle surplus is removed
 after `idleTimeoutSeconds`; warming or unreachable Pods count toward the total
 but are never treated as idle scale-down candidates. Each eviction is rechecked
 immediately before deletion, and the agent's first SIGTERM drains any job that
 raced with that check.
 
-`minIdle: 0` allows scale-to-zero. Because this operator deliberately does not
-query queue depth, a pool at zero remains dormant until `minIdle` is increased.
-Idle duration is observational: a short job entirely between polls may not reset
-the timer, but graceful termination still prevents that job from being lost.
+`minIdleRunners: 0` allows scale-to-zero. Because this operator deliberately
+does not query queue depth, a pool at zero remains dormant until
+`minIdleRunners` is increased. Idle duration is observational: a short job
+entirely between polls may not reset the timer, but graceful termination still
+prevents that job from being lost.
 
-Status reports `totalReplicas`, `idleReplicas`, `busyReplicas`, `readyReplicas`,
-`observedGeneration`, and a `Ready` condition. `idleReplicas` includes only
+Status reports `totalRunners`, `idleRunners`, `busyRunners`, `readyRunners`,
+`observedGeneration`, and a `Ready` condition. `idleRunners` includes only
 Kubernetes-ready Pods confirmed idle; unreachable and warming Pods are the
 difference between the total and the confirmed busy/idle counts:
 
@@ -104,7 +105,7 @@ kubectl describe runnerpool linux-builders
 Each pool directly owns Pods named `<pool>-agent-*`, labelled
 `buildkite.com/runner-pool=<pool>`. Changes to the queue, image, token reference,
 resources, or termination grace period roll through idle Pods without
-interrupting busy agents. `maxReplicas` remains a hard cap, so a replacement at
+interrupting busy agents. `maxRunners` remains a hard cap, so a replacement at
 the cap can briefly reduce the warm buffer by one. Deleting the pool gracefully
 terminates all of its Pods through owner-reference garbage collection.
 

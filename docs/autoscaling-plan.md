@@ -11,9 +11,9 @@ interrupting any running job (no data loss).
 Rather than scaling on Buildkite queue depth, the operator scales on the pool's
 own busy/idle state:
 
-- `minIdle` — the number of idle (ready, not running a job) agents to keep warm.
-- If fewer than `minIdle` agents are idle, create pods (up to `maxReplicas`).
-- If more than `minIdle` agents are idle, gracefully terminate the surplus.
+- `minIdleRunners` — the number of idle (ready, not running a job) agents to keep warm.
+- If fewer than `minIdleRunners` agents are idle, create pods (up to `maxRunners`).
+- If more than `minIdleRunners` agents are idle, gracefully terminate the surplus.
 
 Each reconcile:
 
@@ -22,21 +22,21 @@ busy          = count of pods reporting aggregate_status == "busy"
 confirmedIdle = count of ready pods reporting aggregate_status == "idle"
 unknown       = warming, unreachable, or unready pods
 total         = busy + confirmedIdle + unknown
-desiredTotal  = min(busy + minIdle, maxReplicas)
+desiredTotal  = min(busy + minIdleRunners, maxRunners)
 ```
 
 - If `total < desiredTotal` → create `desiredTotal - total` pods.
 - Else if `total > desiredTotal` → terminate up to
-  `confirmedIdle - minIdle` pods observed idle for at least
+  `confirmedIdle - minIdleRunners` pods observed idle for at least
   `idleTimeoutSeconds`, re-confirming idle immediately before deletion.
 
 Unknown pods count toward the total so an unreachable health endpoint cannot
 cause an unbounded scale-up, but they are never scale-down candidates and never
 consume the confirmed-idle floor.
 
-`minIdle` is the only floor, so **scale-to-zero happens when `minIdle = 0`**.
-Because there is no queue-depth signal, a pool at zero remains dormant until
-`minIdle` is increased. One scale direction is applied per reconcile;
+`minIdleRunners` is the only floor, so **scale-to-zero happens when
+`minIdleRunners = 0`**. Because there is no queue-depth signal, a pool at zero
+remains dormant until `minIdleRunners` is increased. One scale direction is applied per reconcile;
 `RequeueAfter` drives convergence.
 
 ## Busy/idle detection: agent `/status.json`
@@ -85,9 +85,9 @@ select a confirmed-idle pod and delete exactly it.
 Because most Pod template fields are immutable, each Pod carries a hash of its
 desired template. Changes to image, queue, token reference, resources, or
 termination grace roll through stale Pods without deleting a busy agent. The
-controller surges by one when below `maxReplicas`; at the hard cap it deletes one
+controller surges by one when below `maxRunners`; at the hard cap it deletes one
 confirmed-idle stale Pod first, briefly allowing the pool to fall below
-`minIdle`, then creates its replacement on the next reconcile.
+`minIdleRunners`, then creates its replacement on the next reconcile.
 
 ## Graceful termination: no data loss
 
@@ -112,17 +112,17 @@ Remove:
 - `Desired` printcolumn.
 
 Add flat, top-level spec fields:
-- `maxReplicas int32` — required, `Minimum=1`. Hard cap on total pods.
-- `minIdle *int32` — optional, default `1`, `Minimum=0`. Warm idle buffer / floor.
-  The pointer preserves an explicit zero through Go client updates.
+- `maxRunners int32` — required, `Minimum=1`. Hard cap on total pods.
+- `minIdleRunners *int32` — optional, default `1`, `Minimum=0`. Warm idle buffer
+  / floor. The pointer preserves an explicit zero through Go client updates.
 - `idleTimeoutSeconds *int32` — optional, default `10`, `Minimum=0`. Observed
   idle duration before a pod is eligible for termination. The pointer preserves
   an explicit zero through Go client updates.
 - `terminationGracePeriodSeconds *int64` — optional, default `3600`, `Minimum=1`.
-- CEL cross-field validation: `minIdle <= maxReplicas`.
+- CEL cross-field validation: `minIdleRunners <= maxRunners`.
 
-Status: keep `conditions`, `observedGeneration`; add `totalReplicas`,
-`idleReplicas`, `busyReplicas`, `readyReplicas`. `idleReplicas` counts only ready,
+Status: keep `conditions`, `observedGeneration`; add `totalRunners`,
+`idleRunners`, `busyRunners`, `readyRunners`. `idleRunners` counts only ready,
 confirmed-idle Pods, so unknown Pods are the difference between total and
 confirmed busy/idle counts. `Ready=True` when the desired total is present, all
 active Pods are Kubernetes Ready, and no template rollout is pending; an
@@ -148,7 +148,7 @@ Reconcile flow:
    - unreachable, unready, or no pod IP → clear idle-since, count as unknown.
 4. Compute `busy`, `confirmedIdle`, `unknown`, `total`, `desiredTotal`.
 5. Scale up: create pods (`generateName: <pool>-agent-`) up to `desiredTotal`.
-6. Scale down: else terminate up to `confirmedIdle - minIdle`
+6. Scale down: else terminate up to `confirmedIdle - minIdleRunners`
    eviction-eligible pods, re-confirming idle via `/status.json` immediately
    before deletion.
 7. If the total is otherwise correct, roll stale Pod templates using the
@@ -184,12 +184,12 @@ client/timeout.
 
 ## Samples & tests
 
-- Update `config/samples/v1alpha1_runnerpool.yaml` to `maxReplicas`, `minIdle`,
-  `idleTimeoutSeconds`.
+- Update `config/samples/v1alpha1_runnerpool.yaml` to `maxRunners`,
+  `minIdleRunners`, `idleTimeoutSeconds`.
 - Rewrite `internal/controller/runnerpool_controller_test.go` (Ginkgo) with the
-  fake status checker: scale up to buffer, never below `minIdle`, cap at
-  `maxReplicas`, evict only after `idleTimeoutSeconds`, never evict busy, scale to
-  zero when `minIdle = 0`, distinguish unknown Pods, replace terminal Pods, and
+  fake status checker: scale up to buffer, never below `minIdleRunners`, cap at
+  `maxRunners`, evict only after `idleTimeoutSeconds`, never evict busy, scale to
+  zero when `minIdleRunners = 0`, distinguish unknown Pods, replace terminal Pods, and
   roll template changes without interrupting busy agents.
 - Update `test/e2e/e2e_test.go` for pod-based ownership/cascade.
 

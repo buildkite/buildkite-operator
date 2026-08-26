@@ -18,16 +18,16 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.maxReplicas
+    - jsonPath: .spec.maxRunners
       name: Max
       type: integer
-    - jsonPath: .status.idleReplicas
+    - jsonPath: .status.idleRunners
       name: Idle
       type: integer
-    - jsonPath: .status.busyReplicas
+    - jsonPath: .status.busyRunners
       name: Busy
       type: integer
-    - jsonPath: .status.totalReplicas
+    - jsonPath: .status.totalRunners
       name: Total
       type: integer
     - jsonPath: .metadata.creationTimestamp
@@ -99,18 +99,19 @@ spec:
                 description: image is the Buildkite agent container image to run.
                 minLength: 1
                 type: string
-              maxReplicas:
-                description: maxReplicas is the maximum number of agents that may
-                  run in this pool.
+              maxRunners:
+                description: maxRunners is the maximum number of agents that may run
+                  in this pool.
                 format: int32
                 minimum: 1
                 type: integer
-              minIdle:
+              minIdleRunners:
                 default: 1
                 description: |-
-                  minIdle is the number of idle agents to keep ready for work. Setting it to
-                  zero allows the pool to scale to zero, where it remains until minIdle is
-                  increased because the operator does not observe Buildkite queue depth.
+                  minIdleRunners is the number of idle agents to keep ready for work. Setting
+                  it to zero allows the pool to scale to zero, where it remains until
+                  minIdleRunners is increased because the operator does not observe
+                  Buildkite queue depth.
                 format: int32
                 minimum: 0
                 type: integer
@@ -196,18 +197,18 @@ spec:
                 type: integer
             required:
             - agentTokenSecretRef
-            - maxReplicas
+            - maxRunners
             - queue
             type: object
             x-kubernetes-validations:
-            - message: minIdle must be less than or equal to maxReplicas
-              rule: self.minIdle <= self.maxReplicas
+            - message: minIdleRunners must be less than or equal to maxRunners
+              rule: self.minIdleRunners <= self.maxRunners
           status:
             description: status defines the observed state of RunnerPool
             properties:
-              busyReplicas:
-                description: busyReplicas is the number of agents confirmed to be
-                  running a job.
+              busyRunners:
+                description: busyRunners is the number of agents confirmed to be running
+                  a job.
                 format: int32
                 type: integer
               conditions:
@@ -276,9 +277,9 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              idleReplicas:
-                description: idleReplicas is the number of ready agents confirmed
-                  idle by their status endpoint.
+              idleRunners:
+                description: idleRunners is the number of ready agents confirmed idle
+                  by their status endpoint.
                 format: int32
                 type: integer
               observedGeneration:
@@ -286,13 +287,13 @@ spec:
                   was computed from.
                 format: int64
                 type: integer
-              readyReplicas:
-                description: readyReplicas is the number of agents in this pool that
+              readyRunners:
+                description: readyRunners is the number of agents in this pool that
                   are ready.
                 format: int32
                 type: integer
-              totalReplicas:
-                description: totalReplicas is the number of non-terminating agents
+              totalRunners:
+                description: totalRunners is the number of non-terminating agents
                   in this pool.
                 format: int32
                 type: integer

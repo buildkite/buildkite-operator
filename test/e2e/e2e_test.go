@@ -300,14 +300,14 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyAgentPodRunning, 3*time.Minute).Should(Succeed())
 
 			By("reporting the agent Pod in RunnerPool status")
-			verifyTotalReplicas := func(g Gomega) {
+			verifyTotalRunners := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "runnerpool/e2e-pool",
-					"-o", "jsonpath={.status.totalReplicas}", "-n", poolNamespace)
+					"-o", "jsonpath={.status.totalRunners}", "-n", poolNamespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("1"), "RunnerPool did not report its agent Pod")
 			}
-			Eventually(verifyTotalReplicas, time.Minute).Should(Succeed())
+			Eventually(verifyTotalRunners, time.Minute).Should(Succeed())
 
 			By("setting a controller owner reference on the agent Pod")
 			cmd = exec.Command("kubectl", "get", "pod/"+agentPodName, "-n", poolNamespace,

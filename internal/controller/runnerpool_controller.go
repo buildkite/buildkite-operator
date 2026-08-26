@@ -39,7 +39,7 @@ const (
 	agentHealthPortName       = "health"
 
 	defaultTerminationGracePeriodSeconds int64 = 3600
-	defaultMinIdle                       int32 = 1
+	defaultMinIdleRunners                int32 = 1
 	defaultIdleTimeoutSeconds            int32 = 10
 	defaultPollInterval                        = 10 * time.Second
 
@@ -145,7 +145,7 @@ func (r *RunnerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileReplicas(ctx, pool, pods, templateHash); err != nil {
+	if err := r.reconcileRunners(ctx, pool, pods, templateHash); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -278,7 +278,7 @@ func (r *RunnerPoolReconciler) clearIdleSince(ctx context.Context, pod *corev1.P
 	return nil
 }
 
-func (r *RunnerPoolReconciler) reconcileReplicas(
+func (r *RunnerPoolReconciler) reconcileRunners(
 	ctx context.Context,
 	pool *buildkitecomv1alpha1.RunnerPool,
 	pods []observedPod,
@@ -293,7 +293,7 @@ func (r *RunnerPoolReconciler) reconcileReplicas(
 
 	if total > desired {
 		confirmedIdle := countIdle(pods)
-		deleteCount := min(total-desired, confirmedIdle-desiredMinIdle(pool))
+		deleteCount := min(total-desired, confirmedIdle-desiredMinIdleRunners(pool))
 		if deleteCount > 0 {
 			return r.deleteAgentPods(ctx, pods, templateHash, deleteCount, false)
 		}
@@ -305,7 +305,7 @@ func (r *RunnerPoolReconciler) reconcileReplicas(
 		return nil
 	}
 	currentTotal, currentBusy := countCurrent(pods)
-	desiredCurrentTotal := min(currentBusy+desiredMinIdle(pool), pool.Spec.MaxReplicas)
+	desiredCurrentTotal := min(currentBusy+desiredMinIdleRunners(pool), pool.Spec.MaxRunners)
 	if currentTotal >= desiredCurrentTotal {
 		return nil
 	}
@@ -313,7 +313,7 @@ func (r *RunnerPoolReconciler) reconcileReplicas(
 	// Roll immutable template changes without deleting a busy agent. Surge by
 	// one when the hard cap permits it; at the cap, remove one idle stale Pod
 	// first and replace it on the next reconcile.
-	if total < pool.Spec.MaxReplicas {
+	if total < pool.Spec.MaxRunners {
 		return r.createAgentPods(ctx, pool, templateHash, 1)
 	}
 	return r.deleteAgentPods(ctx, pods, templateHash, 1, true)
@@ -423,10 +423,10 @@ func (r *RunnerPoolReconciler) reconcileStatus(
 	pods []observedPod,
 ) error {
 	updated := pool.DeepCopy()
-	updated.Status.TotalReplicas = int32(len(pods))
-	updated.Status.IdleReplicas = countIdle(pods)
-	updated.Status.BusyReplicas = countBusy(pods)
-	updated.Status.ReadyReplicas = countReady(pods)
+	updated.Status.TotalRunners = int32(len(pods))
+	updated.Status.IdleRunners = countIdle(pods)
+	updated.Status.BusyRunners = countBusy(pods)
+	updated.Status.ReadyRunners = countReady(pods)
 	updated.Status.ObservedGeneration = pool.Generation
 	meta.SetStatusCondition(&updated.Status.Conditions, readyCondition(pool, pods))
 
@@ -468,7 +468,7 @@ func readyCondition(pool *buildkitecomv1alpha1.RunnerPool, pods []observedPod) m
 }
 
 func desiredTotal(pool *buildkitecomv1alpha1.RunnerPool, pods []observedPod) int32 {
-	return min(countBusy(pods)+desiredMinIdle(pool), pool.Spec.MaxReplicas)
+	return min(countBusy(pods)+desiredMinIdleRunners(pool), pool.Spec.MaxRunners)
 }
 
 func countBusy(pods []observedPod) int32 {
@@ -636,11 +636,11 @@ func desiredTerminationGracePeriodSeconds(pool *buildkitecomv1alpha1.RunnerPool)
 	return &gracePeriod
 }
 
-func desiredMinIdle(pool *buildkitecomv1alpha1.RunnerPool) int32 {
-	if pool.Spec.MinIdle != nil {
-		return *pool.Spec.MinIdle
+func desiredMinIdleRunners(pool *buildkitecomv1alpha1.RunnerPool) int32 {
+	if pool.Spec.MinIdleRunners != nil {
+		return *pool.Spec.MinIdleRunners
 	}
-	return defaultMinIdle
+	return defaultMinIdleRunners
 }
 
 func desiredIdleTimeoutSeconds(pool *buildkitecomv1alpha1.RunnerPool) int32 {

@@ -100,11 +100,11 @@ var _ = Describe("RunnerPool Controller", func() {
 		return pods
 	}
 
-	setPoolScaling := func(maxReplicas, minIdle, idleTimeout int32) {
+	setPoolScaling := func(maxRunners, minIdleRunners, idleTimeout int32) {
 		GinkgoHelper()
 		pool := currentPool()
-		pool.Spec.MaxReplicas = maxReplicas
-		pool.Spec.MinIdle = ptrTo(minIdle)
+		pool.Spec.MaxRunners = maxRunners
+		pool.Spec.MinIdleRunners = ptrTo(minIdleRunners)
 		pool.Spec.IdleTimeoutSeconds = ptrTo(idleTimeout)
 		Expect(k8sClient.Update(ctx, pool)).To(Succeed())
 	}
@@ -178,9 +178,9 @@ var _ = Describe("RunnerPool Controller", func() {
 		Expect(k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
 			ObjectMeta: metav1.ObjectMeta{Name: poolName, Namespace: namespace},
 			Spec: buildkitecomv1alpha1.RunnerPoolSpec{
-				Queue:       queueName,
-				MaxReplicas: 3,
-				Image:       "buildkite/agent:3.90.0",
+				Queue:      queueName,
+				MaxRunners: 3,
+				Image:      "buildkite/agent:3.90.0",
 				AgentTokenSecretRef: corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
 					Key:                  agentTokenSecretKey,
@@ -228,16 +228,16 @@ var _ = Describe("RunnerPool Controller", func() {
 		pod = setPodStatus(pod, AgentStatusIdle, true)
 		reconcileNow()
 		status := currentPool().Status
-		Expect(status.TotalReplicas).To(BeEquivalentTo(1))
-		Expect(status.IdleReplicas).To(BeEquivalentTo(1))
-		Expect(status.BusyReplicas).To(BeZero())
-		Expect(status.ReadyReplicas).To(BeEquivalentTo(1))
+		Expect(status.TotalRunners).To(BeEquivalentTo(1))
+		Expect(status.IdleRunners).To(BeEquivalentTo(1))
+		Expect(status.BusyRunners).To(BeZero())
+		Expect(status.ReadyRunners).To(BeEquivalentTo(1))
 		ready := meta.FindStatusCondition(status.Conditions, buildkitecomv1alpha1.RunnerPoolConditionReady)
 		Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		Expect(ready.Reason).To(Equal("AgentsReady"))
 	})
 
-	It("adds idle capacity as agents become busy and stops at maxReplicas", func() {
+	It("adds idle capacity as agents become busy and stops at maxRunners", func() {
 		reconcileNow()
 		pods := agentPods()
 		setPodStatus(pods[0], AgentStatusBusy, true)
@@ -258,7 +258,7 @@ var _ = Describe("RunnerPool Controller", func() {
 
 		reconcileNow()
 		Expect(agentPods()).To(HaveLen(3))
-		Expect(currentPool().Status.BusyReplicas).To(BeEquivalentTo(3))
+		Expect(currentPool().Status.BusyRunners).To(BeEquivalentTo(3))
 	})
 
 	It("evicts only confirmed idle surplus after the timeout", func() {
@@ -295,9 +295,9 @@ var _ = Describe("RunnerPool Controller", func() {
 		reconcileNow()
 		Expect(agentPods()).To(HaveLen(4))
 		status := currentPool().Status
-		Expect(status.TotalReplicas).To(BeEquivalentTo(4))
-		Expect(status.IdleReplicas).To(BeEquivalentTo(1))
-		Expect(status.BusyReplicas).To(BeZero())
+		Expect(status.TotalRunners).To(BeEquivalentTo(4))
+		Expect(status.IdleRunners).To(BeEquivalentTo(1))
+		Expect(status.BusyRunners).To(BeZero())
 	})
 
 	It("never evicts busy agents and resets their observed idle time", func() {
@@ -345,7 +345,7 @@ var _ = Describe("RunnerPool Controller", func() {
 		Expect(candidate.Annotations).NotTo(HaveKey(idleSinceAnnotation))
 	})
 
-	It("scales to zero and remains dormant when minIdle is zero", func() {
+	It("scales to zero and remains dormant when minIdleRunners is zero", func() {
 		setPoolScaling(3, 0, 0)
 		reconcileNow()
 		reconcileNow()
@@ -454,7 +454,7 @@ var _ = Describe("RunnerPool Controller", func() {
 		checker.errors[pod.Status.PodIP] = errors.New("unreachable")
 		reconcileNow()
 		Expect(agentPods()[0].Annotations).NotTo(HaveKey(idleSinceAnnotation))
-		Expect(currentPool().Status.IdleReplicas).To(BeZero())
+		Expect(currentPool().Status.IdleRunners).To(BeZero())
 	})
 
 	It("does not rewrite unchanged status", func() {
@@ -468,28 +468,28 @@ var _ = Describe("RunnerPool Controller", func() {
 		Expect(currentPool().ResourceVersion).To(Equal(before))
 	})
 
-	It("rejects minIdle greater than maxReplicas", func() {
+	It("rejects minIdleRunners greater than maxRunners", func() {
 		err := k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
 			ObjectMeta: metav1.ObjectMeta{Name: "invalid-scaling", Namespace: namespace},
 			Spec: buildkitecomv1alpha1.RunnerPoolSpec{
-				Queue:       queueName,
-				MaxReplicas: 1,
-				MinIdle:     ptrTo(int32(2)),
+				Queue:          queueName,
+				MaxRunners:     1,
+				MinIdleRunners: ptrTo(int32(2)),
 				AgentTokenSecretRef: corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
 					Key:                  agentTokenSecretKey,
 				},
 			},
 		})
-		Expect(err).To(MatchError(ContainSubstring("minIdle must be less than or equal to maxReplicas")))
+		Expect(err).To(MatchError(ContainSubstring("minIdleRunners must be less than or equal to maxRunners")))
 	})
 
 	It("rejects a name too long to fit in a label value", func() {
 		err := k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
 			ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 64), Namespace: namespace},
 			Spec: buildkitecomv1alpha1.RunnerPoolSpec{
-				Queue:       queueName,
-				MaxReplicas: 1,
+				Queue:      queueName,
+				MaxRunners: 1,
 				AgentTokenSecretRef: corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
 					Key:                  agentTokenSecretKey,
@@ -503,8 +503,8 @@ var _ = Describe("RunnerPool Controller", func() {
 		err := k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
 			ObjectMeta: metav1.ObjectMeta{Name: "with-claims", Namespace: namespace},
 			Spec: buildkitecomv1alpha1.RunnerPoolSpec{
-				Queue:       queueName,
-				MaxReplicas: 1,
+				Queue:      queueName,
+				MaxRunners: 1,
 				AgentTokenSecretRef: corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
 					Key:                  agentTokenSecretKey,
