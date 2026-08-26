@@ -143,6 +143,42 @@ var _ = Describe("RunnerPool Controller", func() {
 		return *current
 	}
 
+	// startDraining begins deletion of pod while keeping it around, standing
+	// in for a kubelet that has not yet finished stopping the agent. envtest
+	// has no scheduler, so unscheduled Pods are otherwise deleted immediately;
+	// a finalizer reproduces the same lingering-Terminating-Pod semantics
+	// portably.
+	const testFinalizer = "buildkite.com/test-drain"
+	startDraining := func(pod corev1.Pod) corev1.Pod {
+		GinkgoHelper()
+		current := &corev1.Pod{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&pod), current)).To(Succeed())
+		current.Finalizers = append(current.Finalizers, testFinalizer)
+		Expect(k8sClient.Update(ctx, current)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, current)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&pod), current)).To(Succeed())
+		return *current
+	}
+
+	// finalizeTerminatingPods simulates the kubelet finishing termination by
+	// removing the finalizer, letting Kubernetes complete the deletion.
+	finalizeTerminatingPods := func() {
+		GinkgoHelper()
+		list := &corev1.PodList{}
+		Expect(k8sClient.List(ctx, list,
+			client.InNamespace(namespace),
+			client.MatchingLabels{poolLabel: poolName},
+		)).To(Succeed())
+		for i := range list.Items {
+			pod := &list.Items[i]
+			if pod.DeletionTimestamp.IsZero() {
+				continue
+			}
+			pod.Finalizers = slices.DeleteFunc(pod.Finalizers, func(f string) bool { return f == testFinalizer })
+			Expect(k8sClient.Update(ctx, pod)).To(Succeed())
+		}
+	}
+
 	createAgentPod := func() corev1.Pod {
 		GinkgoHelper()
 		pool := currentPool()
@@ -428,6 +464,24 @@ var _ = Describe("RunnerPool Controller", func() {
 		Expect(pods).To(HaveLen(1))
 		Expect(pods[0].Name).NotTo(Equal(oldPod.Name))
 		Expect(pods[0].Spec.Containers[0].Image).To(Equal(updatedAgentImage))
+	})
+
+	It("counts a draining Pod against maxRunners until it actually disappears", func() {
+		setPoolScaling(1, 1, 0)
+		reconcileNow()
+		pod := setPodStatus(agentPods()[0], AgentStatusIdle, true)
+		setIdleSince(pod, time.Now())
+		pod = startDraining(pod)
+		Expect(pod.DeletionTimestamp).NotTo(BeNil())
+
+		reconcileNow()
+		Expect(agentPods()).To(BeEmpty())
+		status := currentPool().Status
+		Expect(status.TotalRunners).To(BeZero())
+
+		finalizeTerminatingPods()
+		reconcileNow()
+		Expect(agentPods()).To(HaveLen(1))
 	})
 
 	It("replaces terminal Pods", func() {

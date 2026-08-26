@@ -10,13 +10,14 @@ import (
 )
 
 type observedPod struct {
-	pod       *corev1.Pod
-	busy      bool
-	idle      bool
-	ready     bool
-	stale     bool
-	eligible  bool
-	idleSince time.Time
+	pod         *corev1.Pod
+	busy        bool
+	idle        bool
+	ready       bool
+	stale       bool
+	eligible    bool
+	terminating bool
+	idleSince   time.Time
 }
 
 func countBusy(pods []observedPod) int32 {
@@ -53,6 +54,16 @@ func countStale(pods []observedPod) int32 {
 	var count int32
 	for i := range pods {
 		if pods[i].stale {
+			count++
+		}
+	}
+	return count
+}
+
+func countNonTerminating(pods []observedPod) int32 {
+	var count int32
+	for i := range pods {
+		if !pods[i].terminating {
 			count++
 		}
 	}

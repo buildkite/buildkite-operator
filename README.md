@@ -85,7 +85,9 @@ agent to be created, up to `maxRunners`. A confirmed-idle surplus is removed
 after `idleTimeoutSeconds`; warming or unreachable Pods count toward the total
 but are never treated as idle scale-down candidates. Each eviction is rechecked
 immediately before deletion, and the agent's first SIGTERM drains any job that
-raced with that check.
+raced with that check. A Pod being deleted keeps counting toward `maxRunners`
+until Kubernetes finishes removing it, so a draining agent cannot be replaced
+early and briefly push the pool over its hard cap.
 
 `minIdleRunners: 0` allows scale-to-zero. Because this operator deliberately
 does not query queue depth, a pool at zero remains dormant until

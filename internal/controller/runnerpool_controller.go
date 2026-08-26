@@ -104,7 +104,14 @@ func (r *RunnerPoolReconciler) observeAgentPods(
 	observed := make([]observedPod, 0, len(podList.Items))
 	for i := range podList.Items {
 		pod := &podList.Items[i]
-		if !metav1.IsControlledBy(pod, pool) || !pod.DeletionTimestamp.IsZero() {
+		if !metav1.IsControlledBy(pod, pool) {
+			continue
+		}
+		if !pod.DeletionTimestamp.IsZero() {
+			// Still holds a capacity slot until Kubernetes finishes deleting it,
+			// so it must stay in the pool's total to keep maxRunners a hard cap.
+			// Excluded from polling and eviction since it is already draining.
+			observed = append(observed, observedPod{pod: pod, terminating: true})
 			continue
 		}
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
@@ -349,7 +356,7 @@ func (r *RunnerPoolReconciler) reconcileStatus(
 	pods []observedPod,
 ) error {
 	updated := pool.DeepCopy()
-	updated.Status.TotalRunners = int32(len(pods))
+	updated.Status.TotalRunners = countNonTerminating(pods)
 	updated.Status.IdleRunners = countIdle(pods)
 	updated.Status.BusyRunners = countBusy(pods)
 	updated.Status.ReadyRunners = countReady(pods)
@@ -363,7 +370,7 @@ func (r *RunnerPoolReconciler) reconcileStatus(
 }
 
 func readyCondition(pool *buildkitecomv1alpha1.RunnerPool, pods []observedPod) metav1.Condition {
-	total := int32(len(pods))
+	total := countNonTerminating(pods)
 	desired := desiredTotal(pool, pods)
 	ready := countReady(pods)
 	stale := countStale(pods)
