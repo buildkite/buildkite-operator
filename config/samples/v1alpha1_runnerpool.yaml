@@ -24,7 +24,31 @@ spec:
   maxRunners: 20
   minIdleRunners: 3
   idleTimeoutSeconds: 10
-  image: buildkite/agent:3
+  agentImage: buildkite/agent:3
   agentTokenSecretRef:
     name: buildkite-agent-token
     key: token
+  terminationGracePeriodSeconds: 3600
+  docker:
+    daemonImage: docker:29.7.2-dind
+    supervisorImage: docker:29.7.2-cli
+    # configSecretRef:
+    #   name: registry-credentials
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+      ephemeral-storage: 10Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+      ephemeral-storage: 20Gi
+  # Privileged runners should use dedicated, tainted nodes. Uncomment these
+  # fields after applying matching labels and taints to suitable nodes.
+  # nodeSelector:
+  #   buildkite.com/runner: "true"
+  # tolerations:
+  #   - key: buildkite.com/runner
+  #     operator: Equal
+  #     value: "true"
+  #     effect: NoSchedule

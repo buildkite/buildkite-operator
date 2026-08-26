@@ -13,6 +13,38 @@ metadata:
 stringData:
   token: not-a-real-agent-token
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: e2e-http
+  namespace: buildkite-operator-e2e
+spec:
+  selector:
+    app: e2e-http
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2e-http
+  namespace: buildkite-operator-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: e2e-http
+  template:
+    metadata:
+      labels:
+        app: e2e-http
+    spec:
+      containers:
+        - name: http
+          image: registry.k8s.io/e2e-test-images/agnhost:2.53
+          args: ["netexec", "--http-port=8080"]
+---
 apiVersion: buildkite.com/v1alpha1
 kind: RunnerPool
 metadata:
@@ -23,11 +55,11 @@ spec:
   maxRunners: 2
   minIdleRunners: 1
   idleTimeoutSeconds: 10
-  terminationGracePeriodSeconds: 5
-  # This fixture verifies Pod ownership and lifecycle without contacting
-  # Buildkite. The pause image does not implement the agent health endpoints,
-  # so autoscaling status behavior remains covered by controller tests.
-  image: registry.k8s.io/pause:3.10
+  terminationGracePeriodSeconds: 30
+  # pause supplies a long-running public fixture for the inner agent without
+  # contacting Buildkite. Autoscaling health behavior remains covered by
+  # controller tests because pause does not implement the agent endpoints.
+  agentImage: registry.k8s.io/pause:3.10
   agentTokenSecretRef:
     name: buildkite-agent-token
     key: token

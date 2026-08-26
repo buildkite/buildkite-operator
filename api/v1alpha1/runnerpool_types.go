@@ -13,6 +13,31 @@ import (
 // agents are running and available.
 const RunnerPoolConditionReady = "Ready"
 
+// RunnerPoolDockerSpec configures the private Docker daemon used by each
+// RunnerPool Pod.
+type RunnerPoolDockerSpec struct {
+	// daemonImage is the image that runs the rootful Docker daemon. It must
+	// support the official dind entrypoint and dockerd invocation used by the
+	// controller.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:default="docker:29.7.2-dind"
+	// +optional
+	DaemonImage string `json:"daemonImage,omitempty"`
+
+	// supervisorImage is the image that runs the agent supervisor. It must
+	// provide a POSIX /bin/sh and a Docker CLI compatible with daemonImage.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:default="docker:29.7.2-cli"
+	// +optional
+	SupervisorImage string `json:"supervisorImage,omitempty"`
+
+	// configSecretRef references a kubernetes.io/dockerconfigjson Secret used
+	// for image pulls by Kubernetes, the supervisor, and nested job containers.
+	// +kubebuilder:validation:XValidation:rule="has(self.name) && size(self.name) > 0",message="configSecretRef.name must not be empty"
+	// +optional
+	ConfigSecretRef *corev1.LocalObjectReference `json:"configSecretRef,omitempty"`
+}
+
 // +kubebuilder:validation:XValidation:rule="self.minIdleRunners <= self.maxRunners",message="minIdleRunners must be less than or equal to maxRunners"
 
 // RunnerPoolSpec defines the desired state of RunnerPool
@@ -50,11 +75,12 @@ type RunnerPoolSpec struct {
 	// +optional
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 
-	// image is the Buildkite agent container image to run.
+	// agentImage is the Buildkite agent container image to run inside the
+	// Pod-local Docker daemon.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:default="buildkite/agent:3"
 	// +optional
-	Image string `json:"image,omitempty"`
+	AgentImage string `json:"agentImage,omitempty"`
 
 	// agentTokenSecretRef references the secret key holding the Buildkite agent
 	// token that agents in this pool authenticate with.
@@ -62,7 +88,8 @@ type RunnerPoolSpec struct {
 	// +kubebuilder:validation:XValidation:rule="has(self.name) && size(self.name) > 0",message="agentTokenSecretRef.name must not be empty"
 	AgentTokenSecretRef corev1.SecretKeySelector `json:"agentTokenSecretRef"`
 
-	// resources are the compute resources for each agent container.
+	// resources are the compute resources for the Docker daemon container,
+	// which accounts for the inner agent and all nested job activity.
 	//
 	// resources.claims is not supported: the controller does not model the
 	// corresponding pod-level spec.resourceClaims, so a container claim would
@@ -70,6 +97,19 @@ type RunnerPoolSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="!has(self.claims)",message="resources.claims is not supported"
 	Resources corev1.ResourceRequirements `json:"resources,omitzero"`
+
+	// docker configures the Pod-local Docker daemon and its supervisor.
+	// +kubebuilder:default={}
+	// +optional
+	Docker *RunnerPoolDockerSpec `json:"docker,omitempty"`
+
+	// nodeSelector selects nodes for the privileged runner Pods.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// tolerations allow runner Pods to be scheduled onto tainted nodes.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // RunnerPoolStatus defines the observed state of RunnerPool.

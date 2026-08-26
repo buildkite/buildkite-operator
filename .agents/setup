@@ -4,6 +4,19 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+if ! command -v docker >/dev/null 2>&1; then
+	printf '%s\n' 'Installing Docker for Kind end-to-end tests'
+	sudo install -m 0755 -d /etc/apt/keyrings
+	sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+	sudo chmod a+r /etc/apt/keyrings/docker.asc
+	printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian %s stable\n' \
+		"$(dpkg --print-architecture)" \
+		"$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")" |
+		sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+	sudo apt-get update
+	sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+fi
+
 mise_bin="$HOME/.local/bin/mise"
 if [[ ! -x "$mise_bin" ]]; then
 	printf '%s\n' 'Installing mise'

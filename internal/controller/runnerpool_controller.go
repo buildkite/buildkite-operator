@@ -24,11 +24,28 @@ import (
 )
 
 const (
-	agentContainerName = "agent"
-	defaultAgentImage  = "buildkite/agent:3"
+	dockerdContainerName    = "dockerd"
+	supervisorContainerName = "supervisor"
 
-	agentHealthPort     int32 = 8080
-	agentHealthPortName       = "health"
+	defaultAgentImage      = "buildkite/agent:3"
+	defaultDaemonImage     = "docker:29.7.2-dind"
+	defaultSupervisorImage = "docker:29.7.2-cli"
+
+	agentHealthPort        int32 = 8080
+	agentHealthPortName          = "health"
+	dockerGroupID          int64 = 2375
+	supervisorUID          int64 = 1000
+	shellPath                    = "/bin/sh"
+	dockerRunPath                = "/var/run"
+	dockerSocketPath             = dockerRunPath + "/docker.sock"
+	dockerHost                   = "unix://" + dockerSocketPath
+	dockerConfigPath             = "/docker-config"
+	agentImageEnvName            = "AGENT_IMAGE"
+	dockerHostEnvName            = "DOCKER_HOST"
+	dockerDataVolumeName         = "docker-data"
+	dockerRunVolumeName          = "docker-run"
+	workspaceVolumeName          = "workspace"
+	dockerConfigVolumeName       = "docker-config"
 
 	defaultTerminationGracePeriodSeconds int64 = 3600
 	defaultMinIdleRunners                int32 = 1

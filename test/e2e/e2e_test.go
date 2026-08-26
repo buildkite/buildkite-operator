@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -268,7 +269,7 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 
 	Context("RunnerPool", func() {
-		It("reconciles a RunnerPool into directly owned agent Pods", func() {
+		It("runs and supervises an autoscaled agent inside a private Docker daemon", func() {
 			By("applying a RunnerPool and the agent token secret it references")
 			cmd := exec.Command("kubectl", "apply", "-f", runnerPoolManifest)
 			_, err := utils.Run(cmd)
@@ -279,6 +280,12 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "delete", "-f", runnerPoolManifest, "--ignore-not-found")
 				_, _ = utils.Run(cmd)
 			})
+
+			By("waiting for the in-cluster HTTP fixture to become available")
+			cmd = exec.Command("kubectl", "wait", "deployment/e2e-http",
+				"--for=condition=Available", "-n", poolNamespace, "--timeout=3m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "HTTP fixture never became available")
 
 			By("waiting for the operator to create an agent Pod")
 			var agentPodName string
@@ -299,7 +306,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyAgentPodRunning, 3*time.Minute).Should(Succeed())
 
-			By("reporting the agent Pod in RunnerPool status")
+			By("reporting the runner Pod in RunnerPool status")
 			verifyTotalRunners := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "runnerpool/e2e-pool",
 					"-o", "jsonpath={.status.totalRunners}", "-n", poolNamespace)
@@ -316,17 +323,135 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(Equal("RunnerPool/e2e-pool"))
 
-			By("passing the queue through to the agents as a tag")
-			cmd = exec.Command("kubectl", "get", "pod/"+agentPodName, "-n", poolNamespace,
-				"-o", "jsonpath={.spec.containers[0].env[?(@.name=='BUILDKITE_AGENT_TAGS')].value}")
-			output, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("queue=e2e"))
+			docker := func(args ...string) (string, error) {
+				GinkgoHelper()
+				kubectlArgs := []string{"exec", agentPodName, "-n", poolNamespace, "-c", "supervisor", "--", "docker"}
+				cmd := exec.Command("kubectl", append(kubectlArgs, args...)...)
+				output, err := utils.Run(cmd)
+				return strings.TrimSpace(output), err
+			}
 
-			By("garbage collecting agent Pods when the pool is deleted")
+			By("verifying dockerd and the inner agent are running")
+			output, err = docker("info", "--format", "{{.ServerVersion}}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).NotTo(BeEmpty())
+			var agentID string
+			Eventually(func(g Gomega) {
+				var err error
+				agentID, err = docker("inspect", "--format", "{{.Id}}", "buildkite-agent")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(agentID).NotTo(BeEmpty())
+			}, 2*time.Minute, time.Second).Should(Succeed())
+			healthPort, err := docker("inspect", "--format",
+				"{{(index (index .HostConfig.PortBindings \"8080/tcp\") 0).HostPort}}", "buildkite-agent")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(healthPort).To(Equal("8080"))
+			agentEnv, err := docker("inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", "buildkite-agent")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(agentEnv).To(ContainSubstring("BUILDKITE_AGENT_TAGS=queue=e2e"))
+			Expect(agentEnv).To(ContainSubstring("BUILDKITE_AGENT_HEALTH_CHECK_ADDR=0.0.0.0:8080"))
+
+			By("launching a Docker client that launches a nested job container")
+			output, err = docker("run", "--rm",
+				"--volume", "/var/run/docker.sock:/var/run/docker.sock",
+				"docker:29.7.2-cli",
+				"docker", "run", "--rm", "busybox:1.37", "echo", "nested-ok")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("nested-ok"))
+
+			By("sharing workspace paths with nested containers")
+			_, err = docker("run", "--rm", "--volume", "/workspace:/workspace",
+				"busybox:1.37", "sh", "-c", "echo workspace-ok > /workspace/e2e.txt")
+			Expect(err).NotTo(HaveOccurred())
+			output, err = docker("run", "--rm", "--volume", "/workspace:/workspace",
+				"busybox:1.37", "cat", "/workspace/e2e.txt")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("workspace-ok"))
+
+			By("reaching a Kubernetes Service from an inner Docker container")
+			output, err = docker("run", "--rm", "busybox:1.37", "wget", "-qO-",
+				"http://e2e-http.buildkite-operator-e2e.svc.cluster.local/hostname")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).NotTo(BeEmpty())
+
+			By("replacing the inner agent after it exits")
+			_, err = docker("rm", "--force", "buildkite-agent")
+			Expect(err).NotTo(HaveOccurred())
+			replacementStarted := time.Now()
+			var replacementID string
+			Eventually(func(g Gomega) {
+				var err error
+				replacementID, err = docker("inspect", "--format", "{{.Id}}", "buildkite-agent")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(replacementID).NotTo(BeEmpty())
+				g.Expect(replacementID).NotTo(Equal(agentID))
+			}, 2*time.Minute, time.Second).Should(Succeed())
+			Expect(time.Since(replacementStarted)).To(BeNumerically(">=", 4*time.Second))
+
+			By("adopting the inner agent when the supervisor restarts")
+			cmd = exec.Command("kubectl", "get", "pod", agentPodName, "-n", poolNamespace,
+				"-o", "jsonpath={.status.containerStatuses[?(@.name=='supervisor')].restartCount}")
+			restartCount, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "get", "pod", agentPodName, "-n", poolNamespace,
+				"-o", "jsonpath={.spec.nodeName}")
+			nodeName, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "get", "pod", agentPodName, "-n", poolNamespace,
+				"-o", "jsonpath={.status.containerStatuses[?(@.name=='supervisor')].containerID}")
+			supervisorContainerID, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			supervisorContainerID = strings.TrimPrefix(strings.TrimSpace(supervisorContainerID), "containerd://")
+			cmd = exec.Command("docker", "exec", strings.TrimSpace(nodeName),
+				"ctr", "--namespace", "k8s.io", "tasks", "kill", "--signal", "SIGKILL", supervisorContainerID)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to crash the supervisor container")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", agentPodName, "-n", poolNamespace,
+					"-o", "jsonpath={.status.containerStatuses[?(@.name=='supervisor')].restartCount}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(Equal(restartCount))
+			}, time.Minute, time.Second).Should(Succeed())
+			Eventually(func(g Gomega) {
+				output, err := docker("inspect", "--format", "{{.Id}}", "buildkite-agent")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal(replacementID))
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("cleaning child containers and networks while retaining images and workspace")
+			_, err = docker("run", "--detach", "--name", "stale-child", "registry.k8s.io/pause:3.10")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = docker("network", "create", "stale-network")
+			Expect(err).NotTo(HaveOccurred())
+			cachedImageID, err := docker("image", "inspect", "--format", "{{.Id}}", "busybox:1.37")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = docker("rm", "--force", "buildkite-agent")
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				output, err := docker("ps", "--all", "--quiet", "--filter", "name=stale-child")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(BeEmpty())
+				output, err = docker("network", "ls", "--quiet", "--filter", "name=stale-network")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(BeEmpty())
+			}, time.Minute, time.Second).Should(Succeed())
+			output, err = docker("image", "inspect", "--format", "{{.Id}}", "busybox:1.37")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal(cachedImageID))
+			output, err = docker("run", "--rm", "--volume", "/workspace:/workspace",
+				"busybox:1.37", "cat", "/workspace/e2e.txt")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("workspace-ok"))
+
+			By("gracefully terminating and garbage collecting the runner Pod")
 			cmd = exec.Command("kubectl", "delete", "runnerpool/e2e-pool", "-n", poolNamespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete the RunnerPool")
+			cmd = exec.Command("kubectl", "wait", "pod/"+agentPodName, "--for=delete",
+				"-n", poolNamespace, "--timeout=45s")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Runner Pod did not terminate within its grace period")
 
 			verifyAgentPodsGone := func(g Gomega) {
 				// -o name prints nothing when there are no matches; --no-headers

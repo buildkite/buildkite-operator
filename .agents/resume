@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' 'No persistent services require resuming'
+if command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then
+	service_status="$(amp orb service status docker-daemon 2>&1 || true)"
+	if grep -q 'could not be found' <<<"$service_status"; then
+		amp orb service start docker-daemon --command 'sudo dockerd --group $(id -g)' >/dev/null
+	elif ! grep -q 'Active: active' <<<"$service_status"; then
+		amp orb service restart docker-daemon >/dev/null
+	fi
+fi

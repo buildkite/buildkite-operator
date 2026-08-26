@@ -55,6 +55,13 @@ spec:
           spec:
             description: spec defines the desired state of RunnerPool
             properties:
+              agentImage:
+                default: buildkite/agent:3
+                description: |-
+                  agentImage is the Buildkite agent container image to run inside the
+                  Pod-local Docker daemon.
+                minLength: 1
+                type: string
               agentTokenSecretRef:
                 description: |-
                   agentTokenSecretRef references the secret key holding the Buildkite agent
@@ -83,6 +90,46 @@ spec:
                 x-kubernetes-validations:
                 - message: agentTokenSecretRef.name must not be empty
                   rule: has(self.name) && size(self.name) > 0
+              docker:
+                default: {}
+                description: docker configures the Pod-local Docker daemon and its
+                  supervisor.
+                properties:
+                  configSecretRef:
+                    description: |-
+                      configSecretRef references a kubernetes.io/dockerconfigjson Secret used
+                      for image pulls by Kubernetes, the supervisor, and nested job containers.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                    x-kubernetes-validations:
+                    - message: configSecretRef.name must not be empty
+                      rule: has(self.name) && size(self.name) > 0
+                  daemonImage:
+                    default: docker:29.7.2-dind
+                    description: |-
+                      daemonImage is the image that runs the rootful Docker daemon. It must
+                      support the official dind entrypoint and dockerd invocation used by the
+                      controller.
+                    minLength: 1
+                    type: string
+                  supervisorImage:
+                    default: docker:29.7.2-cli
+                    description: |-
+                      supervisorImage is the image that runs the agent supervisor. It must
+                      provide a POSIX /bin/sh and a Docker CLI compatible with daemonImage.
+                    minLength: 1
+                    type: string
+                type: object
               idleTimeoutSeconds:
                 default: 10
                 description: |-
@@ -91,11 +138,6 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
-              image:
-                default: buildkite/agent:3
-                description: image is the Buildkite agent container image to run.
-                minLength: 1
-                type: string
               maxRunners:
                 description: maxRunners is the maximum number of agents that may run
                   in this pool.
@@ -112,6 +154,12 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: nodeSelector selects nodes for the privileged runner
+                  Pods.
+                type: object
               queue:
                 description: queue is the Buildkite queue that agents in this pool
                   register with.
@@ -119,7 +167,8 @@ spec:
                 type: string
               resources:
                 description: |-
-                  resources are the compute resources for each agent container.
+                  resources are the compute resources for the Docker daemon container,
+                  which accounts for the inner agent and all nested job activity.
 
                   resources.claims is not supported: the controller does not model the
                   corresponding pod-level spec.resourceClaims, so a container claim would
@@ -192,6 +241,47 @@ spec:
                 format: int64
                 minimum: 1
                 type: integer
+              tolerations:
+                description: tolerations allow runner Pods to be scheduled onto tainted
+                  nodes.
+                items:
+                  description: |-
+                    The pod this Toleration is attached to tolerates any taint that matches
+                    the triple <key,value,effect> using the matching operator <operator>.
+                  properties:
+                    effect:
+                      description: |-
+                        Effect indicates the taint effect to match. Empty means match all taint effects.
+                        When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                      type: string
+                    key:
+                      description: |-
+                        Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                        If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                      type: string
+                    operator:
+                      description: |-
+                        Operator represents a key's relationship to the value.
+                        Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
+                        Exists is equivalent to wildcard for value, so that a pod can
+                        tolerate all taints of a particular category.
+                        Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        TolerationSeconds represents the period of time the toleration (which must be
+                        of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                        it is not set, which means tolerate the taint forever (do not evict). Zero and
+                        negative values will be treated as 0 (evict immediately) by the system.
+                      format: int64
+                      type: integer
+                    value:
+                      description: |-
+                        Value is the taint value the toleration matches to.
+                        If the operator is Exists, the value should be empty, otherwise just a regular string.
+                      type: string
+                  type: object
+                type: array
             required:
             - agentTokenSecretRef
             - maxRunners
