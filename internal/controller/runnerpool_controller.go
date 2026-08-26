@@ -7,10 +7,9 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"maps"
 	"slices"
+	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,93 +18,350 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	buildkitecomv1alpha1 "github.com/buildkite/buildkite-operator/api/v1alpha1"
 )
 
 const (
-	// agentContainerName is the name of the Buildkite agent container within
-	// each pod of a pool's Deployment.
 	agentContainerName = "agent"
+	defaultAgentImage  = "buildkite/agent:3"
 
-	// defaultAgentImage matches the CRD default for spec.image, and is applied
-	// again here so a RunnerPool built in Go (rather than admitted by the API
-	// server) still reconciles into something runnable.
-	defaultAgentImage = "buildkite/agent:3"
+	agentHealthPort     int32 = 8080
+	agentHealthPortName       = "health"
 
-	// defaultReplicas matches the CRD default for spec.replicas.
-	defaultReplicas int32 = 1
+	defaultTerminationGracePeriodSeconds int64 = 3600
+	defaultMinIdleRunners                int32 = 1
+	defaultIdleTimeoutSeconds            int32 = 10
+	defaultPollInterval                        = 10 * time.Second
 
-	// poolLabel names the RunnerPool that owns a resource.
-	poolLabel = "buildkite.com/runner-pool"
+	poolLabel                 = "buildkite.com/runner-pool"
+	idleSinceAnnotation       = "buildkite.com/idle-since"
+	podTemplateHashAnnotation = "buildkite.com/pod-template-hash"
 )
 
-// RunnerPoolReconciler reconciles a RunnerPool object
+// RunnerPoolReconciler reconciles a RunnerPool object.
 type RunnerPoolReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme        *runtime.Scheme
+	StatusChecker AgentStatusChecker
+	PollInterval  time.Duration
 }
 
 // +kubebuilder:rbac:groups=buildkite.com,resources=runnerpools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=buildkite.com,resources=runnerpools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=buildkite.com,resources=runnerpools/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile drives a RunnerPool towards its desired state: a Deployment of
-// Buildkite agents registered with the pool's queue.
+// Reconcile drives a RunnerPool towards its idle buffer using directly owned
+// agent Pods so scale-down can select a confirmed-idle agent.
 func (r *RunnerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	pool := &buildkitecomv1alpha1.RunnerPool{}
 	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
-		// A deleted pool takes its Deployment with it via the owner reference,
-		// so there is nothing left to do.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      deploymentName(pool),
-			Namespace: pool.Namespace,
-		},
-	}
-
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
-		return r.applyAgentDeployment(pool, deployment)
-	})
+	templateHash, err := desiredPodTemplateHash(pool)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconciling deployment %s: %w", deployment.Name, err)
-	}
-	if op != controllerutil.OperationResultNone {
-		log.Info("reconciled agent deployment", "deployment", deployment.Name, "operation", op)
+		return ctrl.Result{}, fmt.Errorf("hashing Pod template for RunnerPool %s: %w", pool.Name, err)
 	}
 
-	if err := r.reconcileStatus(ctx, pool, deployment); err != nil {
-		// A conflict means someone else wrote the pool first; the next reconcile
-		// recomputes status from fresh state.
+	pods, err := r.observeAgentPods(ctx, pool, templateHash)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileRunners(ctx, pool, pods, templateHash); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileStatus(ctx, pool, pods); err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("updating status of runnerpool %s: %w", pool.Name, err)
+		return ctrl.Result{}, fmt.Errorf("updating status of RunnerPool %s: %w", pool.Name, err)
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: r.pollInterval(pool)}, nil
 }
 
-// reconcileStatus reports what the pool's Deployment is actually doing. It
-// writes only when something changed, so that a status update does not wake the
-// controller into writing an identical status again.
+func (r *RunnerPoolReconciler) observeAgentPods(
+	ctx context.Context,
+	pool *buildkitecomv1alpha1.RunnerPool,
+	templateHash string,
+) ([]observedPod, error) {
+	log := logf.FromContext(ctx)
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList,
+		client.InNamespace(pool.Namespace),
+		client.MatchingLabels{poolLabel: pool.Name},
+	); err != nil {
+		return nil, fmt.Errorf("listing Pods for RunnerPool %s: %w", pool.Name, err)
+	}
+
+	now := time.Now()
+	idleTimeout := time.Duration(desiredIdleTimeoutSeconds(pool)) * time.Second
+	observed := make([]observedPod, 0, len(podList.Items))
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		if !metav1.IsControlledBy(pod, pool) {
+			continue
+		}
+		if !pod.DeletionTimestamp.IsZero() {
+			// Still holds a capacity slot until Kubernetes finishes deleting it,
+			// so it must stay in the pool's total to keep maxRunners a hard cap.
+			// Excluded from polling and eviction since it is already draining.
+			observed = append(observed, observedPod{pod: pod, terminating: true})
+			continue
+		}
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			if err := r.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
+				return nil, fmt.Errorf("deleting terminal agent Pod %s: %w", pod.Name, err)
+			}
+			log.Info("Deleted terminal agent Pod", "pod", pod.Name, "phase", pod.Status.Phase)
+			continue
+		}
+
+		state := observedPod{
+			pod:   pod,
+			ready: podReady(pod),
+			stale: pod.Annotations[podTemplateHashAnnotation] != templateHash,
+		}
+		if pod.Status.PodIP == "" || !state.ready {
+			if err := r.clearIdleSince(ctx, pod); err != nil {
+				return nil, err
+			}
+			observed = append(observed, state)
+			continue
+		}
+
+		status, err := r.checkAgentStatus(ctx, pod)
+		if err != nil {
+			log.Info("Could not check agent Pod status", "pod", pod.Name, "error", err)
+			if err := r.clearIdleSince(ctx, pod); err != nil {
+				return nil, err
+			}
+			observed = append(observed, state)
+			continue
+		}
+
+		switch status {
+		case AgentStatusBusy:
+			state.busy = true
+			if err := r.clearIdleSince(ctx, pod); err != nil {
+				return nil, err
+			}
+
+		case AgentStatusIdle:
+			state.idle = true
+			state.idleSince, err = r.ensureIdleSince(ctx, pod, now)
+			if err != nil {
+				return nil, err
+			}
+			state.eligible = state.stale || !now.Before(state.idleSince.Add(idleTimeout))
+		}
+
+		observed = append(observed, state)
+	}
+	return observed, nil
+}
+
+func (r *RunnerPoolReconciler) checkAgentStatus(ctx context.Context, pod *corev1.Pod) (AgentStatus, error) {
+	if r.StatusChecker == nil {
+		return "", fmt.Errorf("agent status checker is not configured")
+	}
+	return r.StatusChecker.Check(ctx, pod.Status.PodIP, agentHealthPort)
+}
+
+func (r *RunnerPoolReconciler) ensureIdleSince(
+	ctx context.Context,
+	pod *corev1.Pod,
+	now time.Time,
+) (time.Time, error) {
+	if value := pod.Annotations[idleSinceAnnotation]; value != "" {
+		if idleSince, err := time.Parse(time.RFC3339, value); err == nil {
+			return idleSince, nil
+		}
+	}
+
+	original := pod.DeepCopy()
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string, 1)
+	}
+	idleSince := now.UTC()
+	pod.Annotations[idleSinceAnnotation] = idleSince.Format(time.RFC3339Nano)
+	if err := r.Patch(ctx, pod, client.MergeFrom(original)); err != nil {
+		return time.Time{}, fmt.Errorf("setting idle timestamp on agent Pod %s: %w", pod.Name, err)
+	}
+	return idleSince, nil
+}
+
+func (r *RunnerPoolReconciler) clearIdleSince(ctx context.Context, pod *corev1.Pod) error {
+	if pod.Annotations == nil || pod.Annotations[idleSinceAnnotation] == "" {
+		return nil
+	}
+	original := pod.DeepCopy()
+	delete(pod.Annotations, idleSinceAnnotation)
+	if len(pod.Annotations) == 0 {
+		pod.Annotations = nil
+	}
+	if err := r.Patch(ctx, pod, client.MergeFrom(original)); err != nil {
+		return fmt.Errorf("clearing idle timestamp on agent Pod %s: %w", pod.Name, err)
+	}
+	return nil
+}
+
+func (r *RunnerPoolReconciler) reconcileRunners(
+	ctx context.Context,
+	pool *buildkitecomv1alpha1.RunnerPool,
+	pods []observedPod,
+	templateHash string,
+) error {
+	total := int32(len(pods))
+	desired := desiredTotal(pool, pods)
+
+	if total < desired {
+		return r.createAgentPods(ctx, pool, templateHash, desired-total)
+	}
+
+	if total > desired {
+		confirmedIdle := countIdle(pods)
+		deleteCount := min(total-desired, confirmedIdle-desiredMinIdleRunners(pool))
+		if deleteCount > 0 {
+			return r.deleteAgentPods(ctx, pods, templateHash, deleteCount, false)
+		}
+		return nil
+	}
+
+	stale := countStale(pods)
+	if stale == 0 {
+		return nil
+	}
+	currentTotal, currentBusy := countCurrent(pods)
+	desiredCurrentTotal := min(currentBusy+desiredMinIdleRunners(pool), pool.Spec.MaxRunners)
+	if currentTotal >= desiredCurrentTotal {
+		return nil
+	}
+
+	// Roll immutable template changes without deleting a busy agent. Surge by
+	// one when the hard cap permits it; at the cap, remove one idle stale Pod
+	// first and replace it on the next reconcile.
+	if total < pool.Spec.MaxRunners {
+		return r.createAgentPods(ctx, pool, templateHash, 1)
+	}
+	return r.deleteAgentPods(ctx, pods, templateHash, 1, true)
+}
+
+func (r *RunnerPoolReconciler) createAgentPods(
+	ctx context.Context,
+	pool *buildkitecomv1alpha1.RunnerPool,
+	templateHash string,
+	count int32,
+) error {
+	log := logf.FromContext(ctx)
+	for range count {
+		pod, err := r.agentPod(pool, templateHash)
+		if err != nil {
+			return fmt.Errorf("building agent Pod for RunnerPool %s: %w", pool.Name, err)
+		}
+		if err := r.Create(ctx, pod); err != nil {
+			return fmt.Errorf("creating agent Pod for RunnerPool %s: %w", pool.Name, err)
+		}
+		log.Info("Created agent Pod", "pod", pod.Name)
+	}
+	return nil
+}
+
+func (r *RunnerPoolReconciler) deleteAgentPods(
+	ctx context.Context,
+	pods []observedPod,
+	templateHash string,
+	count int32,
+	staleOnly bool,
+) error {
+	candidates := append([]observedPod(nil), pods...)
+	slices.SortFunc(candidates, func(a, b observedPod) int {
+		if a.stale != b.stale {
+			if a.stale {
+				return -1
+			}
+			return 1
+		}
+		if !a.idleSince.Equal(b.idleSince) {
+			if a.idleSince.Before(b.idleSince) {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Compare(a.pod.Name, b.pod.Name)
+	})
+
+	deleted := int32(0)
+	for i := range candidates {
+		candidate := &candidates[i]
+		if !candidate.idle || (staleOnly && !candidate.stale) || (!staleOnly && !candidate.eligible) {
+			continue
+		}
+		wasDeleted, err := r.reconfirmAndDelete(ctx, candidate.pod, templateHash, staleOnly)
+		if err != nil {
+			return err
+		}
+		if wasDeleted {
+			deleted++
+		}
+		if deleted == count {
+			break
+		}
+	}
+	return nil
+}
+
+func (r *RunnerPoolReconciler) reconfirmAndDelete(
+	ctx context.Context,
+	pod *corev1.Pod,
+	templateHash string,
+	staleOnly bool,
+) (bool, error) {
+	current := &corev1.Pod{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(pod), current); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("refreshing agent Pod %s before deletion: %w", pod.Name, err)
+	}
+	if !current.DeletionTimestamp.IsZero() || !podReady(current) || current.Status.PodIP == "" {
+		return false, nil
+	}
+	if staleOnly && current.Annotations[podTemplateHashAnnotation] == templateHash {
+		return false, nil
+	}
+
+	status, err := r.checkAgentStatus(ctx, current)
+	if err != nil || status != AgentStatusIdle {
+		if err := r.clearIdleSince(ctx, current); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if err := r.Delete(ctx, current); err != nil {
+		return false, fmt.Errorf("deleting idle agent Pod %s: %w", current.Name, err)
+	}
+	logf.FromContext(ctx).Info("Deleted idle agent Pod", "pod", current.Name)
+	return true, nil
+}
+
 func (r *RunnerPoolReconciler) reconcileStatus(
 	ctx context.Context,
 	pool *buildkitecomv1alpha1.RunnerPool,
-	deployment *appsv1.Deployment,
+	pods []observedPod,
 ) error {
 	updated := pool.DeepCopy()
-	updated.Status.ReadyReplicas = deployment.Status.ReadyReplicas
+	updated.Status.TotalRunners = countNonTerminating(pods)
+	updated.Status.IdleRunners = countIdle(pods)
+	updated.Status.BusyRunners = countBusy(pods)
+	updated.Status.ReadyRunners = countReady(pods)
 	updated.Status.ObservedGeneration = pool.Generation
-	meta.SetStatusCondition(&updated.Status.Conditions, readyCondition(pool, deployment))
+	meta.SetStatusCondition(&updated.Status.Conditions, readyCondition(pool, pods))
 
 	if equality.Semantic.DeepEqual(pool.Status, updated.Status) {
 		return nil
@@ -113,201 +369,58 @@ func (r *RunnerPoolReconciler) reconcileStatus(
 	return r.Status().Update(ctx, updated)
 }
 
-// readyCondition translates the Deployment's Available condition into the
-// pool's Ready condition.
-func readyCondition(
-	pool *buildkitecomv1alpha1.RunnerPool,
-	deployment *appsv1.Deployment,
-) metav1.Condition {
+func readyCondition(pool *buildkitecomv1alpha1.RunnerPool, pods []observedPod) metav1.Condition {
+	total := countNonTerminating(pods)
+	desired := desiredTotal(pool, pods)
+	ready := countReady(pods)
+	stale := countStale(pods)
 	condition := metav1.Condition{
 		Type:               buildkitecomv1alpha1.RunnerPoolConditionReady,
 		ObservedGeneration: pool.Generation,
 	}
 
-	// The Deployment's conditions describe whatever spec its controller last
-	// observed. Until observedGeneration catches up to the current generation,
-	// an Available=True left over from the previous rollout would report the
-	// new queue, image, or replica count as ready before it has rolled out, so
-	// hold Ready at Unknown until the Deployment observes its current spec.
-	if deployment.Status.ObservedGeneration < deployment.Generation {
-		condition.Status = metav1.ConditionUnknown
-		condition.Reason = "DeploymentProgressing"
-		condition.Message = fmt.Sprintf(
-			"Waiting for deployment %s to observe generation %d",
-			deployment.Name, deployment.Generation)
-		return condition
-	}
-
-	available := deploymentCondition(deployment, appsv1.DeploymentAvailable)
 	switch {
-	case available == nil:
-		condition.Status = metav1.ConditionUnknown
-		condition.Reason = "DeploymentPending"
-		condition.Message = fmt.Sprintf("Waiting for deployment %s to report availability", deployment.Name)
-
-	case available.Status == corev1.ConditionTrue:
-		condition.Status = metav1.ConditionTrue
-		condition.Reason = "AgentsAvailable"
-		condition.Message = fmt.Sprintf("%d of %d agents ready",
-			deployment.Status.ReadyReplicas, desiredReplicas(pool))
-
-	default:
+	case stale > 0:
 		condition.Status = metav1.ConditionFalse
-		condition.Reason = cmp.Or(available.Reason, "DeploymentUnavailable")
-		condition.Message = cmp.Or(available.Message,
-			fmt.Sprintf("Deployment %s is not available", deployment.Name))
+		condition.Reason = "RollingUpdate"
+		condition.Message = fmt.Sprintf("Replacing %d stale agent Pods", stale)
+	case total != desired:
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "Scaling"
+		condition.Message = fmt.Sprintf("Scaling from %d to %d agent Pods", total, desired)
+	case ready != total:
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "PodsNotReady"
+		condition.Message = fmt.Sprintf("%d of %d agents ready", ready, total)
+	default:
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "AgentsReady"
+		condition.Message = fmt.Sprintf("%d of %d agents ready", ready, total)
 	}
-
 	return condition
 }
 
-// deploymentCondition returns the named condition, or nil if the Deployment has
-// not reported it yet.
-func deploymentCondition(
-	deployment *appsv1.Deployment,
-	conditionType appsv1.DeploymentConditionType,
-) *appsv1.DeploymentCondition {
-	i := slices.IndexFunc(deployment.Status.Conditions, func(c appsv1.DeploymentCondition) bool {
-		return c.Type == conditionType
-	})
-	if i < 0 {
-		return nil
-	}
-	return &deployment.Status.Conditions[i]
+func desiredTotal(pool *buildkitecomv1alpha1.RunnerPool, pods []observedPod) int32 {
+	return min(countBusy(pods)+desiredMinIdleRunners(pool), pool.Spec.MaxRunners)
 }
 
-// applyAgentDeployment mutates deployment into the shape pool asks for.
-//
-// It only ever touches the fields this controller owns, mutating the agent
-// container in place rather than replacing the pod spec. Replacing it wholesale
-// would discard the defaults the API server fills in (imagePullPolicy,
-// terminationMessagePath and friends), so every reconcile would see a diff and
-// issue an update, and every update would trigger another reconcile.
-func (r *RunnerPoolReconciler) applyAgentDeployment(
-	pool *buildkitecomv1alpha1.RunnerPool,
-	deployment *appsv1.Deployment,
-) error {
-	replicas := desiredReplicas(pool)
-	deployment.Labels = withLabels(deployment.Labels, poolLabels(pool))
-	deployment.Spec.Replicas = &replicas
-	deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: selectorLabels(pool)}
-	deployment.Spec.Template.Labels = withLabels(deployment.Spec.Template.Labels, poolLabels(pool))
-
-	containers := deployment.Spec.Template.Spec.Containers
-	i := slices.IndexFunc(containers, func(c corev1.Container) bool { return c.Name == agentContainerName })
-	if i < 0 {
-		containers = append(containers, corev1.Container{Name: agentContainerName})
-		i = len(containers) - 1
-		deployment.Spec.Template.Spec.Containers = containers
+func (r *RunnerPoolReconciler) pollInterval(pool *buildkitecomv1alpha1.RunnerPool) time.Duration {
+	interval := r.PollInterval
+	if interval <= 0 {
+		interval = defaultPollInterval
 	}
-	agent := &deployment.Spec.Template.Spec.Containers[i]
-
-	// No command or args: the agent image's entrypoint already starts the agent.
-	agent.Image = desiredImage(pool)
-	agent.Env = agentEnv(pool)
-
-	// The API server defaults an unset request to its matching limit, so
-	// normalize the desired resources the same way and compare with DeepEqual.
-	// DeepDerivative would treat every omitted request, limit or map entry as
-	// already satisfied, so removing requests.cpu (or clearing resources
-	// entirely) would never reconcile and the stale value would linger on the
-	// Deployment forever.
-	if want := desiredResources(pool); !equality.Semantic.DeepEqual(want, agent.Resources) {
-		agent.Resources = want
+	idleTimeout := time.Duration(desiredIdleTimeoutSeconds(pool)) * time.Second
+	if idleTimeout > 0 && idleTimeout < interval {
+		return idleTimeout
 	}
-
-	return ctrl.SetControllerReference(pool, deployment, r.Scheme)
-}
-
-// agentEnv is the environment every agent in the pool runs with.
-func agentEnv(pool *buildkitecomv1alpha1.RunnerPool) []corev1.EnvVar {
-	tokenRef := pool.Spec.AgentTokenSecretRef
-	return []corev1.EnvVar{
-		{
-			Name:      "BUILDKITE_AGENT_TOKEN",
-			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &tokenRef},
-		},
-		{
-			Name:  "BUILDKITE_AGENT_TAGS",
-			Value: "queue=" + pool.Spec.Queue,
-		},
-	}
-}
-
-// deploymentName is the name of the Deployment owned by pool.
-func deploymentName(pool *buildkitecomv1alpha1.RunnerPool) string {
-	return pool.Name + "-agent"
-}
-
-// selectorLabels identify the pods belonging to pool. They are part of the
-// Deployment's immutable selector, so they must be derived only from values
-// that cannot change over a pool's lifetime.
-func selectorLabels(pool *buildkitecomv1alpha1.RunnerPool) map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":     "buildkite-agent",
-		"app.kubernetes.io/instance": pool.Name,
-	}
-}
-
-// poolLabels are the selector labels plus labels that are safe to change.
-func poolLabels(pool *buildkitecomv1alpha1.RunnerPool) map[string]string {
-	labels := selectorLabels(pool)
-	labels["app.kubernetes.io/managed-by"] = "buildkite-operator"
-	labels[poolLabel] = pool.Name
-	return labels
-}
-
-// withLabels merges want into have, leaving any other labels alone.
-func withLabels(have, want map[string]string) map[string]string {
-	if have == nil {
-		have = make(map[string]string, len(want))
-	}
-	maps.Copy(have, want)
-	return have
-}
-
-func desiredReplicas(pool *buildkitecomv1alpha1.RunnerPool) int32 {
-	if pool.Spec.Replicas != nil {
-		return *pool.Spec.Replicas
-	}
-	return defaultReplicas
-}
-
-func desiredImage(pool *buildkitecomv1alpha1.RunnerPool) string {
-	if pool.Spec.Image != "" {
-		return pool.Spec.Image
-	}
-	return defaultAgentImage
-}
-
-// desiredResources returns the resource requirements the controller wants on
-// the agent container, normalized the way the API server normalizes them.
-//
-// Kubernetes defaults an unset request to its matching limit. Replaying that
-// defaulting here means a Deployment whose requests were filled in from limits
-// does not read as drift, while a genuine change (including removing a request
-// or a limit) still does, so it can be reconciled with a full DeepEqual.
-func desiredResources(pool *buildkitecomv1alpha1.RunnerPool) corev1.ResourceRequirements {
-	want := *pool.Spec.Resources.DeepCopy()
-	if len(want.Limits) == 0 {
-		return want
-	}
-	if want.Requests == nil {
-		want.Requests = make(corev1.ResourceList, len(want.Limits))
-	}
-	for name, quantity := range want.Limits {
-		if _, ok := want.Requests[name]; !ok {
-			want.Requests[name] = quantity.DeepCopy()
-		}
-	}
-	return want
+	return interval
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *RunnerPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&buildkitecomv1alpha1.RunnerPool{}).
-		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Pod{}).
 		Named("runnerpool").
 		Complete(r)
 }

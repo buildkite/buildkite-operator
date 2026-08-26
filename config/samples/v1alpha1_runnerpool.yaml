@@ -21,7 +21,9 @@ metadata:
   name: runnerpool-sample
 spec:
   queue: default
-  replicas: 1
+  maxRunners: 20
+  minIdleRunners: 3
+  idleTimeoutSeconds: 10
   image: buildkite/agent:3
   agentTokenSecretRef:
     name: buildkite-agent-token

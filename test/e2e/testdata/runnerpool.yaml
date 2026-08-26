@@ -20,11 +20,13 @@ metadata:
   namespace: buildkite-operator-e2e
 spec:
   queue: e2e
-  replicas: 2
-  # The operator sets no command or args, so any image whose entrypoint stays
-  # running will do. pause lets the pool reach Ready without a real Buildkite
-  # agent token: the real agent image would authenticate against buildkite.com,
-  # fail, and crashloop, leaving nothing to assert beyond "a Deployment exists".
+  maxRunners: 2
+  minIdleRunners: 1
+  idleTimeoutSeconds: 10
+  terminationGracePeriodSeconds: 5
+  # This fixture verifies Pod ownership and lifecycle without contacting
+  # Buildkite. The pause image does not implement the agent health endpoints,
+  # so autoscaling status behavior remains covered by controller tests.
   image: registry.k8s.io/pause:3.10
   agentTokenSecretRef:
     name: buildkite-agent-token

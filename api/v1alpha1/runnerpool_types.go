@@ -13,6 +13,8 @@ import (
 // agents are running and available.
 const RunnerPoolConditionReady = "Ready"
 
+// +kubebuilder:validation:XValidation:rule="self.minIdleRunners <= self.maxRunners",message="minIdleRunners must be less than or equal to maxRunners"
+
 // RunnerPoolSpec defines the desired state of RunnerPool
 type RunnerPoolSpec struct {
 	// queue is the Buildkite queue that agents in this pool register with.
@@ -20,11 +22,33 @@ type RunnerPoolSpec struct {
 	// +required
 	Queue string `json:"queue"`
 
-	// replicas is the number of agents to run in this pool.
-	// +kubebuilder:validation:Minimum=0
+	// maxRunners is the maximum number of agents that may run in this pool.
+	// +kubebuilder:validation:Minimum=1
+	// +required
+	MaxRunners int32 `json:"maxRunners"`
+
+	// minIdleRunners is the number of idle agents to keep ready for work. Setting
+	// it to zero allows the pool to scale to zero, where it remains until
+	// minIdleRunners is increased because the operator does not observe
+	// Buildkite queue depth.
 	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
 	// +optional
-	Replicas *int32 `json:"replicas,omitempty"`
+	MinIdleRunners *int32 `json:"minIdleRunners,omitempty"`
+
+	// idleTimeoutSeconds is how long an agent must be observed idle before it
+	// may be removed as surplus capacity.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	IdleTimeoutSeconds *int32 `json:"idleTimeoutSeconds,omitempty"`
+
+	// terminationGracePeriodSeconds is how long Kubernetes gives an agent to
+	// finish a job after receiving SIGTERM before forcibly stopping it.
+	// +kubebuilder:default=3600
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 
 	// image is the Buildkite agent container image to run.
 	// +kubebuilder:validation:MinLength=1
@@ -42,7 +66,7 @@ type RunnerPoolSpec struct {
 	//
 	// resources.claims is not supported: the controller does not model the
 	// corresponding pod-level spec.resourceClaims, so a container claim would
-	// have nothing to reference and the resulting Deployment would be rejected.
+	// have nothing to reference and the resulting Pod would be rejected.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="!has(self.claims)",message="resources.claims is not supported"
 	Resources corev1.ResourceRequirements `json:"resources,omitzero"`
@@ -61,9 +85,21 @@ type RunnerPoolStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// readyReplicas is the number of agents in this pool that are ready.
+	// totalRunners is the number of non-terminating agents in this pool.
 	// +optional
-	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+	TotalRunners int32 `json:"totalRunners,omitempty"`
+
+	// idleRunners is the number of ready agents confirmed idle by their status endpoint.
+	// +optional
+	IdleRunners int32 `json:"idleRunners,omitempty"`
+
+	// busyRunners is the number of agents confirmed to be running a job.
+	// +optional
+	BusyRunners int32 `json:"busyRunners,omitempty"`
+
+	// readyRunners is the number of agents in this pool that are ready.
+	// +optional
+	ReadyRunners int32 `json:"readyRunners,omitempty"`
 
 	// observedGeneration is the .metadata.generation this status was computed from.
 	// +optional
@@ -72,12 +108,12 @@ type RunnerPoolStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.readyReplicas
-// +kubebuilder:printcolumn:name="Queue",type=string,JSONPath=`.spec.queue`
-// +kubebuilder:printcolumn:name="Desired",type=integer,JSONPath=`.spec.replicas`
-// +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
+// +kubebuilder:printcolumn:name="Max",type=integer,JSONPath=`.spec.maxRunners`
+// +kubebuilder:printcolumn:name="Idle",type=integer,JSONPath=`.status.idleRunners`
+// +kubebuilder:printcolumn:name="Busy",type=integer,JSONPath=`.status.busyRunners`
+// +kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.totalRunners`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63",message="name must be no more than 63 characters, as it is copied into label values on the pool's Deployment"
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63",message="name must be no more than 63 characters, as it is copied into label values on the pool's Pods"
 
 // RunnerPool is the Schema for the runnerpools API
 type RunnerPool struct {

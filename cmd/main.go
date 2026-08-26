@@ -6,7 +6,9 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"net/http"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -166,8 +168,15 @@ func main() {
 	}
 
 	if err := (&controller.RunnerPoolReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		PollInterval: 10 * time.Second,
+		StatusChecker: &controller.HTTPAgentStatusChecker{Client: &http.Client{
+			Timeout: 2 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "runnerpool")
 		os.Exit(1)

@@ -4,9 +4,9 @@ metadata:
   name: {{ include "buildkite-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
 rules:
 - apiGroups:
-  - apps
+  - ""
   resources:
-  - deployments
+  - pods
   verbs:
   - create
   - delete

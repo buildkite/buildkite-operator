@@ -57,6 +57,9 @@ var _ = BeforeSuite(func() {
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
 	}
+	// Explicitly advertise loopback so envtest also starts on hosts whose
+	// default route uses an address Kubernetes does not consider advertisable.
+	testEnv.ControlPlane.GetAPIServer().Configure().Set("advertise-address", "127.0.0.1")
 
 	// Retrieve the first found binary directory to allow running tests from IDEs
 	if getFirstFoundEnvTestBinaryDir() != "" {
