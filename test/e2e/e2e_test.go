@@ -329,8 +329,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete the RunnerPool")
 
 			verifyAgentPodsGone := func(g Gomega) {
+				// -o name prints nothing when there are no matches; --no-headers
+				// still prints "No resources found in <namespace> namespace."
 				cmd := exec.Command("kubectl", "get", "pods",
-					"-l", "buildkite.com/runner-pool=e2e-pool", "--no-headers", "-n", poolNamespace)
+					"-l", "buildkite.com/runner-pool=e2e-pool", "-o", "name", "-n", poolNamespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(BeEmpty(), "Agent Pods outlived their RunnerPool")
