@@ -375,7 +375,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(output).NotTo(BeEmpty())
 
 			By("replacing the inner agent after it exits")
-			_, err = docker("rm", "--force", "buildkite-agent")
+			_, err = docker("kill", "buildkite-agent")
 			Expect(err).NotTo(HaveOccurred())
 			replacementStarted := time.Now()
 			var replacementID string

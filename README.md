@@ -90,6 +90,7 @@ make helm-deploy IMG=<your-registry>/buildkite-operator:tag
 | `spec.idleTimeoutSeconds` | no | `10` | How long an agent must be observed idle before surplus capacity is removed. |
 | `spec.terminationGracePeriodSeconds` | no | `3600` | Pod shutdown budget. The supervisor reserves 10 seconds for forced cleanup and daemon shutdown. |
 | `spec.agentImage` | no | `buildkite/agent:3` | Agent image run inside the Pod-local Docker daemon. It must provide the Buildkite agent health server and graceful SIGTERM behavior; Buildkite agent v3.72.0 or newer is required. |
+| `spec.singleUse` | no | `false` | Run the agent with `start --disconnect-after-job`. After one job, the supervisor replaces the exited inner agent container while retaining the Pod-local cache and workspace. |
 | `spec.agentTokenSecretRef` | yes | — | Secret name and key holding the Buildkite agent token, exposed to agents as `BUILDKITE_AGENT_TOKEN`. |
 | `spec.resources` | no | — | CPU, memory, and ephemeral-storage envelope applied to the privileged daemon. It accounts for dockerd, the agent, and all nested job containers. |
 | `spec.docker.daemonImage` | no | `docker:29.7.2-dind` | Rootful daemon image. It must support the official dind entrypoint and the controller's explicit `dockerd` invocation. |
@@ -106,6 +107,8 @@ Kubernetes `supervisor` container. After the inner agent exits, the supervisor
 removes all remaining containers, prunes unused custom networks, waits five
 seconds, and starts a replacement. Images, BuildKit and layer caches, named
 volumes, and the workspace remain available until the Pod itself is replaced.
+With `singleUse: true`, the agent runs with `start --disconnect-after-job`, so
+this replacement happens after every completed job.
 
 The operator polls each Pod's `/status.json`. A busy agent causes another warm
 agent to be created, up to `maxRunners`. A confirmed-idle surplus is removed

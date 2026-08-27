@@ -283,6 +283,7 @@ var _ = Describe("RunnerPool Controller", func() {
 		Expect(supervisor.Command[:2]).To(Equal([]string{shellPath, "-c"}))
 		Expect(supervisor.Command[2]).To(ContainSubstring("docker wait \"$agent_name\" >/dev/null 2>&1 &"))
 		Expect(supervisor.Command[2]).To(ContainSubstring("--publish 8080:8080"))
+		Expect(supervisor.Command[2]).To(ContainSubstring("set -- \"$@\" start --disconnect-after-job"))
 		Expect(supervisor.Ports).To(ContainElement(corev1.ContainerPort{
 			Name: agentHealthPortName, ContainerPort: agentHealthPort, Protocol: corev1.ProtocolTCP,
 		}))
@@ -306,6 +307,7 @@ var _ = Describe("RunnerPool Controller", func() {
 			corev1.EnvVar{Name: "AGENT_TAGS", Value: "queue=macos-arm64"},
 			corev1.EnvVar{Name: "TERMINATION_GRACE_PERIOD_SECONDS", Value: "3600"},
 			corev1.EnvVar{Name: dockerHostEnvName, Value: dockerHost},
+			corev1.EnvVar{Name: singleUseEnvName, Value: "false"},
 		))
 		Expect(supervisor.Env).To(ContainElement(corev1.EnvVar{
 			Name: "BUILDKITE_AGENT_TOKEN",
@@ -325,6 +327,24 @@ var _ = Describe("RunnerPool Controller", func() {
 		ready := meta.FindStatusCondition(status.Conditions, buildkitecomv1alpha1.RunnerPoolConditionReady)
 		Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		Expect(ready.Reason).To(Equal("AgentsReady"))
+	})
+
+	It("runs single-use agents with disconnect-after-job", func() {
+		pool := currentPool()
+		defaultHash, err := desiredPodTemplateHash(pool)
+		Expect(err).NotTo(HaveOccurred())
+
+		pool.Spec.SingleUse = true
+		Expect(k8sClient.Update(ctx, pool)).To(Succeed())
+		singleUseHash, err := desiredPodTemplateHash(pool)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(singleUseHash).NotTo(Equal(defaultHash))
+
+		reconcileNow()
+		supervisor := containerByName(agentPods()[0].Spec.Containers, supervisorContainerName)
+		Expect(supervisor.Env).To(ContainElement(corev1.EnvVar{
+			Name: singleUseEnvName, Value: "true",
+		}))
 	})
 
 	It("applies Docker credentials, resources, and scheduling settings to new Pods", func() {

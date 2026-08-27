@@ -236,6 +236,13 @@ spec:
                 x-kubernetes-validations:
                 - message: resources.claims is not supported
                   rule: '!has(self.claims)'
+              singleUse:
+                default: false
+                description: |-
+                  singleUse makes each agent disconnect after completing one job. The
+                  supervisor starts a fresh agent container after the disconnected agent
+                  exits.
+                type: boolean
               terminationGracePeriodSeconds:
                 default: 3600
                 description: |-

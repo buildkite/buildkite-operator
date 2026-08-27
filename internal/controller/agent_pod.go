@@ -104,6 +104,10 @@ start_agent() {
 	fi
 
 	set -- "$@" "$AGENT_IMAGE"
+	if [ "$SINGLE_USE" = "true" ]; then
+		# Image arguments replace its default "start" command.
+		set -- "$@" start --disconnect-after-job
+	fi
 	"$@" >/dev/null
 }
 
@@ -291,6 +295,7 @@ func supervisorEnv(pool *buildkitecomv1alpha1.RunnerPool, withDockerConfig bool)
 			Value: strconv.FormatInt(*desiredTerminationGracePeriodSeconds(pool), 10),
 		},
 		{Name: dockerHostEnvName, Value: dockerHost},
+		{Name: singleUseEnvName, Value: strconv.FormatBool(pool.Spec.SingleUse)},
 	}
 	if withDockerConfig {
 		env = append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: dockerConfigPath})

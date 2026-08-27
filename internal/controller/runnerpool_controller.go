@@ -42,6 +42,7 @@ const (
 	dockerConfigPath             = "/docker-config"
 	agentImageEnvName            = "AGENT_IMAGE"
 	dockerHostEnvName            = "DOCKER_HOST"
+	singleUseEnvName             = "SINGLE_USE"
 	dockerDataVolumeName         = "docker-data"
 	dockerRunVolumeName          = "docker-run"
 	workspaceVolumeName          = "workspace"

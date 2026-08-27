@@ -63,6 +63,7 @@ spec:
   idleTimeoutSeconds: 30
   terminationGracePeriodSeconds: 3600
   agentImage: buildkite/agent:3
+  singleUse: true
   agentTokenSecretRef:
     name: buildkite-agent-token
     key: token
@@ -92,6 +93,8 @@ spec:
 - Preserve `maxRunners`, `minIdleRunners`, `idleTimeoutSeconds`, and their
   autoscaling semantics.
 - Rename `spec.image` to `spec.agentImage` without a deprecated alias.
+- Add `spec.singleUse`, defaulting to false. When true, run the agent as
+  `start --disconnect-after-job` and replace it after its one job completes.
 - Keep the existing 3600-second termination grace period default.
 - Add optional daemon and supervisor image overrides, defaulting to matching
   Docker 29.7.2 images.
@@ -160,7 +163,8 @@ named volumes, workspace contents, and caches.
 2. Adopt a running `buildkite-agent` after a PC2-only restart and follow only
    new logs.
 3. Otherwise clean stale containers and networks, pull the agent image only
-   when absent, and start one DC1.
+   when absent, and start one DC1. Add `start --disconnect-after-job` when
+   `spec.singleUse` is true; use the image's default command otherwise.
 4. Stream DC1 logs through PC2 and wait for any exit status. Run `docker wait`
    in the background and wait through the shell builtin so TERM traps remain
    interruptible.

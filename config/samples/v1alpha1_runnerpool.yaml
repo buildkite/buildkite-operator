@@ -25,6 +25,7 @@ spec:
   minIdleRunners: 3
   idleTimeoutSeconds: 10
   agentImage: buildkite/agent:3
+  singleUse: true
   agentTokenSecretRef:
     name: buildkite-agent-token
     key: token

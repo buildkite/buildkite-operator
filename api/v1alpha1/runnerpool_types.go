@@ -82,6 +82,13 @@ type RunnerPoolSpec struct {
 	// +optional
 	AgentImage string `json:"agentImage,omitempty"`
 
+	// singleUse makes each agent disconnect after completing one job. The
+	// supervisor starts a fresh agent container after the disconnected agent
+	// exits.
+	// +kubebuilder:default=false
+	// +optional
+	SingleUse bool `json:"singleUse,omitempty"`
+
 	// agentTokenSecretRef references the secret key holding the Buildkite agent
 	// token that agents in this pool authenticate with.
 	// +required
