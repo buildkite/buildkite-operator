@@ -1,0 +1,324 @@
+# A standalone Deployment that reproduces the RunnerPool Docker-in-Docker
+# execution model without the operator. Each Pod runs:
+#
+#   - dockerd     (native sidecar init container): a private, privileged,
+#                 rootful Docker daemon reachable only over a Pod-local socket.
+#   - supervisor  (main container): a POSIX shell loop using the Docker CLI to
+#                 keep exactly one buildkite-agent container running inside the
+#                 dockerd daemon, streaming its logs and handling shutdown.
+#
+# The buildkite-agent itself is NOT a Kubernetes container; the supervisor
+# `docker run`s it inside the dockerd daemon, publishing its health port 8080
+# up to the Pod.
+#
+# Requirements:
+#   - Kubernetes 1.29+ (native sidecar containers: restartPolicy on init).
+#   - A node that permits privileged Pods. For untrusted builds, schedule onto
+#     dedicated tainted or VM-isolated workers (see nodeSelector/tolerations
+#     stubs below).
+#
+# All storage is Pod-local emptyDir: replacing a Pod discards Docker data,
+# images, caches, and workspace contents.
+#
+# Apply secret.yaml first (it holds the agent token this Deployment references).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dind-runner
+  labels:
+    app.kubernetes.io/name: buildkite-agent
+    app.kubernetes.io/instance: dind-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkite-agent
+      app.kubernetes.io/instance: dind-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-agent
+        app.kubernetes.io/instance: dind-runner
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 3600
+      securityContext:
+        fsGroup: 2375
+        supplementalGroups: [2375]
+      # Schedule onto dedicated privileged workers for untrusted builds:
+      # nodeSelector:
+      #   buildkite.com/runner: "true"
+      # tolerations:
+      #   - key: buildkite.com/runner
+      #     operator: Equal
+      #     value: "true"
+      #     effect: NoSchedule
+
+      # PC1: dockerd, a native sidecar. restartPolicy: Always makes this init
+      # container start before the supervisor and terminate after it.
+      initContainers:
+        - name: dockerd
+          image: docker:29.7.2-dind
+          restartPolicy: Always
+          command: ["/usr/local/bin/dockerd-entrypoint.sh"]
+          args:
+            - dockerd
+            - --host=unix:///var/run/docker.sock
+            - --group=2375
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsNonRoot: false
+          env:
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          startupProbe:
+            exec:
+              command: ["docker", "info"]
+            timeoutSeconds: 1
+            periodSeconds: 1
+            successThreshold: 1
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["docker", "info"]
+            timeoutSeconds: 1
+            periodSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          resources: {}
+          volumeMounts:
+            - name: docker-data
+              mountPath: /var/lib/docker
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /workspace
+            # Registry credentials (optional). Provide a
+            # kubernetes.io/dockerconfigjson Secret, add it to the docker-config
+            # volume below and to imagePullSecrets, then uncomment:
+            # - name: docker-config
+            #   mountPath: /docker-config
+            #   readOnly: true
+
+      containers:
+        # PC2: supervisor. Unprivileged Docker CLI running the embedded shell
+        # loop. It talks to PC1 over the shared /var/run/docker.sock.
+        - name: supervisor
+          image: docker:29.7.2-cli
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -u
+
+              agent_name="buildkite-agent"
+              stopping=0
+              log_pid=""
+
+              stop_log_follower() {
+              	if [ -n "$log_pid" ]; then
+              		kill "$log_pid" >/dev/null 2>&1 || true
+              		wait "$log_pid" >/dev/null 2>&1 || true
+              		log_pid=""
+              	fi
+              }
+
+              cleanup_containers() {
+              	container_ids=$(docker ps --all --quiet 2>/dev/null) || return 1
+              	if [ -n "$container_ids" ]; then
+              		docker rm --force $container_ids >/dev/null 2>&1 || return 1
+              	fi
+              }
+
+              prune_networks() {
+              	docker network prune --force >/dev/null 2>&1 || true
+              }
+
+              shutdown() {
+              	trap - TERM INT
+              	stopping=1
+              	stop_log_follower
+              	if docker info >/dev/null 2>&1; then
+              		stop_timeout=$((TERMINATION_GRACE_PERIOD_SECONDS - 10))
+              		if [ "$stop_timeout" -lt 0 ]; then
+              			stop_timeout=0
+              		fi
+              		docker stop --time "$stop_timeout" "$agent_name" >/dev/null 2>&1 || true
+              		cleanup_containers || true
+              	fi
+              	exit 0
+              }
+
+              trap shutdown TERM INT
+
+              wait_for_docker() {
+              	while ! docker info >/dev/null 2>&1; do
+              		if [ "$stopping" -eq 1 ]; then
+              			return 1
+              		fi
+              		sleep 1
+              	done
+              }
+
+              agent_running() {
+              	[ "$(docker inspect --format '{{.State.Running}}' "$agent_name" 2>/dev/null)" = "true" ]
+              }
+
+              start_agent() {
+              	cleanup_containers || return 1
+              	prune_networks
+
+              	if ! docker image inspect "$AGENT_IMAGE" >/dev/null 2>&1; then
+              		docker pull "$AGENT_IMAGE" || return 1
+              	fi
+
+              	set -- docker run --detach --pull never \
+              		--name "$agent_name" \
+              		--hostname "$POD_NAME" \
+              		--group-add 2375 \
+              		--publish 8080:8080 \
+              		--volume /var/run/docker.sock:/var/run/docker.sock \
+              		--volume /workspace:/workspace \
+              		--env BUILDKITE_AGENT_TOKEN \
+              		--env "BUILDKITE_AGENT_TAGS=$AGENT_TAGS" \
+              		--env "BUILDKITE_AGENT_NAME=$POD_NAME" \
+              		--env BUILDKITE_AGENT_HEALTH_CHECK_ADDR=0.0.0.0:8080 \
+              		--env BUILDKITE_BUILD_PATH=/workspace/builds \
+              		--env BUILDKITE_PLUGINS_PATH=/workspace/plugins \
+              		--env DOCKER_HOST=unix:///var/run/docker.sock
+
+              	if [ -n "${DOCKER_CONFIG:-}" ]; then
+              		set -- "$@" \
+              			--volume "$DOCKER_CONFIG:$DOCKER_CONFIG:ro" \
+              			--env "DOCKER_CONFIG=$DOCKER_CONFIG"
+              	fi
+
+              	set -- "$@" "$AGENT_IMAGE"
+              	if [ "$SINGLE_USE" = "true" ]; then
+              		# Image arguments replace its default "start" command.
+              		set -- "$@" start --disconnect-after-job
+              	fi
+              	"$@" >/dev/null
+              }
+
+              follow_agent_logs() {
+              	if [ "$1" = "adopted" ]; then
+              		docker logs --tail 0 --follow "$agent_name" &
+              	else
+              		docker logs --follow "$agent_name" &
+              	fi
+              	log_pid=$!
+              }
+
+              while [ "$stopping" -eq 0 ]; do
+              	wait_for_docker || break
+
+              	if agent_running; then
+              		follow_agent_logs adopted
+              	else
+              		if ! start_agent; then
+              			sleep 5
+              			continue
+              		fi
+              		follow_agent_logs new
+              	fi
+
+              	docker wait "$agent_name" >/dev/null 2>&1 &
+              	wait_pid=$!
+              	wait "$wait_pid" >/dev/null 2>&1 || true
+              	stop_log_follower
+
+              	if [ "$stopping" -eq 1 ]; then
+              		break
+              	fi
+              	if ! docker info >/dev/null 2>&1; then
+              		continue
+              	fi
+              	if agent_running; then
+              		continue
+              	fi
+
+              	cleanup_containers || true
+              	prune_networks
+              	sleep 5
+              done
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+              scheme: HTTP
+          env:
+            - name: AGENT_IMAGE
+              value: buildkite/agent:3
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: buildkite-agent-token
+                  key: token
+            - name: AGENT_TAGS
+              value: queue=default
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: TERMINATION_GRACE_PERIOD_SECONDS
+              value: "3600"
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+            # false: after each job the supervisor starts a fresh agent
+            # container in the same Pod (long-running pool). Set "true" to run
+            # the agent as `start --disconnect-after-job`.
+            - name: SINGLE_USE
+              value: "false"
+            # Uncomment alongside the docker-config volume/mount to point the
+            # inner agent and daemon at mounted registry credentials:
+            # - name: DOCKER_CONFIG
+            #   value: /docker-config
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            privileged: false
+            runAsUser: 1000
+            runAsGroup: 2375
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: docker-run
+              mountPath: /var/run
+            # - name: docker-config
+            #   mountPath: /docker-config
+            #   readOnly: true
+
+      volumes:
+        - name: docker-data
+          emptyDir: {}
+        - name: docker-run
+          emptyDir: {}
+        - name: workspace
+          emptyDir: {}
+        # Registry credentials (optional): a kubernetes.io/dockerconfigjson
+        # Secret projected to config.json, mounted into dockerd and supervisor
+        # and bind-mounted into the agent container by the supervisor script.
+        # Also add it to imagePullSecrets above the volumes list.
+        # - name: docker-config
+        #   secret:
+        #     secretName: registry-credentials
+        #     defaultMode: 0444
+        #     items:
+        #       - key: .dockerconfigjson
+        #         path: config.json
+      # imagePullSecrets:
+      #   - name: registry-credentials
