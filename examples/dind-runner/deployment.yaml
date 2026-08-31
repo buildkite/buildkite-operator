@@ -197,9 +197,16 @@ spec:
 
               # Empty the shared /workspace mount (builds, plugins, and anything
               # else a prior job wrote) without removing the mountpoint itself.
+              # The supervisor is unprivileged and does not mount /workspace, so
+              # the wipe runs as root inside the dockerd daemon via a throwaway
+              # container that bind-mounts the same host path the agent uses.
+              # This can remove root-owned build output the supervisor could not.
+              # Relies on AGENT_IMAGE already being present (ensured in start_agent).
               clean_workspace() {
               	log "wiping /workspace"
-              	rm -rf /workspace/* /workspace/.[!.]* /workspace/..?* >/dev/null 2>&1 || true
+              	docker run --rm --pull never --network none --user 0 --entrypoint sh \
+              		--volume /workspace:/workspace "$AGENT_IMAGE" \
+              		-c 'rm -rf /workspace/* /workspace/.[!.]* /workspace/..?*' >/dev/null 2>&1 || true
               }
 
               prefetch_images() {
@@ -243,7 +250,22 @@ spec:
               	[ "$(docker inspect --format '{{.State.Running}}' "$agent_name" 2>/dev/null)" = "true" ]
               }
 
+              # Four random lowercase-alphanumeric characters. Regenerated for
+              # each agent container so every (re)start registers under a fresh
+              # BUILDKITE_AGENT_NAME rather than colliding with the previous,
+              # still-draining agent of the same name on the Buildkite side.
+              random_suffix() {
+              	LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 4
+              }
+
               start_agent() {
+              	# Ensure the agent image is present before cleanup runs:
+              	# clean_workspace reuses it (docker run ... --pull never) to wipe
+              	# /workspace as root inside the daemon.
+              	if ! docker image inspect "$AGENT_IMAGE" >/dev/null 2>&1; then
+              		docker pull "$AGENT_IMAGE" || return 1
+              	fi
+
               	# Between-job cleanup is governed solely by CLEANUP, independent
               	# of SINGLE_USE (which only chooses the agent process lifecycle).
               	if [ "$cleanup" = "true" ]; then
@@ -263,9 +285,9 @@ spec:
               		docker rm --force --volumes "$agent_name" >/dev/null 2>&1 || true
               	fi
 
-              	if ! docker image inspect "$AGENT_IMAGE" >/dev/null 2>&1; then
-              		docker pull "$AGENT_IMAGE" || return 1
-              	fi
+              	# Unique per container start so a restarted agent does not clash
+              	# with the previous one Buildkite may still be draining.
+              	bk_agent_name="${POD_NAME}-$(random_suffix)"
 
               	set -- docker run --detach --pull never \
               		--name "$agent_name" \
@@ -276,7 +298,7 @@ spec:
               		--volume /workspace:/workspace \
               		--env BUILDKITE_AGENT_TOKEN \
               		--env "BUILDKITE_AGENT_TAGS=$AGENT_TAGS" \
-              		--env "BUILDKITE_AGENT_NAME=$POD_NAME" \
+              		--env "BUILDKITE_AGENT_NAME=$bk_agent_name" \
               		--env BUILDKITE_AGENT_HEALTH_CHECK_ADDR=0.0.0.0:8080 \
               		--env BUILDKITE_BUILD_PATH=/workspace/builds \
               		--env BUILDKITE_PLUGINS_PATH=/workspace/plugins \
@@ -387,7 +409,7 @@ spec:
             # the supervisor then starts a fresh one. What state carries between
             # jobs is governed independently by CLEANUP below.
             - name: SINGLE_USE
-              value: "false"
+              value: "true"
             # Master switch for between-job cleanup, independent of SINGLE_USE.
             # "true" (default): before each agent start the supervisor reaps
             # leftover containers, prunes networks, wipes /workspace and prunes
