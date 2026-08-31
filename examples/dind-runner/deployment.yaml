@@ -18,7 +18,10 @@
 #     stubs below).
 #
 # All storage is Pod-local emptyDir: replacing a Pod discards Docker data,
-# images, caches, and workspace contents.
+# images, caches, and workspace contents. In single-use mode the supervisor
+# additionally wipes /workspace and prunes daemon volumes between jobs, so no
+# workspace files or leftover volumes carry from one job to the next; the image
+# and build cache are kept for reuse.
 #
 # Apply secret.yaml first (it holds the agent token this Deployment references).
 apiVersion: apps/v1
@@ -143,6 +146,10 @@ spec:
               log_pid=""
               prefetched=0
 
+              # All supervisor-originated lines carry this prefix so they are
+              # distinguishable from the inner agent's output in `kubectl logs`.
+              log() { printf 'supervisor: %s\n' "$*"; }
+
               stop_log_follower() {
               	if [ -n "$log_pid" ]; then
               		kill "$log_pid" >/dev/null 2>&1 || true
@@ -154,12 +161,39 @@ spec:
               cleanup_containers() {
               	container_ids=$(docker ps --all --quiet 2>/dev/null) || return 1
               	if [ -n "$container_ids" ]; then
-              		docker rm --force $container_ids >/dev/null 2>&1 || return 1
+              		count=$(printf '%s\n' "$container_ids" | wc -l | tr -d ' ')
+              	else
+              		count=0
+              	fi
+              	log "removing $count container(s)"
+              	if [ -n "$container_ids" ]; then
+              		# --volumes removes each container's anonymous volumes with it,
+              		# so they do not accumulate in the daemon's /var/lib/docker.
+              		docker rm --force --volumes $container_ids >/dev/null 2>&1 || return 1
               	fi
               }
 
               prune_networks() {
-              	docker network prune --force >/dev/null 2>&1 || true
+              	out=$(docker network prune --force 2>/dev/null) || true
+              	count=$(printf '%s\n' "$out" | sed -n '/^Deleted Networks:/,$p' | tail -n +2 | grep -c .)
+              	log "pruned $count network(s)"
+              }
+
+              # Reap unused anonymous AND named volumes left inside the dockerd
+              # daemon by a finished job. Run only after cleanup_containers, so
+              # nothing in use is removed. This never touches the image or build
+              # cache, which live elsewhere under /var/lib/docker.
+              prune_volumes() {
+              	out=$(docker volume prune --all --force 2>/dev/null) || true
+              	reclaimed=$(printf '%s\n' "$out" | sed -n 's/^Total reclaimed space: //p')
+              	log "pruned volumes, reclaimed ${reclaimed:-0B}"
+              }
+
+              # Empty the shared /workspace mount (builds, plugins, and anything
+              # else a prior job wrote) without removing the mountpoint itself.
+              clean_workspace() {
+              	log "wiping /workspace"
+              	rm -rf /workspace/* /workspace/.[!.]* /workspace/..?* >/dev/null 2>&1 || true
               }
 
               prefetch_images() {
@@ -173,6 +207,7 @@ spec:
               shutdown() {
               	trap - TERM INT
               	stopping=1
+              	log "shutdown: stopping agent and cleaning up"
               	stop_log_follower
               	if docker info >/dev/null 2>&1; then
               		stop_timeout=$((TERMINATION_GRACE_PERIOD_SECONDS - 10))
@@ -203,6 +238,14 @@ spec:
               start_agent() {
               	cleanup_containers || return 1
               	prune_networks
+
+              	# Single-use agents run one job then exit; wipe per-job state so
+              	# the next agent starts clean. The image/build cache is retained.
+              	if [ "${SINGLE_USE:-}" = "true" ]; then
+              		log "single-use: resetting per-job state"
+              		clean_workspace
+              		prune_volumes
+              	fi
 
               	if ! docker image inspect "$AGENT_IMAGE" >/dev/null 2>&1; then
               		docker pull "$AGENT_IMAGE" || return 1
@@ -320,8 +363,10 @@ spec:
               #value: "golang:latest node:latest"
               value: ""
             # false: after each job the supervisor starts a fresh agent
-            # container in the same Pod (long-running pool). Set "true" to run
-            # the agent as `start --disconnect-after-job`.
+            # container in the same Pod (long-running pool), reusing /workspace.
+            # Set "true" to run the agent as `start --disconnect-after-job`; the
+            # supervisor then wipes /workspace and prunes daemon volumes before
+            # each new agent so no per-job state carries over (cache is kept).
             - name: SINGLE_USE
               value: "true"
             # Uncomment alongside the docker-config volume/mount to point the
