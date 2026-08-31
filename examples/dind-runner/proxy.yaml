@@ -1,0 +1,156 @@
+# A shared pull-through caching proxy (rpardini/docker-registry-proxy) that the
+# dind daemons pull all images through. It is an intercepting HTTPS proxy: the
+# dind container trusts its CA and points HTTP(S)_PROXY at it (see the dockerd
+# wrapper in deployment.yaml), so layers from ANY registry — Docker Hub,
+# ghcr.io, quay.io, gcr.io, registry.k8s.io, private — are cached once and
+# reused across otherwise-throwaway per-Pod Docker caches.
+#
+# Apply this before deployment.yaml: on first start each dind daemon blocks up
+# to ~2 minutes waiting to fetch this proxy's CA.
+#
+# SECURITY: a private image pulled through the proxy using AUTH_REGISTRIES
+# credentials becomes servable to anything that can reach port 3128, with no
+# per-client auth. Keep this in a dedicated namespace and restrict access to
+# the runner Pods (see the commented NetworkPolicy at the bottom).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-proxy-data
+  labels:
+    app.kubernetes.io/name: registry-proxy
+    app.kubernetes.io/instance: dind-runner
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # Layer cache (CACHE_MAX_SIZE below) plus the generated CA. Size to your
+      # working set of images.
+      storage: 32Gi
+  # storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-proxy
+  labels:
+    app.kubernetes.io/name: registry-proxy
+    app.kubernetes.io/instance: dind-runner
+spec:
+  replicas: 1
+  # RWO volume + a single stateful cache: never run two replicas against one PVC.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry-proxy
+      app.kubernetes.io/instance: dind-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry-proxy
+        app.kubernetes.io/instance: dind-runner
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: proxy
+          image: rpardini/docker-registry-proxy:0.7.0
+          ports:
+            - name: proxy
+              containerPort: 3128
+              protocol: TCP
+          env:
+            # Cache manifests too, to relieve Docker Hub pull-rate limits. Note
+            # this makes matched tags effectively immutable for the cache TTL.
+            - name: ENABLE_MANIFEST_CACHE
+              value: "true"
+            # Space-separated upstreams to intercept. Docker Hub is built in and
+            # need not be listed. Add any registry your builds pull from.
+            - name: REGISTRIES
+              value: "ghcr.io quay.io gcr.io registry.k8s.io"
+            # Central credentials for private upstreams, as
+            # "hostname:username:password" entries (hostname must also appear in
+            # REGISTRIES; Docker Hub's auth host is auth.docker.io). See the
+            # rpardini README for GCR/GAR JSON-key delimiter handling.
+            # - name: AUTH_REGISTRIES
+            #   value: "auth.docker.io:USER:PASSWORD ghcr.io:USER:TOKEN"
+            - name: CACHE_MAX_SIZE
+              value: "32g"
+            - name: DISABLE_IPV6
+              value: "true"
+          volumeMounts:
+            - name: data
+              mountPath: /docker_mirror_cache
+              subPath: cache
+            - name: data
+              mountPath: /ca
+              subPath: ca
+          readinessProbe:
+            tcpSocket:
+              port: proxy
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: proxy
+            periodSeconds: 20
+          # This is a MITM proxy: it terminates TLS from dockerd and re-encrypts
+          # to the upstream registry, so streaming large layers is CPU-bound.
+          # CPU is the main throughput lever. nginx serves requests concurrently,
+          # so this ceiling is shared across all in-flight pulls. Consider
+          # removing the CPU limit entirely to avoid CFS-throttling latency
+          # spikes; cache-HIT speed is then bounded mainly by the PVC's disk.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              cpu: "4"
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: registry-proxy-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-proxy
+  labels:
+    app.kubernetes.io/name: registry-proxy
+    app.kubernetes.io/instance: dind-runner
+spec:
+  selector:
+    app.kubernetes.io/name: registry-proxy
+    app.kubernetes.io/instance: dind-runner
+  ports:
+    - name: proxy
+      port: 3128
+      targetPort: proxy
+      protocol: TCP
+# Optional: restrict the proxy's exposure to just the runner Pods. Uncomment and
+# apply in the same namespace. The proxy also needs egress to the internet and
+# DNS, which this policy leaves to your cluster's default egress posture.
+# ---
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: registry-proxy
+#   labels:
+#     app.kubernetes.io/name: registry-proxy
+#     app.kubernetes.io/instance: dind-runner
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app.kubernetes.io/name: registry-proxy
+#       app.kubernetes.io/instance: dind-runner
+#   policyTypes:
+#     - Ingress
+#   ingress:
+#     - from:
+#         - podSelector:
+#             matchLabels:
+#               app.kubernetes.io/name: buildkite-agent
+#               app.kubernetes.io/instance: dind-runner
+#       ports:
+#         - protocol: TCP
+#           port: 3128

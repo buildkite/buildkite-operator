@@ -60,11 +60,32 @@ spec:
         - name: dockerd
           image: docker:29.7.2-dind
           restartPolicy: Always
-          command: ["/usr/local/bin/dockerd-entrypoint.sh"]
+          # When REGISTRY_PROXY_HOST is set, fetch the pull-through proxy's CA,
+          # trust it, and route registry traffic through the proxy before
+          # starting dockerd. All image pulls (prefetch, agent, and nested job
+          # containers) run through dockerd, so this is the only place that
+          # needs proxy configuration. Comment out REGISTRY_PROXY_HOST below to
+          # run standalone; the wrapper then execs dockerd unchanged.
+          command: ["/bin/sh", "-c"]
           args:
-            - dockerd
-            - --host=unix:///var/run/docker.sock
-            - --group=2375
+            - |
+              set -e
+              if [ -n "${REGISTRY_PROXY_HOST:-}" ]; then
+              	i=0
+              	until wget -qO /usr/local/share/ca-certificates/registry-proxy.crt \
+              			"http://${REGISTRY_PROXY_HOST}/ca.crt"; do
+              		i=$((i + 1))
+              		[ "$i" -ge 60 ] && echo "registry proxy CA unavailable" >&2 && exit 1
+              		sleep 2
+              	done
+              	update-ca-certificates
+              	export HTTP_PROXY="http://${REGISTRY_PROXY_HOST}" HTTPS_PROXY="http://${REGISTRY_PROXY_HOST}"
+              	export http_proxy="http://${REGISTRY_PROXY_HOST}" https_proxy="http://${REGISTRY_PROXY_HOST}"
+              	export NO_PROXY="${REGISTRY_PROXY_NO_PROXY:-localhost,127.0.0.1}" no_proxy="${REGISTRY_PROXY_NO_PROXY:-localhost,127.0.0.1}"
+              fi
+              exec /usr/local/bin/dockerd-entrypoint.sh dockerd \
+              	--host=unix:///var/run/docker.sock \
+              	--group=2375
           securityContext:
             privileged: true
             runAsUser: 0
@@ -72,6 +93,11 @@ spec:
           env:
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            # Pull-through cache proxy (see proxy.yaml). Comment out to disable.
+            - name: REGISTRY_PROXY_HOST
+              value: registry-proxy:3128
+            - name: REGISTRY_PROXY_NO_PROXY
+              value: localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.cluster.local
           startupProbe:
             exec:
               command: ["docker", "info"]
@@ -291,7 +317,8 @@ spec:
             # moving tags like :latest refresh only on a fresh Pod. Private
             # images use the optional DOCKER_CONFIG credentials below.
             - name: PREFETCH_IMAGES
-              value: "golang:latest node:latest"
+              #value: "golang:latest node:latest"
+              value: ""
             # false: after each job the supervisor starts a fresh agent
             # container in the same Pod (long-running pool). Set "true" to run
             # the agent as `start --disconnect-after-job`.
