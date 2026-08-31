@@ -18,10 +18,12 @@
 #     stubs below).
 #
 # All storage is Pod-local emptyDir: replacing a Pod discards Docker data,
-# images, caches, and workspace contents. In single-use mode the supervisor
-# additionally wipes /workspace and prunes daemon volumes between jobs, so no
-# workspace files or leftover volumes carry from one job to the next; the image
-# and build cache are kept for reuse.
+# images, caches, and workspace contents. With cleanup enabled (CLEANUP=true,
+# the default) the supervisor also wipes /workspace and prunes daemon volumes
+# before each agent starts, so no workspace files or leftover volumes carry from
+# one job to the next; the image and build cache are kept for reuse. SINGLE_USE
+# is independent: it only selects the agent process lifecycle (one-shot vs a
+# long-running pool agent), not what state is cleaned between jobs.
 #
 # Apply secret.yaml first (it holds the agent token this Deployment references).
 apiVersion: apps/v1
@@ -145,6 +147,10 @@ spec:
               stopping=0
               log_pid=""
               prefetched=0
+              # Master switch for between-job cleanup, independent of SINGLE_USE.
+              # When "false" the supervisor leaves containers, networks, volumes
+              # and /workspace in place so a finished job's state can be inspected.
+              cleanup="${CLEANUP:-true}"
 
               # All supervisor-originated lines carry this prefix so they are
               # distinguishable from the inner agent's output in `kubectl logs`.
@@ -215,7 +221,9 @@ spec:
               			stop_timeout=0
               		fi
               		docker stop --time "$stop_timeout" "$agent_name" >/dev/null 2>&1 || true
-              		cleanup_containers || true
+              		if [ "$cleanup" = "true" ]; then
+              			cleanup_containers || true
+              		fi
               	fi
               	exit 0
               }
@@ -236,15 +244,23 @@ spec:
               }
 
               start_agent() {
-              	cleanup_containers || return 1
-              	prune_networks
-
-              	# Single-use agents run one job then exit; wipe per-job state so
-              	# the next agent starts clean. The image/build cache is retained.
-              	if [ "${SINGLE_USE:-}" = "true" ]; then
-              		log "single-use: resetting per-job state"
+              	# Between-job cleanup is governed solely by CLEANUP, independent
+              	# of SINGLE_USE (which only chooses the agent process lifecycle).
+              	if [ "$cleanup" = "true" ]; then
+              		# Reset per-job state so the next agent starts clean: reap
+              		# leftover containers and networks, wipe /workspace and prune
+              		# daemon volumes. The image/build cache is always retained.
+              		cleanup_containers || return 1
+              		prune_networks
               		clean_workspace
               		prune_volumes
+              	else
+              		# Cleanup disabled: leave the previous job's containers,
+              		# networks, volumes and /workspace in place for inspection,
+              		# but still remove the prior agent container so its name is
+              		# free for the replacement started below.
+              		log "cleanup disabled: leaving previous job state in place"
+              		docker rm --force --volumes "$agent_name" >/dev/null 2>&1 || true
               	fi
 
               	if ! docker image inspect "$AGENT_IMAGE" >/dev/null 2>&1; then
@@ -322,8 +338,10 @@ spec:
               		continue
               	fi
 
-              	cleanup_containers || true
-              	prune_networks
+              	if [ "$cleanup" = "true" ]; then
+              		cleanup_containers || true
+              		prune_networks
+              	fi
               	sleep 5
               done
           ports:
@@ -362,12 +380,24 @@ spec:
             - name: PREFETCH_IMAGES
               #value: "golang:latest node:latest"
               value: ""
-            # false: after each job the supervisor starts a fresh agent
-            # container in the same Pod (long-running pool), reusing /workspace.
-            # Set "true" to run the agent as `start --disconnect-after-job`; the
-            # supervisor then wipes /workspace and prunes daemon volumes before
-            # each new agent so no per-job state carries over (cache is kept).
+            # Controls only the agent process lifecycle, not cleanup.
+            # "false": a long-running agent (`start`) serves many jobs in the
+            # same Pod (pool). "true": a one-shot agent runs as
+            # `start --disconnect-after-job` and exits after a single job, and
+            # the supervisor then starts a fresh one. What state carries between
+            # jobs is governed independently by CLEANUP below.
             - name: SINGLE_USE
+              value: "false"
+            # Master switch for between-job cleanup, independent of SINGLE_USE.
+            # "true" (default): before each agent start the supervisor reaps
+            # leftover containers, prunes networks, wipes /workspace and prunes
+            # daemon volumes, so no per-job state carries over (the image/build
+            # cache is always kept). Set "false" to leave all containers,
+            # networks, volumes and /workspace in place so a finished job's state
+            # can be inspected; the prior agent container is still replaced so a
+            # new job can run. Any leftover state is still discarded when the Pod
+            # is replaced (all storage is Pod-local emptyDir).
+            - name: CLEANUP
               value: "true"
             # Uncomment alongside the docker-config volume/mount to point the
             # inner agent and daemon at mounted registry credentials:
