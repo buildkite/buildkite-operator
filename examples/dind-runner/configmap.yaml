@@ -2,9 +2,11 @@
 # container at /scripts/supervisor.sh. Kept out of deployment.yaml so the shell
 # is editable and lintable on its own, rather than embedded as a heredoc.
 #
-# This is a plain ConfigMap with no content hash, so editing the script and
-# re-applying does NOT restart running Pods. After changing supervisor.sh, roll
-# the Deployment to pick it up:
+# Editing this ConfigMap changes the mounted script but does not by itself
+# restart running Pods. Apply with examples/dind-runner/apply.sh, which stamps a
+# hash of this file onto the Deployment's Pod template so a changed script rolls
+# the Deployment automatically. If you instead apply by hand with
+# `kubectl apply -f`, roll it yourself afterward:
 #
 #   kubectl rollout restart deployment/dind-runner
 #

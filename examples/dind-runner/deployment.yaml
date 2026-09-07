@@ -27,7 +27,9 @@
 #
 # Apply secret.yaml (the agent token this Deployment references) and
 # configmap.yaml (the supervisor shell loop mounted at /scripts/supervisor.sh)
-# before this file.
+# before this file. The apply.sh helper applies configmap.yaml + this file and
+# stamps a hash of the script onto the Pod template, so edits to the script roll
+# the Deployment automatically (plain `kubectl apply -f` does not).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -43,6 +45,8 @@ spec:
       app.kubernetes.io/instance: dind-runner
   template:
     metadata:
+      # apply.sh stamps a buildkite.com/supervisor-hash annotation here (a hash
+      # of configmap.yaml) so edits to the supervisor script roll the Deployment.
       labels:
         app.kubernetes.io/name: buildkite-agent
         app.kubernetes.io/instance: dind-runner
@@ -175,8 +179,8 @@ spec:
             # moving tags like :latest refresh only on a fresh Pod. Private
             # images use the optional DOCKER_CONFIG credentials below.
             - name: PREFETCH_IMAGES
-              #value: "golang:latest node:latest"
-              value: ""
+              value: "golang:latest node:latest"
+#              value: ""
             # Controls only the agent process lifecycle, not cleanup.
             # "false": a long-running agent (`start`) serves many jobs in the
             # same Pod (pool). "true": a one-shot agent runs as

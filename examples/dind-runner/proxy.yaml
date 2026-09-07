@@ -12,23 +12,10 @@
 # credentials becomes servable to anything that can reach port 3128, with no
 # per-client auth. Keep this in a dedicated namespace and restrict access to
 # the runner Pods (see the commented NetworkPolicy at the bottom).
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: registry-proxy-data
-  labels:
-    app.kubernetes.io/name: registry-proxy
-    app.kubernetes.io/instance: dind-runner
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      # Layer cache (CACHE_MAX_SIZE below) plus the generated CA. Size to your
-      # working set of images.
-      storage: 32Gi
-  # storageClassName: standard
----
+#
+# STORAGE: the cache is Pod-local ephemeral storage (emptyDir on the node's
+# disk), so it needs no PVC, StorageClass, or CSI driver, but it is rebuilt
+# whenever the Pod is replaced. See the volume at the bottom for the CA caveat.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,7 +25,7 @@ metadata:
     app.kubernetes.io/instance: dind-runner
 spec:
   replicas: 1
-  # RWO volume + a single stateful cache: never run two replicas against one PVC.
+  # Single stateful cache on Pod-local storage: keep replicas at 1 (Recreate).
   strategy:
     type: Recreate
   selector:
@@ -98,7 +85,7 @@ spec:
           # CPU is the main throughput lever. nginx serves requests concurrently,
           # so this ceiling is shared across all in-flight pulls. Consider
           # removing the CPU limit entirely to avoid CFS-throttling latency
-          # spikes; cache-HIT speed is then bounded mainly by the PVC's disk.
+          # spikes; cache-HIT speed is then bounded mainly by the node's disk.
           resources:
             requests:
               cpu: 500m
@@ -107,9 +94,17 @@ spec:
               cpu: "4"
               memory: 1Gi
       volumes:
+        # Node-local ephemeral scratch: the cache lives on the node's disk for
+        # the life of this Pod and is discarded when the Pod is replaced. No PVC,
+        # StorageClass, or CSI driver required. sizeLimit caps it just above
+        # CACHE_MAX_SIZE so a runaway cache can't fill the node's disk (exceeding
+        # it evicts the Pod); the proxy's own LRU eviction does the real bounding.
+        # CAVEAT: a Pod restart regenerates the proxy's CA (mounted at /ca), so
+        # already-running dind runner Pods that trusted the old CA fail TLS
+        # through the proxy until they are replaced; new runner Pods are fine.
         - name: data
-          persistentVolumeClaim:
-            claimName: registry-proxy-data
+          emptyDir:
+            sizeLimit: 34Gi
 ---
 apiVersion: v1
 kind: Service
