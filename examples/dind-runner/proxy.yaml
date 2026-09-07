@@ -15,7 +15,144 @@
 #
 # STORAGE: the cache is Pod-local ephemeral storage (emptyDir on the node's
 # disk), so it needs no PVC, StorageClass, or CSI driver, but it is rebuilt
-# whenever the Pod is replaced. See the volume at the bottom for the CA caveat.
+# whenever the Pod is replaced. The cache is disposable and safe to lose.
+#
+# CA PERSISTENCE: the proxy's TLS CA (which every dind daemon must trust) is
+# NOT regenerated on restart. A one-shot bootstrap Job mints the CA once and
+# stores it in the registry-proxy-ca Secret; the Deployment mounts that Secret
+# read-only at /ca, so create_ca_cert.sh finds an existing ca.crt and reuses
+# it. This means a proxy restart (or Pod replacement) keeps the same CA, so
+# already-running dind runner Pods that trusted it keep working. On the very
+# first `kubectl apply -f proxy.yaml` the proxy Pod may briefly FailedMount
+# until the Job creates the Secret, then starts automatically. To rotate the
+# CA: `kubectl delete secret registry-proxy-ca`, re-run the Job (e.g. delete
+# and re-apply it), then restart the proxy and replace all runner Pods.
+#
+# The Secret is generated at runtime and is intentionally NOT committed here.
+# ---
+# Bootstrap identity for the CA-init Job. The long-running proxy does not use
+# this and keeps automountServiceAccountToken: false.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: registry-proxy-ca
+  labels:
+    app.kubernetes.io/name: registry-proxy
+    app.kubernetes.io/instance: dind-runner
+---
+# Least-privilege: the Job may only get/create Secrets, nothing else. It cannot
+# read or mutate any other Secret in the namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: registry-proxy-ca
+  labels:
+    app.kubernetes.io/name: registry-proxy
+    app.kubernetes.io/instance: dind-runner
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: registry-proxy-ca
+  labels:
+    app.kubernetes.io/name: registry-proxy
+    app.kubernetes.io/instance: dind-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: registry-proxy-ca
+subjects:
+  - kind: ServiceAccount
+    name: registry-proxy-ca
+---
+# One-shot Job that mints the CA and stores it in the registry-proxy-ca Secret.
+# Idempotent: if the Secret already exists it exits 0 without touching it, so
+# re-applying this manifest never rotates the CA. The openssl invocation mirrors
+# the upstream rpardini/docker-registry-proxy create_ca_cert.sh exactly (RSA
+# 4096, DES3-encrypted key with the image's hard-coded "foobar" passphrase, IA
+# extensions, 1300-day validity) so the running proxy accepts the material and
+# skips regeneration.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: registry-proxy-ca-init
+  labels:
+    app.kubernetes.io/name: registry-proxy
+    app.kubernetes.io/instance: dind-runner
+spec:
+  backoffLimit: 3
+  # Clean up the finished Job automatically 5 minutes after it succeeds.
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry-proxy
+        app.kubernetes.io/instance: dind-runner
+    spec:
+      serviceAccountName: registry-proxy-ca
+      restartPolicy: Never
+      containers:
+        - name: ca-init
+          # Pinned: bundles kubectl + openssl + bash.
+          image: alpine/k8s:1.34.11
+          command: ["/bin/bash", "-euo", "pipefail", "-c"]
+          args:
+            - |
+              if kubectl get secret registry-proxy-ca >/dev/null 2>&1; then
+                echo "registry-proxy-ca Secret already exists; reusing CA. Nothing to do."
+                exit 0
+              fi
+
+              echo "No CA Secret found. Generating a new CA..."
+
+              # alpine/k8s ships kubectl but not the openssl CLI, so install it.
+              if ! command -v openssl >/dev/null 2>&1; then
+                echo "Installing openssl..."
+                apk add --no-cache openssl
+              fi
+
+              workdir="$(mktemp -d)"
+              cd "$workdir"
+
+              # Mirror upstream create_ca_cert.sh: DES3-encrypted 4096-bit key,
+              # self-signed CA cert with IA extensions, 1300-day validity. The
+              # "foobar" passphrase is the image's hard-coded value; the proxy
+              # signs its intermediate with `-passin pass:foobar`, so it must
+              # match. A Secret (not ConfigMap) holds the key, but note the
+              # passphrase is public, so treat read access to this Secret as
+              # equivalent to trusting the CA (i.e. MITM capability).
+              openssl genrsa -des3 -passout pass:foobar -out ca.key 4096
+
+              openssl req -new -x509 -days 1300 -sha256 -key ca.key -out ca.crt \
+                -passin pass:foobar \
+                -subj "/C=NL/ST=Noord Holland/L=Amsterdam/O=ME/OU=IT/CN=DockerMirrorBox CA Root registry-proxy" \
+                -extensions IA -config /dev/stdin <<'EOF'
+              [req]
+              distinguished_name = dn
+              [dn]
+              [IA]
+              basicConstraints = critical,CA:TRUE
+              keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+              subjectKeyIdentifier = hash
+              EOF
+
+              echo "Storing CA in the registry-proxy-ca Secret..."
+              kubectl create secret generic registry-proxy-ca \
+                --from-file=ca.crt=ca.crt \
+                --from-file=ca.key=ca.key
+              echo "Done."
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -41,7 +178,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: proxy
-          image: rpardini/docker-registry-proxy:0.7.0
+          image: ghcr.io/rpardini/docker-registry-proxy:0.7.0
           ports:
             - name: proxy
               containerPort: 3128
@@ -65,13 +202,21 @@ spec:
               value: "32g"
             - name: DISABLE_IPV6
               value: "true"
+            # /ca is mounted read-only from the Secret, but create_ca_cert.sh's
+            # reuse path still wants to (re)write the CA serial file next to the
+            # CA. Redirect it onto the writable container layer (/certs is not a
+            # volume) so nothing ever writes to /ca and the mount can stay RO.
+            - name: CA_SRL_FILE
+              value: /certs/ca.srl
           volumeMounts:
-            - name: data
+            - name: cache
               mountPath: /docker_mirror_cache
-              subPath: cache
-            - name: data
+            # The CA minted by the registry-proxy-ca-init Job. Mounted read-only:
+            # create_ca_cert.sh sees an existing /ca/ca.crt and reuses it instead
+            # of regenerating, so the CA survives proxy restarts.
+            - name: ca
               mountPath: /ca
-              subPath: ca
+              readOnly: true
           readinessProbe:
             tcpSocket:
               port: proxy
@@ -99,12 +244,18 @@ spec:
         # StorageClass, or CSI driver required. sizeLimit caps it just above
         # CACHE_MAX_SIZE so a runaway cache can't fill the node's disk (exceeding
         # it evicts the Pod); the proxy's own LRU eviction does the real bounding.
-        # CAVEAT: a Pod restart regenerates the proxy's CA (mounted at /ca), so
-        # already-running dind runner Pods that trusted the old CA fail TLS
-        # through the proxy until they are replaced; new runner Pods are fine.
-        - name: data
+        # Losing this cache on restart is harmless — it just rebuilds on demand.
+        - name: cache
           emptyDir:
             sizeLimit: 34Gi
+        # The persistent CA, minted once by the registry-proxy-ca-init Job. This
+        # is what makes the proxy's CA survive restarts: the same ca.crt/ca.key
+        # are remounted every time, so create_ca_cert.sh reuses them. mode 0444
+        # since it is only read; readOnly is set on the mount above.
+        - name: ca
+          secret:
+            secretName: registry-proxy-ca
+            defaultMode: 0444
 ---
 apiVersion: v1
 kind: Service
