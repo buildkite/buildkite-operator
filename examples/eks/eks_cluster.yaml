@@ -1,0 +1,51 @@
+# cluster.yaml
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: isaacsu-eks-runner
+  region: us-east-1
+  version: "1.36"
+
+availabilityZones:
+  - us-east-1a
+  - us-east-1b
+
+# IRSA for the Cluster Autoscaler. withOIDC enables IAM Roles for Service
+# Accounts; the wellKnownPolicies.autoScaler policy is eksctl's built-in
+# autoscaler IAM policy (no hand-rolled IAM needed). The Deployment in
+# cluster-autoscaler.yaml runs under this service account.
+iam:
+  withOIDC: true
+  serviceAccounts:
+    - metadata:
+        name: cluster-autoscaler
+        namespace: kube-system
+      wellKnownPolicies:
+        autoScaler: true
+
+managedNodeGroups:
+  - name: isaacsu-eks-runner-workers-v2
+    # Cluster Autoscaler is locked to this single instance type, so size it
+    # deliberately: runner Pods request ~1 vCPU / 2Gi each (see
+    # ../dind-runner/deployment.yaml), so m5.xlarge (4 vCPU / 16Gi) bin-packs
+    # roughly three runners per node after system/daemon overhead.
+    instanceType: m5.xlarge
+    # Start at 1; the Cluster Autoscaler drives desired capacity between
+    # minSize and maxSize based on Pending Pods. It will not scale below minSize.
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 10
+    volumeSize: 100
+    privateNetworking: true
+    # ASG discovery tags for the Cluster Autoscaler. eksctl usually adds these
+    # for managed node groups automatically; they are set explicitly here so the
+    # --node-group-auto-discovery filter in cluster-autoscaler.yaml matches.
+    # The second tag's key must contain the cluster name from metadata.name.
+    tags:
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/YOURNAME-eks-runner: "owned"
+
+vpc:
+  nat:
+    gateway: Single   # options: HighlyAvailable | Single | Disable

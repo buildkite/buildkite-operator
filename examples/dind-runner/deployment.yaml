@@ -123,7 +123,17 @@ spec:
             periodSeconds: 5
             successThreshold: 1
             failureThreshold: 3
-          resources: {}
+          # The build itself runs as nested `docker run` containers INSIDE this
+          # daemon, so its CPU/memory usage is invisible to the Kubernetes
+          # scheduler. These requests are the proxy for one build's footprint:
+          # they are what reserves node capacity per runner and what lets node
+          # autoscaling (e.g. Cluster Autoscaler; see ../eks) trigger on Pending
+          # Pods. Tune to your typical build. Deliberately no limits, so a heavy
+          # build can burst above the request rather than being throttled/OOMed.
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
           volumeMounts:
             - name: docker-data
               mountPath: /var/lib/docker
@@ -179,8 +189,8 @@ spec:
             # moving tags like :latest refresh only on a fresh Pod. Private
             # images use the optional DOCKER_CONFIG credentials below.
             - name: PREFETCH_IMAGES
-              value: "golang:latest node:latest"
-#              value: ""
+#              value: "golang:latest node:latest"
+              value: ""
             # Controls only the agent process lifecycle, not cleanup.
             # "false": a long-running agent (`start`) serves many jobs in the
             # same Pod (pool). "true": a one-shot agent runs as
