@@ -38,7 +38,7 @@ metadata:
     app.kubernetes.io/name: buildkite-agent
     app.kubernetes.io/instance: dind-runner
 spec:
-  replicas: 5
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: buildkite-agent
