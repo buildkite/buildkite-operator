@@ -1,0 +1,53 @@
+manager:
+  image:
+    repository: controller
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+metrics:
+  enabled: true
+  secure: true
+  port: 8443
+
+runnerPool:
+  enabled: true
+  name: ""
+  queue: ""
+  maxRunners: 0
+  minIdleRunners: 1
+  idleTimeoutSeconds: 10
+  terminationGracePeriodSeconds: 3600
+  image: buildkite/agent:3
+  resources: {}
+
+agentToken:
+  value: ""
+  existingSecret:
+    name: ""
+    key: token

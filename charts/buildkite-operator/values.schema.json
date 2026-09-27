@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["manager", "runnerPool", "agentToken"],
+  "properties": {
+    "runnerPool": {
+      "type": "object",
+      "required": ["enabled", "queue", "maxRunners", "minIdleRunners"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "name": { "type": "string", "maxLength": 63 },
+        "queue": { "type": "string" },
+        "maxRunners": { "type": "integer", "minimum": 0 },
+        "minIdleRunners": { "type": "integer", "minimum": 0 },
+        "idleTimeoutSeconds": { "type": "integer", "minimum": 0 },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
+        "image": { "type": "string", "minLength": 1 },
+        "resources": { "type": "object" }
+      }
+    },
+    "agentToken": {
+      "type": "object",
+      "required": ["value", "existingSecret"],
+      "properties": {
+        "value": { "type": "string" },
+        "existingSecret": {
+          "type": "object",
+          "required": ["name", "key"],
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

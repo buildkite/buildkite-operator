@@ -6,7 +6,9 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"net/http"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -21,6 +23,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	buildkitecomv1alpha1 "github.com/buildkite/buildkite-operator/api/v1alpha1"
+	"github.com/buildkite/buildkite-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -32,6 +37,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(buildkitecomv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -161,6 +167,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.RunnerPoolReconciler{
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		PollInterval: 10 * time.Second,
+		StatusChecker: &controller.HTTPAgentStatusChecker{Client: &http.Client{
+			Timeout: 2 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "runnerpool")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

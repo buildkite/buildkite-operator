@@ -20,3 +20,12 @@ steps:
   - label: ":test_tube: test"
     command: make test
     plugins: *go_container
+
+  - label: ":kubernetes: standalone chart"
+    command:
+      - curl -fsSL https://mise.run | sh
+      - export PATH="$$HOME/.local/bin:$$PATH"
+      - mise install
+      - mise exec -- make test-helm
+      - test -z "$(git status --porcelain)"
+      - mise exec -- make test-helm-e2e

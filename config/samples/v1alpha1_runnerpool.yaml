@@ -1,0 +1,30 @@
+# A minimal RunnerPool, together with the agent token secret it references so
+# that `kubectl apply -f config/samples/v1alpha1_runnerpool.yaml` is
+# self-contained. Replace the token with a real Buildkite agent token to have
+# these agents actually connect.
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: buildkite-agent-token
+stringData:
+  token: not-a-real-agent-token
+---
+apiVersion: buildkite.com/v1alpha1
+kind: RunnerPool
+metadata:
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: runnerpool-sample
+spec:
+  queue: default
+  maxRunners: 20
+  minIdleRunners: 3
+  idleTimeoutSeconds: 10
+  image: buildkite/agent:3
+  agentTokenSecretRef:
+    name: buildkite-agent-token
+    key: token

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: buildkite-operator
+description: Buildkite operator and autoscaling runner pool
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - buildkite
+  - runners
+  - operator

@@ -1,0 +1,41 @@
+{{- if .Values.runnerPool.enabled }}
+{{- $queue := required "runnerPool.queue is required when runnerPool.enabled is true" .Values.runnerPool.queue }}
+{{- $maxRunners := int .Values.runnerPool.maxRunners }}
+{{- if lt $maxRunners 1 }}
+{{- fail "runnerPool.maxRunners must be at least 1 when runnerPool.enabled is true" }}
+{{- end }}
+{{- if gt (int .Values.runnerPool.minIdleRunners) $maxRunners }}
+{{- fail "runnerPool.minIdleRunners must be less than or equal to runnerPool.maxRunners" }}
+{{- end }}
+{{- if and .Values.agentToken.value .Values.agentToken.existingSecret.name }}
+{{- fail "set only one of agentToken.value or agentToken.existingSecret.name" }}
+{{- end }}
+{{- if and (not .Values.agentToken.value) (not .Values.agentToken.existingSecret.name) }}
+{{- fail "agentToken.value or agentToken.existingSecret.name is required when runnerPool.enabled is true" }}
+{{- end }}
+apiVersion: buildkite.com/v1alpha1
+kind: RunnerPool
+metadata:
+  name: {{ include "buildkite-operator.runnerPoolName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+spec:
+  queue: {{ $queue | quote }}
+  maxRunners: {{ $maxRunners }}
+  minIdleRunners: {{ .Values.runnerPool.minIdleRunners }}
+  idleTimeoutSeconds: {{ .Values.runnerPool.idleTimeoutSeconds }}
+  terminationGracePeriodSeconds: {{ .Values.runnerPool.terminationGracePeriodSeconds }}
+  image: {{ .Values.runnerPool.image | quote }}
+  agentTokenSecretRef:
+    {{- if .Values.agentToken.existingSecret.name }}
+    name: {{ .Values.agentToken.existingSecret.name | quote }}
+    {{- else }}
+    name: {{ include "buildkite-operator.agentTokenSecretName" . }}
+    {{- end }}
+    key: {{ .Values.agentToken.existingSecret.key | quote }}
+  {{- with .Values.runnerPool.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
