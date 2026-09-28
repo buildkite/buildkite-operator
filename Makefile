@@ -160,8 +160,8 @@ test-helm: helm-sync-crd ## Validate the standalone Helm chart.
 
 .PHONY: test-helm-e2e
 test-helm-e2e: setup-test-e2e helm-sync-crd ## Install and uninstall the standalone chart in isolated Kind.
-	@set -e; trap '$(MAKE) cleanup-test-e2e KIND=$(KIND)' EXIT; \
-		$(MAKE) docker-build IMG=example.com/buildkite-operator:v0.0.1; \
+	@set -e; trap '$(KIND) delete cluster --name $(KIND_CLUSTER)' EXIT; \
+		$(CONTAINER_TOOL) build --load -t example.com/buildkite-operator:v0.0.1 .; \
 		$(KIND) load docker-image example.com/buildkite-operator:v0.0.1 --name $(KIND_CLUSTER); \
 		HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-e2e.sh
 
