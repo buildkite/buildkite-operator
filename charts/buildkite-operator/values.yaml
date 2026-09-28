@@ -39,6 +39,9 @@ runnerPool:
   enabled: true
   name: ""
   queue: ""
+  # standard, kata, or sysbox. Kata and Sysbox require their RuntimeClass and
+  # compatible, labelled nodes to be installed before this chart is installed.
+  runtime: standard
   maxRunners: 0
   minIdleRunners: 1
   idleTimeoutSeconds: 10

@@ -184,6 +184,17 @@ spec:
                 x-kubernetes-validations:
                 - message: resources.claims is not supported
                   rule: '!has(self.claims)'
+              runtime:
+                default: standard
+                description: |-
+                  runtime selects the agent Pod isolation profile. Kata and Sysbox profiles
+                  require their corresponding RuntimeClass and compatible nodes to be
+                  installed in the cluster before agents can start.
+                enum:
+                - standard
+                - kata
+                - sysbox
+                type: string
               terminationGracePeriodSeconds:
                 default: 3600
                 description: |-

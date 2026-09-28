@@ -22,6 +22,7 @@ metadata:
     {{- include "buildkite-operator.labels" . | nindent 4 }}
 spec:
   queue: {{ $queue | quote }}
+  runtime: {{ .Values.runnerPool.runtime | quote }}
   maxRunners: {{ $maxRunners }}
   minIdleRunners: {{ .Values.runnerPool.minIdleRunners }}
   idleTimeoutSeconds: {{ .Values.runnerPool.idleTimeoutSeconds }}

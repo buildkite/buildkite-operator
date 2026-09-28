@@ -5,11 +5,12 @@
   "properties": {
     "runnerPool": {
       "type": "object",
-      "required": ["enabled", "queue", "maxRunners", "minIdleRunners"],
+      "required": ["enabled", "queue", "runtime", "maxRunners", "minIdleRunners"],
       "properties": {
         "enabled": { "type": "boolean" },
         "name": { "type": "string", "maxLength": 63 },
         "queue": { "type": "string" },
+        "runtime": { "type": "string", "enum": ["standard", "kata", "sysbox"] },
         "maxRunners": { "type": "integer", "minimum": 0 },
         "minIdleRunners": { "type": "integer", "minimum": 0 },
         "idleTimeoutSeconds": { "type": "integer", "minimum": 0 },

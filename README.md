@@ -70,6 +70,23 @@ maximum as agents become busy. KEDA and Cluster Autoscaler are neither bundled
 nor required. The operator does not observe queue depth, so setting
 `runnerPool.minIdleRunners=0` leaves the pool dormant.
 
+Set `runnerPool.runtime` to choose the runner isolation profile:
+
+| Value | Runner Pod |
+| --- | --- |
+| `standard` (default) | A Buildkite agent in a regular Kubernetes Pod. |
+| `kata` | An agent and privileged Docker native sidecar inside the `kata-qemu-runtime-rs` VM RuntimeClass. |
+| `sysbox` | An agent and unprivileged Docker native sidecar using the `sysbox-runc` RuntimeClass and Kubernetes user namespaces. |
+
+For example, add `--set-string runnerPool.runtime=kata` to the Helm command.
+Kata and Sysbox are host runtimes, so the chart deliberately does not install
+them or modify containerd. Before installing the chart, prepare dedicated nodes
+labelled and tainted with `experiments.buildkite.com/runtime=kata` or
+`experiments.buildkite.com/runtime=sysbox`, and install the matching RuntimeClass.
+Both profiles require Kubernetes native sidecars; Sysbox additionally requires
+Kubernetes user namespaces. Their Docker data and workspace are Pod-local and
+are discarded when an agent Pod is removed.
+
 To run the operator directly during development instead:
 
 ```bash
@@ -87,6 +104,7 @@ kubectl apply -f config/samples/v1alpha1_runnerpool.yaml
 | `spec.idleTimeoutSeconds` | no | `10` | How long an agent must be observed idle before surplus capacity is removed. |
 | `spec.terminationGracePeriodSeconds` | no | `3600` | Time Kubernetes allows an agent to finish a job after SIGTERM before forcefully stopping it. |
 | `spec.image` | no | `buildkite/agent:3` | Agent image. It must provide the Buildkite agent health server and graceful SIGTERM behavior; Buildkite agent v3.72.0 or newer is required. |
+| `spec.runtime` | no | `standard` | Pod isolation profile: `standard`, `kata`, or `sysbox`. Kata and Sysbox require compatible nodes and a pre-installed RuntimeClass. |
 | `spec.agentTokenSecretRef` | yes | — | Secret name and key holding the Buildkite agent token, exposed to agents as `BUILDKITE_AGENT_TOKEN`. |
 | `spec.resources` | no | — | Compute resources for each agent container. |
 

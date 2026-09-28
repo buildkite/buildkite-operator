@@ -20,6 +20,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	nodev1 "k8s.io/api/node/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -190,6 +191,16 @@ var _ = Describe("RunnerPool Controller", func() {
 		return *pod
 	}
 
+	createRuntimeClass := func(name string) {
+		GinkgoHelper()
+		runtimeClass := &nodev1.RuntimeClass{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Handler:    name,
+		}
+		Expect(k8sClient.Create(ctx, runtimeClass)).To(Succeed())
+		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, runtimeClass))).To(Succeed()) })
+	}
+
 	BeforeEach(func() {
 		ctx = context.Background()
 		checker = &fakeAgentStatusChecker{
@@ -250,7 +261,7 @@ var _ = Describe("RunnerPool Controller", func() {
 		}))
 		Expect(agent.ReadinessProbe.HTTPGet.Path).To(Equal("/agent/1"))
 		Expect(agent.Env).To(ContainElements(
-			corev1.EnvVar{Name: "BUILDKITE_AGENT_TAGS", Value: "queue=macos-arm64"},
+			corev1.EnvVar{Name: agentTagsEnvName, Value: "queue=macos-arm64"},
 			corev1.EnvVar{Name: "BUILDKITE_AGENT_HEALTH_CHECK_ADDR", Value: "0.0.0.0:8080"},
 		))
 		Expect(agent.Env).To(ContainElement(corev1.EnvVar{
@@ -271,6 +282,47 @@ var _ = Describe("RunnerPool Controller", func() {
 		ready := meta.FindStatusCondition(status.Conditions, buildkitecomv1alpha1.RunnerPoolConditionReady)
 		Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		Expect(ready.Reason).To(Equal("AgentsReady"))
+	})
+
+	It("creates Kata agents with a privileged Docker native sidecar", func() {
+		createRuntimeClass("kata-qemu-runtime-rs")
+		pool := currentPool()
+		pool.Spec.Runtime = buildkitecomv1alpha1.RunnerRuntimeKata
+		Expect(k8sClient.Update(ctx, pool)).To(Succeed())
+
+		reconcileNow()
+		pod := agentPods()[0]
+		Expect(pod.Spec.RuntimeClassName).To(HaveValue(Equal("kata-qemu-runtime-rs")))
+		Expect(pod.Spec.AutomountServiceAccountToken).To(HaveValue(BeFalse()))
+		Expect(pod.Spec.NodeSelector).To(HaveKeyWithValue("experiments.buildkite.com/runtime", "kata"))
+		Expect(pod.Spec.InitContainers).To(HaveLen(1))
+		dockerd := pod.Spec.InitContainers[0]
+		Expect(dockerd.Name).To(Equal("dockerd"))
+		Expect(dockerd.RestartPolicy).To(HaveValue(Equal(corev1.ContainerRestartPolicyAlways)))
+		Expect(dockerd.SecurityContext.Privileged).To(HaveValue(BeTrue()))
+		Expect(dockerd.Args).NotTo(ContainElement("--storage-driver=overlay2"))
+		Expect(pod.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{
+			Name: agentTagsEnvName, Value: "queue=macos-arm64,runtime=kata",
+		}))
+	})
+
+	It("creates Sysbox agents with user namespaces and unprivileged Docker", func() {
+		createRuntimeClass("sysbox-runc")
+		pool := currentPool()
+		pool.Spec.Runtime = buildkitecomv1alpha1.RunnerRuntimeSysbox
+		Expect(k8sClient.Update(ctx, pool)).To(Succeed())
+
+		reconcileNow()
+		pod := agentPods()[0]
+		Expect(pod.Spec.RuntimeClassName).To(HaveValue(Equal("sysbox-runc")))
+		Expect(pod.Spec.HostUsers).To(HaveValue(BeFalse()))
+		Expect(pod.Spec.NodeSelector).To(HaveKeyWithValue("experiments.buildkite.com/runtime", "sysbox"))
+		dockerd := pod.Spec.InitContainers[0]
+		Expect(dockerd.SecurityContext.Privileged).To(HaveValue(BeFalse()))
+		Expect(dockerd.Args).To(ContainElement("--storage-driver=overlay2"))
+		Expect(pod.Spec.Containers[0].VolumeMounts).To(ContainElement(corev1.VolumeMount{
+			Name: workspaceVolumeName, MountPath: workspaceMountPath,
+		}))
 	})
 
 	It("adds idle capacity as agents become busy and stops at maxRunners", func() {
@@ -569,6 +621,22 @@ var _ = Describe("RunnerPool Controller", func() {
 			},
 		})
 		Expect(err).To(MatchError(ContainSubstring("resources.claims is not supported")))
+	})
+
+	It("rejects unsupported runtimes", func() {
+		err := k8sClient.Create(ctx, &buildkitecomv1alpha1.RunnerPool{
+			ObjectMeta: metav1.ObjectMeta{Name: "invalid-runtime", Namespace: namespace},
+			Spec: buildkitecomv1alpha1.RunnerPoolSpec{
+				Queue:      queueName,
+				MaxRunners: 1,
+				Runtime:    "gvisor",
+				AgentTokenSecretRef: corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecretName},
+					Key:                  agentTokenSecretKey,
+				},
+			},
+		})
+		Expect(err).To(MatchError(ContainSubstring("Unsupported value: \"gvisor\"")))
 	})
 
 	It("ignores a pool that no longer exists", func() {

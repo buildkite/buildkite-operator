@@ -29,6 +29,10 @@ const (
 
 	agentHealthPort     int32 = 8080
 	agentHealthPortName       = "health"
+	agentTagsEnvName          = "BUILDKITE_AGENT_TAGS"
+	dockerRunVolumeName       = "docker-run"
+	workspaceVolumeName       = "workspace"
+	workspaceMountPath        = "/buildkite"
 
 	defaultTerminationGracePeriodSeconds int64 = 3600
 	defaultMinIdleRunners                int32 = 1

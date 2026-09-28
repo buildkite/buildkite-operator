@@ -13,6 +13,18 @@ import (
 // agents are running and available.
 const RunnerPoolConditionReady = "Ready"
 
+// RunnerRuntime selects the isolation runtime used by a RunnerPool.
+type RunnerRuntime string
+
+const (
+	// RunnerRuntimeStandard runs the agent directly in a regular Kubernetes Pod.
+	RunnerRuntimeStandard RunnerRuntime = "standard"
+	// RunnerRuntimeKata runs the agent and its Docker daemon in a Kata VM.
+	RunnerRuntimeKata RunnerRuntime = "kata"
+	// RunnerRuntimeSysbox runs the agent and its Docker daemon with Sysbox.
+	RunnerRuntimeSysbox RunnerRuntime = "sysbox"
+)
+
 // +kubebuilder:validation:XValidation:rule="self.minIdleRunners <= self.maxRunners",message="minIdleRunners must be less than or equal to maxRunners"
 
 // RunnerPoolSpec defines the desired state of RunnerPool
@@ -55,6 +67,14 @@ type RunnerPoolSpec struct {
 	// +kubebuilder:default="buildkite/agent:3"
 	// +optional
 	Image string `json:"image,omitempty"`
+
+	// runtime selects the agent Pod isolation profile. Kata and Sysbox profiles
+	// require their corresponding RuntimeClass and compatible nodes to be
+	// installed in the cluster before agents can start.
+	// +kubebuilder:default=standard
+	// +kubebuilder:validation:Enum=standard;kata;sysbox
+	// +optional
+	Runtime RunnerRuntime `json:"runtime,omitempty"`
 
 	// agentTokenSecretRef references the secret key holding the Buildkite agent
 	// token that agents in this pool authenticate with.
