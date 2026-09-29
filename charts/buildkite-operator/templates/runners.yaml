@@ -28,7 +28,6 @@ metadata:
     {{- include "buildkite-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: runner
 spec:
-  replicas: {{ .Values.runners.minReplicas }}
   strategy:
     type: Recreate
   selector:
@@ -116,10 +115,11 @@ spec:
                 secretKeyRef:
                   {{- if .Values.agentToken.existingSecret.name }}
                   name: {{ .Values.agentToken.existingSecret.name | quote }}
+                  key: {{ .Values.agentToken.existingSecret.key | quote }}
                   {{- else }}
                   name: {{ include "buildkite-operator.agentTokenSecretName" . }}
+                  key: token
                   {{- end }}
-                  key: {{ .Values.agentToken.existingSecret.key | quote }}
             - name: BUILDKITE_AGENT_NAME
               valueFrom:
                 fieldRef:

@@ -154,9 +154,15 @@ test-helm: ## Validate the standalone Helm chart.
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-chart.sh
 
 .PHONY: test-helm-e2e
-test-helm-e2e: setup-test-e2e ## Install and uninstall the standalone chart in isolated Kind.
-	@set -e; trap '$(KIND) delete cluster --name $(KIND_CLUSTER)' EXIT; \
-		HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-e2e.sh
+test-helm-e2e: kind ## Install and uninstall the standalone chart in a fresh, isolated Kind cluster.
+	@set -eu; \
+		cluster="buildkite-operator-helm-e2e-$$$$"; \
+		kubeconfig="$$(mktemp)"; \
+		cleanup() { $(KIND) delete cluster --name "$$cluster" --kubeconfig "$$kubeconfig"; rm -f "$$kubeconfig"; }; \
+		trap cleanup EXIT INT TERM; \
+		$(KIND) create cluster --name "$$cluster" --kubeconfig "$$kubeconfig"; \
+		KUBECONFIG="$$kubeconfig" KUBE_CONTEXT="kind-$$cluster" KIND_CLUSTER="$$cluster" \
+			HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-e2e.sh
 
 ##@ Deployment
 

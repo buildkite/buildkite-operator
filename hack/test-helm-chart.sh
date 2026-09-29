@@ -68,7 +68,21 @@ assert_contains "${direct}" "minReplicaCount: 1"
 assert_contains "${direct}" "maxReplicaCount: 4"
 assert_contains "${direct}" "formula: scheduled + running"
 assert_contains "${direct}" 'valueLocation: "jobs.queues.linux.scheduled"'
+assert_contains "${direct}" "token: \"${TOKEN}\""
 assert_contains "${direct}" "authorization: \"Token ${TOKEN}\""
+if [[ "${direct}" == *$'\n  replicas:'* ]]; then
+	echo "Deployment rendered spec.replicas even though KEDA owns scaling" >&2
+	exit 1
+fi
+
+direct_with_reserved_key=$(render \
+	--set-string agentToken.value="${TOKEN}" \
+	--set-string agentToken.existingSecret.key=authorization)
+assert_contains "${direct_with_reserved_key}" "token: \"${TOKEN}\""
+if [[ $(grep -c '^  authorization:' <<<"${direct_with_reserved_key}") -ne 1 ]]; then
+	echo "Generated Secret rendered the authorization key more than once" >&2
+	exit 1
+fi
 
 existing=$(render \
 	--set-string agentToken.existingSecret.name=agent-token \

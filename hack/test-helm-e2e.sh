@@ -4,6 +4,15 @@ set -euo pipefail
 
 HELM="${HELM:-helm}"
 CHART_DIR="${HELM_CHART_DIR:-charts/buildkite-operator}"
+: "${KUBECONFIG:?KUBECONFIG must identify the isolated test cluster}"
+: "${KUBE_CONTEXT:?KUBE_CONTEXT must identify the isolated test context}"
+: "${KIND_CLUSTER:?KIND_CLUSTER must identify the isolated test cluster}"
+if [[ "${KUBE_CONTEXT}" != "kind-${KIND_CLUSTER}" ]]; then
+	echo "KUBE_CONTEXT must match the isolated Kind cluster" >&2
+	exit 1
+fi
+HELM_CLUSTER=("${HELM}" --kubeconfig "${KUBECONFIG}" --kube-context "${KUBE_CONTEXT}")
+KUBECTL=(kubectl --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}")
 NAMESPACE="buildkite-runners"
 RELEASE="buildkite-runners"
 RUNNERS="buildkite-runners-buildkite-operator-runners"
@@ -17,7 +26,7 @@ install_runner_chart() {
 	local release="$1"
 	local namespace="$2"
 	local queue="$3"
-	"${HELM}" install "${release}" "${CHART_DIR}" \
+	"${HELM_CLUSTER[@]}" install "${release}" "${CHART_DIR}" \
 		--namespace "${namespace}" \
 		--set-string runners.queue="${queue}" \
 		--set runners.maxReplicas=1 \
@@ -29,24 +38,24 @@ install_runner_chart() {
 }
 
 cleanup() {
-	"${HELM}" uninstall "${RELEASE}" --namespace "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
-	"${HELM}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
-	"${HELM}" uninstall "${KEDA_RELEASE}" --namespace "${KEDA_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
-	kubectl delete namespace "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
-	kubectl delete namespace "${SECOND_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
-	kubectl delete namespace "${KEDA_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+	"${HELM_CLUSTER[@]}" uninstall "${RELEASE}" --namespace "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+	"${HELM_CLUSTER[@]}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+	"${HELM_CLUSTER[@]}" uninstall "${KEDA_RELEASE}" --namespace "${KEDA_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+	"${KUBECTL[@]}" delete namespace "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+	"${KUBECTL[@]}" delete namespace "${SECOND_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+	"${KUBECTL[@]}" delete namespace "${KEDA_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-kubectl create namespace "${NAMESPACE}"
-kubectl create namespace "${SECOND_NAMESPACE}"
+"${KUBECTL[@]}" create namespace "${NAMESPACE}"
+"${KUBECTL[@]}" create namespace "${SECOND_NAMESPACE}"
 if output=$(install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e 2>&1); then
 	echo "Expected installation without KEDA to fail" >&2
 	exit 1
 fi
 [[ "${output}" == *"KEDA is required"* ]]
 
-"${HELM}" upgrade --install "${KEDA_RELEASE}" keda \
+"${HELM_CLUSTER[@]}" upgrade --install "${KEDA_RELEASE}" keda \
 	--repo https://kedacore.github.io/charts \
 	--version 2.20.0 \
 	--namespace "${KEDA_NAMESPACE}" \
@@ -57,19 +66,19 @@ fi
 install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e
 install_runner_chart "${SECOND_RELEASE}" "${SECOND_NAMESPACE}" e2e-secondary
 
-kubectl rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=2m
-kubectl rollout status deployment/keda-operator-metrics-apiserver -n "${KEDA_NAMESPACE}" --timeout=2m
-kubectl get secret/buildkite-runners-buildkite-operator-agent-token -n "${NAMESPACE}" >/dev/null
-kubectl get deployment/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
-kubectl get scaledobject/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
-kubectl get triggerauthentication/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
-kubectl get deployment/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
-kubectl get scaledobject/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
-kubectl get triggerauthentication/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=2m
+"${KUBECTL[@]}" rollout status deployment/keda-operator-metrics-apiserver -n "${KEDA_NAMESPACE}" --timeout=2m
+"${KUBECTL[@]}" get secret/buildkite-runners-buildkite-operator-agent-token -n "${NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get deployment/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get scaledobject/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get triggerauthentication/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get deployment/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get scaledobject/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get triggerauthentication/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
 
 pod=""
 for _ in $(seq 1 60); do
-	pod=$(kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=runner -o name)
+	pod=$("${KUBECTL[@]}" get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=runner -o name)
 	if [[ -n "${pod}" ]]; then
 		break
 	fi
@@ -80,25 +89,25 @@ if [[ -z "${pod}" ]]; then
 	exit 1
 fi
 
-owner=$(kubectl get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.ownerReferences[0].kind}')
+owner=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.ownerReferences[0].kind}')
 [[ "${owner}" == "ReplicaSet" ]]
-queue=$(kubectl get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.containers[0].env[?(@.name=="BUILDKITE_AGENT_TAGS")].value}')
+queue=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.containers[0].env[?(@.name=="BUILDKITE_AGENT_TAGS")].value}')
 [[ "${queue}" == "queue=e2e,runtime=standard" ]]
 
-"${HELM}" uninstall "${RELEASE}" --namespace "${NAMESPACE}" --wait --timeout 2m
+"${HELM_CLUSTER[@]}" uninstall "${RELEASE}" --namespace "${NAMESPACE}" --wait --timeout 2m
 for _ in $(seq 1 60); do
-	pod=$(kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=runner -o name)
+	pod=$("${KUBECTL[@]}" get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=runner -o name)
 	if [[ -z "${pod}" ]]; then
 		break
 	fi
 	sleep 1
 done
 [[ -z "${pod}" ]]
-if kubectl get scaledobject/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+if "${KUBECTL[@]}" get scaledobject/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null 2>&1; then
 	echo "ScaledObject remained after chart uninstall" >&2
 	exit 1
 fi
-kubectl get deployment/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
-kubectl get scaledobject/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
-kubectl rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=30s
-"${HELM}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --wait --timeout 2m
+"${KUBECTL[@]}" get deployment/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get scaledobject/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=30s
+"${HELM_CLUSTER[@]}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --wait --timeout 2m
