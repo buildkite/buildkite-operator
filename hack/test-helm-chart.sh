@@ -63,6 +63,9 @@ assert_contains "${direct}" "# Source: buildkite-operator/templates/runners.yaml
 assert_contains "${direct}" "kind: Deployment"
 assert_contains "${direct}" "kind: ScaledObject"
 assert_contains "${direct}" "kind: TriggerAuthentication"
+assert_contains "${direct}" "type: RollingUpdate"
+assert_contains "${direct}" "maxUnavailable: 0"
+assert_contains "${direct}" "maxSurge: 1"
 assert_contains "${direct}" 'value: "queue=linux,runtime=standard"'
 assert_contains "${direct}" "minReplicaCount: 1"
 assert_contains "${direct}" "maxReplicaCount: 4"
