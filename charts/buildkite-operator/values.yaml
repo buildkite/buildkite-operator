@@ -50,18 +50,8 @@ metricsToken:
     name: ""
     key: authorization
 
-kedaCleanup:
-  image:
-    repository: registry.k8s.io/kubectl
-    tag: v1.36.1
-    pullPolicy: IfNotPresent
-
-# KEDA is vendored and installed by default so this chart is standalone. Set
-# enabled=false only when a compatible KEDA installation already watches this
-# release namespace.
+# KEDA 2.20.0 must be installed separately and configured to watch this release
+# namespace. Disable validation only for offline rendering and linting, where
+# Helm cannot discover APIs from a cluster.
 keda:
-  enabled: true
-  crds:
-    # KEDA's CRDs are copied into this parent chart's crds/ directory so Helm
-    # installs them before validating the chart's ScaledObject.
-    install: false
+  validateInstallation: true

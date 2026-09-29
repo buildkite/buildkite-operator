@@ -5,11 +5,15 @@ set -euo pipefail
 HELM="${HELM:-helm}"
 CHART_DIR="${HELM_CHART_DIR:-charts/buildkite-operator}"
 TOKEN="chart-test-agent-token"
+KEDA_API_VERSIONS=(
+	--api-versions keda.sh/v1alpha1/ScaledObject
+	--api-versions keda.sh/v1alpha1/TriggerAuthentication
+)
 
 render() {
 	"${HELM}" template test "${CHART_DIR}" \
 		--namespace buildkite-runners \
-		--set keda.enabled=false \
+		"${KEDA_API_VERSIONS[@]}" \
 		--set-string runners.queue=linux \
 		--set runners.maxReplicas=4 \
 		"$@"
@@ -28,12 +32,31 @@ assert_fails() {
 	local expected="$1"
 	shift
 	local output
-	if output=$("${HELM}" template test "${CHART_DIR}" --set keda.enabled=false "$@" 2>&1); then
+	if output=$("${HELM}" template test "${CHART_DIR}" "${KEDA_API_VERSIONS[@]}" "$@" 2>&1); then
 		echo "Expected Helm rendering to fail" >&2
 		exit 1
 	fi
 	assert_contains "${output}" "${expected}"
 }
+
+if missing_keda=$("${HELM}" template test "${CHART_DIR}" \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=4 \
+	--set-string agentToken.value="${TOKEN}" 2>&1); then
+	echo "Expected rendering without KEDA APIs to fail" >&2
+	exit 1
+fi
+assert_contains "${missing_keda}" "KEDA is required"
+
+if missing_auth=$("${HELM}" template test "${CHART_DIR}" \
+	--api-versions keda.sh/v1alpha1/ScaledObject \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=4 \
+	--set-string agentToken.value="${TOKEN}" 2>&1); then
+	echo "Expected rendering without the TriggerAuthentication API to fail" >&2
+	exit 1
+fi
+assert_contains "${missing_auth}" "keda.sh/v1alpha1/TriggerAuthentication API is not available"
 
 direct=$(render --set-string agentToken.value="${TOKEN}")
 assert_contains "${direct}" "# Source: buildkite-operator/templates/runners.yaml"
@@ -68,7 +91,7 @@ assert_contains "${sysbox}" "hostUsers: false"
 assert_contains "${sysbox}" "- --storage-driver=overlay2"
 assert_contains "${sysbox}" 'value: "queue=linux,runtime=sysbox"'
 
-disabled=$("${HELM}" template test "${CHART_DIR}" --set runners.enabled=false --set keda.enabled=false)
+disabled=$("${HELM}" template test "${CHART_DIR}" --set runners.enabled=false)
 if [[ "${disabled}" == *"kind: Deployment"* || "${disabled}" == *"kind: ScaledObject"* || "${disabled}" == *"kind: Secret"* ]]; then
 	echo "Disabled runner mode rendered runner resources" >&2
 	exit 1
@@ -99,6 +122,7 @@ assert_fails "value must be one of 'standard', 'kata', 'sysbox'" \
 	--set-string agentToken.value="${TOKEN}"
 
 "${HELM}" lint "${CHART_DIR}" \
+	--set keda.validateInstallation=false \
 	--set-string runners.queue=linux \
 	--set runners.maxReplicas=4 \
 	--set-string agentToken.value="${TOKEN}"

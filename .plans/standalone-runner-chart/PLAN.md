@@ -9,11 +9,11 @@ Add a hand-maintained Helm chart under `charts/buildkite-operator` that installs
 - Keep one runner warm by default and scale toward a customer-supplied positive maximum from Buildkite queue demand.
 - Require a Buildkite queue and either a token value or existing Secret reference.
 - Scale from the Buildkite Agent Metrics API's `scheduled + running` counts so running jobs continue to reserve capacity.
-- Vendor KEDA 2.20.0 and its CRDs so a first installation works without another chart. Allow `keda.enabled=false` when a compatible cluster installation already exists.
-- Retain KEDA CRDs on uninstall and remove namespaced KEDA resources while its controller is still available to clear finalizers.
+- Require the supported KEDA 2.20.0 release to be installed separately and configured to watch the release namespace.
+- Validate that KEDA's `ScaledObject` and `TriggerAuthentication` APIs are discoverable before rendering runner resources.
 - Offer `standard`, `kata`, and `sysbox` runner profiles. Do not install Kata or Sysbox because both mutate node runtime configuration; document their RuntimeClass and node prerequisites.
 - Keep AWS/EKS lab resources, observations, and credentials metadata out of the chart.
-- Verify direct-token, existing-Secret, disabled-runner, invalid-input, first-install, KEDA readiness, runner Pod creation, and clean uninstall behavior.
+- Verify the missing-KEDA failure, direct-token, existing-Secret, disabled-runner, invalid-input, KEDA readiness, runner Pod creation, and independent uninstall behavior.
 
 ## Implementation
 
@@ -29,12 +29,12 @@ Render a KEDA `TriggerAuthentication` and `ScaledObject` targeting the runner De
 
 Direct-token mode creates one Secret containing the raw agent token and `Authorization: Token <token>` value. Existing-secret mode accepts separate agent and metrics Secret references because Helm cannot derive the prefixed authorization value from an existing Secret.
 
-### Standalone KEDA lifecycle
+### Shared KEDA prerequisite
 
-Vendor the pinned KEDA subchart. Copy its rendered CRDs into the parent chart's `crds/` directory and disable the subchart's templated CRDs so Helm can validate the chart's KEDA resources during first installation. A pre-delete hook with namespace-scoped RBAC deletes and waits for the `ScaledObject` and `TriggerAuthentication` before Helm removes KEDA, preventing orphaned finalizers.
+Do not bundle KEDA or its cluster-scoped resources. Use Helm API capabilities to fail with a clear prerequisite error when either required KEDA kind is unavailable. A separate KEDA installation remains available to reconcile finalizers when any runner release is uninstalled and can serve multiple runner namespaces.
 
 ### Verification
 
-- `make test-helm` validates standard, Kata, Sysbox, direct-token, existing-secret, disabled, and rejected-input renders, then lints the chart with bundled KEDA.
-- `make test-helm-e2e` installs the complete chart in isolated Kind, waits for KEDA, verifies the Deployment, scaling resources, Secret, and runner Pod, then confirms uninstall completes without leaving the namespace stuck.
-- Existing Go lint, generation, and unit suites continue to validate the repository's separately runnable operator implementation.
+- `make test-helm` validates missing API failures, standard, Kata, Sysbox, direct-token, existing-secret, disabled, and rejected-input renders, then lints the chart.
+- `make test-helm-e2e` first verifies the chart rejects a cluster without KEDA, installs KEDA separately, installs two runner releases, then confirms one runner release can be uninstalled without disrupting the other release or KEDA.
+- Existing repository lint, generation, and unit checks remain green.

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["runners", "docker", "agentToken", "metricsToken", "kedaCleanup", "keda"],
+  "required": ["runners", "docker", "agentToken", "metricsToken", "keda"],
   "properties": {
     "runners": {
       "type": "object",
@@ -46,17 +46,10 @@
     },
     "agentToken": { "$ref": "#/$defs/token" },
     "metricsToken": { "$ref": "#/$defs/token" },
-    "kedaCleanup": {
-      "type": "object",
-      "required": ["image"],
-      "properties": {
-        "image": { "$ref": "#/$defs/image" }
-      }
-    },
     "keda": {
       "type": "object",
-      "required": ["enabled"],
-      "properties": { "enabled": { "type": "boolean" } }
+      "required": ["validateInstallation"],
+      "properties": { "validateInstallation": { "type": "boolean" } }
     }
   },
   "$defs": {
