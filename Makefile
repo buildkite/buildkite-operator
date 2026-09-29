@@ -149,20 +149,13 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 HELM ?= helm
 HELM_CHART_DIR ?= charts/buildkite-operator
 
-.PHONY: helm-sync-crd
-helm-sync-crd: manifests ## Update the standalone chart's CRD from generated API markers.
-	mkdir -p $(HELM_CHART_DIR)/crds
-	cp config/crd/bases/buildkite.com_runnerpools.yaml $(HELM_CHART_DIR)/crds/runnerpools.buildkite.com.yaml
-
 .PHONY: test-helm
-test-helm: helm-sync-crd ## Validate the standalone Helm chart.
+test-helm: ## Validate the standalone Helm chart.
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-chart.sh
 
 .PHONY: test-helm-e2e
-test-helm-e2e: setup-test-e2e helm-sync-crd ## Install and uninstall the standalone chart in isolated Kind.
+test-helm-e2e: setup-test-e2e ## Install and uninstall the standalone chart in isolated Kind.
 	@set -e; trap '$(KIND) delete cluster --name $(KIND_CLUSTER)' EXIT; \
-		$(CONTAINER_TOOL) build --load -t example.com/buildkite-operator:v0.0.1 .; \
-		$(KIND) load docker-image example.com/buildkite-operator:v0.0.1 --name $(KIND_CLUSTER); \
 		HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-e2e.sh
 
 ##@ Deployment

@@ -1,0 +1,70 @@
+{{- if .Values.runners.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ include "buildkite-operator.runnerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+spec:
+  secretTargetRef:
+    - parameter: apiKey
+      name: {{ include "buildkite-operator.metricsTokenSecretName" . }}
+      key: {{ ternary .Values.metricsToken.existingSecret.key "authorization" (ne .Values.metricsToken.existingSecret.name "") }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "buildkite-operator.runnerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "buildkite-operator.runnerName" . }}
+  pollingInterval: {{ .Values.runners.pollingInterval }}
+  cooldownPeriod: {{ .Values.runners.cooldownPeriod }}
+  minReplicaCount: {{ .Values.runners.minReplicas }}
+  maxReplicaCount: {{ .Values.runners.maxReplicas }}
+  advanced:
+    scalingModifiers:
+      formula: scheduled + running
+      target: "1"
+      activationTarget: "0"
+      metricType: AverageValue
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 30
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 5
+              periodSeconds: 15
+  triggers:
+    - type: metrics-api
+      name: scheduled
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: {{ printf "jobs.queues.%s.scheduled" .Values.runners.queue | quote }}
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: {{ include "buildkite-operator.runnerName" . }}
+    - type: metrics-api
+      name: running
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: {{ printf "jobs.queues.%s.running" .Values.runners.queue | quote }}
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: {{ include "buildkite-operator.runnerName" . }}
+{{- end }}

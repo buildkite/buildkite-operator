@@ -1,10 +1,10 @@
-The Buildkite operator is installed in {{ .Release.Namespace }}.
-{{- if .Values.runnerPool.enabled }}
+{{- if .Values.runners.enabled }}
+Buildkite runners are installed in {{ .Release.Namespace }}.
 
-RunnerPool {{ include "buildkite-operator.runnerPoolName" . }} keeps {{ .Values.runnerPool.minIdleRunners }} agent(s) ready and scales up to {{ .Values.runnerPool.maxRunners }}.
+Deployment {{ include "buildkite-operator.runnerName" . }} keeps at least {{ .Values.runners.minReplicas }} agent(s) ready and KEDA scales it up to {{ .Values.runners.maxReplicas }} from Buildkite queue metrics.
 
-  kubectl get runnerpool {{ include "buildkite-operator.runnerPoolName" . }} -n {{ .Release.Namespace }}
-  kubectl get pods -l buildkite.com/runner-pool={{ include "buildkite-operator.runnerPoolName" . }} -n {{ .Release.Namespace }}
+  kubectl get deployment,scaledobject {{ include "buildkite-operator.runnerName" . }} -n {{ .Release.Namespace }}
+  kubectl get pods -l app.kubernetes.io/component=runner -n {{ .Release.Namespace }}
+{{- else }}
+Runner installation is disabled.
 {{- end }}
-
-The RunnerPool CRD is retained when this release is uninstalled.

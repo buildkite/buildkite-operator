@@ -1,0 +1,174 @@
+{{- if .Values.runners.enabled }}
+{{- $queue := required "runners.queue is required when runners.enabled is true" .Values.runners.queue }}
+{{- $maxReplicas := int .Values.runners.maxReplicas }}
+{{- if lt $maxReplicas 1 }}
+{{- fail "runners.maxReplicas must be at least 1 when runners.enabled is true" }}
+{{- end }}
+{{- if gt (int .Values.runners.minReplicas) $maxReplicas }}
+{{- fail "runners.minReplicas must be less than or equal to runners.maxReplicas" }}
+{{- end }}
+{{- if and .Values.agentToken.value .Values.agentToken.existingSecret.name }}
+{{- fail "set only one of agentToken.value or agentToken.existingSecret.name" }}
+{{- end }}
+{{- if and (not .Values.agentToken.value) (not .Values.agentToken.existingSecret.name) }}
+{{- fail "agentToken.value or agentToken.existingSecret.name is required when runners.enabled is true" }}
+{{- end }}
+{{- if and .Values.metricsToken.value .Values.metricsToken.existingSecret.name }}
+{{- fail "set only one of metricsToken.value or metricsToken.existingSecret.name" }}
+{{- end }}
+{{- if and .Values.agentToken.existingSecret.name (not .Values.metricsToken.value) (not .Values.metricsToken.existingSecret.name) }}
+{{- fail "metricsToken.value or metricsToken.existingSecret.name is required when using an existing agent token Secret" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "buildkite-operator.runnerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runner
+spec:
+  replicas: {{ .Values.runners.minReplicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: runner
+  template:
+    metadata:
+      labels:
+        {{- include "buildkite-operator.labels" . | nindent 8 }}
+        app.kubernetes.io/component: runner
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.runners.terminationGracePeriodSeconds }}
+      {{- if eq .Values.runners.runtime "kata" }}
+      runtimeClassName: kata-qemu-runtime-rs
+      nodeSelector:
+        experiments.buildkite.com/runtime: kata
+      tolerations:
+        - key: experiments.buildkite.com/runtime
+          operator: Equal
+          value: kata
+          effect: NoSchedule
+      {{- else if eq .Values.runners.runtime "sysbox" }}
+      runtimeClassName: sysbox-runc
+      hostUsers: false
+      nodeSelector:
+        experiments.buildkite.com/runtime: sysbox
+      tolerations:
+        - key: experiments.buildkite.com/runtime
+          operator: Equal
+          value: sysbox
+          effect: NoSchedule
+      {{- end }}
+      {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+      initContainers:
+        - name: dockerd
+          image: "{{ .Values.docker.image.repository }}:{{ .Values.docker.image.tag }}"
+          imagePullPolicy: {{ .Values.docker.image.pullPolicy }}
+          restartPolicy: Always
+          args:
+            - dockerd
+            - --host=unix:///var/run/docker.sock
+            {{- if eq .Values.runners.runtime "sysbox" }}
+            - --storage-driver=overlay2
+            {{- end }}
+          env:
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          securityContext:
+            privileged: {{ eq .Values.runners.runtime "kata" }}
+          startupProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 90
+          readinessProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.docker.resources | nindent 12 }}
+          volumeMounts:
+            - name: docker-data
+              mountPath: /var/lib/docker
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /buildkite
+      {{- end }}
+      containers:
+        - name: agent
+          image: "{{ .Values.runners.image.repository }}:{{ .Values.runners.image.tag }}"
+          imagePullPolicy: {{ .Values.runners.image.pullPolicy }}
+          command: ["/usr/local/bin/buildkite-agent"]
+          args: ["start"]
+          env:
+            - name: BUILDKITE_AGENT_CONFIG
+              value: /dev/null
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.agentToken.existingSecret.name }}
+                  name: {{ .Values.agentToken.existingSecret.name | quote }}
+                  {{- else }}
+                  name: {{ include "buildkite-operator.agentTokenSecretName" . }}
+                  {{- end }}
+                  key: {{ .Values.agentToken.existingSecret.key | quote }}
+            - name: BUILDKITE_AGENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BUILDKITE_AGENT_TAGS
+              value: {{ printf "queue=%s,runtime=%s" $queue .Values.runners.runtime | quote }}
+            - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
+              value: 0.0.0.0:8080
+            {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+            - name: BUILDKITE_BUILD_PATH
+              value: /buildkite/builds
+            - name: BUILDKITE_PLUGINS_PATH
+              value: /buildkite/plugins
+            - name: BUILDKITE_SOCKETS_PATH
+              value: /buildkite/sockets
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+          resources:
+            {{- toYaml .Values.runners.resources | nindent 12 }}
+          {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+          volumeMounts:
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /buildkite
+          {{- end }}
+      {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+      volumes:
+        - name: docker-data
+          emptyDir:
+            sizeLimit: {{ .Values.docker.storage.data }}
+        - name: docker-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: workspace
+          emptyDir:
+            sizeLimit: {{ .Values.docker.storage.workspace }}
+      {{- end }}
+{{- end }}

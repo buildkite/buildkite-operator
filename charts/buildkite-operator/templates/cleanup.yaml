@@ -1,0 +1,71 @@
+{{- if .Values.runners.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "buildkite-operator.runnerName" . }}-cleanup
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "buildkite-operator.runnerName" . }}-cleanup
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects", "triggerauthentications"]
+    verbs: ["delete", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "buildkite-operator.runnerName" . }}-cleanup
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "buildkite-operator.runnerName" . }}-cleanup
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "buildkite-operator.runnerName" . }}-cleanup
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "buildkite-operator.runnerName" . }}-cleanup
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 180
+  template:
+    spec:
+      serviceAccountName: {{ include "buildkite-operator.runnerName" . }}-cleanup
+      restartPolicy: Never
+      containers:
+        - name: cleanup
+          image: "{{ .Values.kedaCleanup.image.repository }}:{{ .Values.kedaCleanup.image.tag }}"
+          imagePullPolicy: {{ .Values.kedaCleanup.image.pullPolicy }}
+          args:
+            - delete
+            - scaledobject/{{ include "buildkite-operator.runnerName" . }}
+            - triggerauthentication/{{ include "buildkite-operator.runnerName" . }}
+            - --ignore-not-found
+            - --wait=true
+            - --timeout=120s
+{{- end }}

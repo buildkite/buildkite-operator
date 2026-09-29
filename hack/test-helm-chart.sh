@@ -9,8 +9,9 @@ TOKEN="chart-test-agent-token"
 render() {
 	"${HELM}" template test "${CHART_DIR}" \
 		--namespace buildkite-runners \
-		--set-string runnerPool.queue=linux \
-		--set runnerPool.maxRunners=4 \
+		--set keda.enabled=false \
+		--set-string runners.queue=linux \
+		--set runners.maxReplicas=4 \
 		"$@"
 }
 
@@ -27,7 +28,7 @@ assert_fails() {
 	local expected="$1"
 	shift
 	local output
-	if output=$("${HELM}" template test "${CHART_DIR}" "$@" 2>&1); then
+	if output=$("${HELM}" template test "${CHART_DIR}" --set keda.enabled=false "$@" 2>&1); then
 		echo "Expected Helm rendering to fail" >&2
 		exit 1
 	fi
@@ -35,57 +36,73 @@ assert_fails() {
 }
 
 direct=$(render --set-string agentToken.value="${TOKEN}")
-assert_contains "${direct}" "# Source: buildkite-operator/templates/runnerpool.yaml"
-assert_contains "${direct}" "queue: \"linux\""
-assert_contains "${direct}" "runtime: \"standard\""
-assert_contains "${direct}" "maxRunners: 4"
-assert_contains "${direct}" "minIdleRunners: 1"
-assert_contains "${direct}" "kind: Secret"
-assert_contains "${direct}" "${TOKEN}"
+assert_contains "${direct}" "# Source: buildkite-operator/templates/runners.yaml"
+assert_contains "${direct}" "kind: Deployment"
+assert_contains "${direct}" "kind: ScaledObject"
+assert_contains "${direct}" "kind: TriggerAuthentication"
+assert_contains "${direct}" 'value: "queue=linux,runtime=standard"'
+assert_contains "${direct}" "minReplicaCount: 1"
+assert_contains "${direct}" "maxReplicaCount: 4"
+assert_contains "${direct}" "formula: scheduled + running"
+assert_contains "${direct}" 'valueLocation: "jobs.queues.linux.scheduled"'
+assert_contains "${direct}" "authorization: \"Token ${TOKEN}\""
+if [[ "${direct}" == *"kind: RunnerPool"* || "${direct}" == *"name: runnerpools.buildkite.com"* ]]; then
+	echo "Chart rendered legacy RunnerPool resources" >&2
+	exit 1
+fi
 
-crds=$("${HELM}" show crds "${CHART_DIR}")
-assert_contains "${crds}" "name: runnerpools.buildkite.com"
-
-existing=$(render --set-string agentToken.existingSecret.name=managed-token)
-assert_contains "${existing}" 'name: "managed-token"'
+existing=$(render \
+	--set-string agentToken.existingSecret.name=agent-token \
+	--set-string metricsToken.existingSecret.name=metrics-token)
+assert_contains "${existing}" 'name: "agent-token"'
+assert_contains "${existing}" "name: metrics-token"
 if [[ "${existing}" == *"kind: Secret"* ]]; then
-	echo "Existing Secret mode rendered an agent token Secret" >&2
+	echo "Existing Secret mode rendered a token Secret" >&2
 	exit 1
 fi
 
-kata=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPool.runtime=kata)
-assert_contains "${kata}" 'runtime: "kata"'
+kata=$(render --set-string agentToken.value="${TOKEN}" --set-string runners.runtime=kata)
+assert_contains "${kata}" "runtimeClassName: kata-qemu-runtime-rs"
+assert_contains "${kata}" "privileged: true"
+assert_contains "${kata}" 'value: "queue=linux,runtime=kata"'
 
-sysbox=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPool.runtime=sysbox)
-assert_contains "${sysbox}" 'runtime: "sysbox"'
+sysbox=$(render --set-string agentToken.value="${TOKEN}" --set-string runners.runtime=sysbox)
+assert_contains "${sysbox}" "runtimeClassName: sysbox-runc"
+assert_contains "${sysbox}" "hostUsers: false"
+assert_contains "${sysbox}" "- --storage-driver=overlay2"
+assert_contains "${sysbox}" 'value: "queue=linux,runtime=sysbox"'
 
-operator_only=$("${HELM}" template test "${CHART_DIR}" --set runnerPool.enabled=false)
-if [[ "${operator_only}" == *"# Source: buildkite-operator/templates/runnerpool.yaml"* || "${operator_only}" == *"kind: Secret"* ]]; then
-	echo "Operator-only mode rendered runner resources" >&2
+disabled=$("${HELM}" template test "${CHART_DIR}" --set runners.enabled=false --set keda.enabled=false)
+if [[ "${disabled}" == *"kind: Deployment"* || "${disabled}" == *"kind: ScaledObject"* || "${disabled}" == *"kind: Secret"* ]]; then
+	echo "Disabled runner mode rendered runner resources" >&2
 	exit 1
 fi
 
-assert_fails "runnerPool.queue is required" \
-	--set runnerPool.maxRunners=1 \
+assert_fails "runners.queue is required" \
+	--set runners.maxReplicas=1 \
 	--set-string agentToken.value="${TOKEN}"
-assert_fails "runnerPool.maxRunners must be at least 1" \
-	--set-string runnerPool.queue=linux \
+assert_fails "runners.maxReplicas must be at least 1" \
+	--set-string runners.queue=linux \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "agentToken.value or agentToken.existingSecret.name is required" \
-	--set-string runnerPool.queue=linux \
-	--set runnerPool.maxRunners=1
-assert_fails "runnerPool.minIdleRunners must be less than or equal" \
-	--set-string runnerPool.queue=linux \
-	--set runnerPool.maxRunners=1 \
-	--set runnerPool.minIdleRunners=2 \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=1
+assert_fails "runners.minReplicas must be less than or equal" \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=1 \
+	--set runners.minReplicas=2 \
 	--set-string agentToken.value="${TOKEN}"
+assert_fails "metricsToken.value or metricsToken.existingSecret.name is required" \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=1 \
+	--set-string agentToken.existingSecret.name=agent-token
 assert_fails "value must be one of 'standard', 'kata', 'sysbox'" \
-	--set-string runnerPool.queue=linux \
-	--set runnerPool.maxRunners=1 \
-	--set-string runnerPool.runtime=gvisor \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=1 \
+	--set-string runners.runtime=gvisor \
 	--set-string agentToken.value="${TOKEN}"
 
 "${HELM}" lint "${CHART_DIR}" \
-	--set-string runnerPool.queue=linux \
-	--set runnerPool.maxRunners=4 \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=4 \
 	--set-string agentToken.value="${TOKEN}"

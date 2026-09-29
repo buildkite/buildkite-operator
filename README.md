@@ -32,10 +32,10 @@ linux-builders   20    3      7      10      2m
 
 ## Quickstart
 
-The standalone chart installs the operator, its CRD and RBAC, an agent-token
-Secret, and a `RunnerPool`. It has no chart dependencies. Build and publish the
-operator image, then provide the Buildkite queue, maximum runner count, and
-agent token:
+The standalone chart installs a Buildkite agent `Deployment`, KEDA, its
+`ScaledObject`, and the required token Secret. It does not use the custom
+`RunnerPool` API or install this repository's operator. Provide the Buildkite
+queue, maximum runner count, and cluster agent token:
 
 ```bash
 export BUILDKITE_AGENT_TOKEN='<agent-token>'
@@ -43,10 +43,8 @@ export BUILDKITE_AGENT_TOKEN='<agent-token>'
 helm upgrade --install buildkite-operator ./charts/buildkite-operator \
   --namespace buildkite-operator-system \
   --create-namespace \
-  --set-string manager.image.repository=<registry>/buildkite-operator \
-  --set-string manager.image.tag=<tag> \
-  --set-string runnerPool.queue=<queue> \
-  --set runnerPool.maxRunners=<maximum> \
+  --set-string runners.queue=<queue> \
+  --set runners.maxReplicas=<maximum> \
   --set-string agentToken.value="$BUILDKITE_AGENT_TOKEN"
 ```
 
@@ -58,19 +56,26 @@ it instead:
 helm upgrade --install buildkite-operator ./charts/buildkite-operator \
   --namespace buildkite-operator-system \
   --create-namespace \
-  --set-string manager.image.repository=<registry>/buildkite-operator \
-  --set-string manager.image.tag=<tag> \
-  --set-string runnerPool.queue=<queue> \
-  --set runnerPool.maxRunners=<maximum> \
-  --set-string agentToken.existingSecret.name=<secret-name>
+  --set-string runners.queue=<queue> \
+  --set runners.maxReplicas=<maximum> \
+  --set-string agentToken.existingSecret.name=<agent-secret> \
+  --set-string metricsToken.existingSecret.name=<metrics-secret>
 ```
 
-The pool keeps one idle agent ready by default and scales toward the configured
-maximum as agents become busy. KEDA and Cluster Autoscaler are neither bundled
-nor required. The operator does not observe queue depth, so setting
-`runnerPool.minIdleRunners=0` leaves the pool dormant.
+KEDA is vendored into the chart and polls Buildkite's Agent Metrics API. It
+scales for `scheduled + running` jobs, keeps one runner warm by default, and
+scales up to `runners.maxReplicas`. Set `keda.enabled=false` only when a
+compatible KEDA installation already watches the release namespace. With
+existing Secrets, the metrics Secret key must contain the complete
+`Authorization` value (`Token <cluster-agent-token>`).
 
-Set `runnerPool.runtime` to choose the runner isolation profile:
+KEDA's HPA chooses scale-in victims; unlike `RunnerPool`, it does not confirm
+that a selected agent is idle. The agent drains a running job on its first
+SIGTERM, bounded by `runners.terminationGracePeriodSeconds`. The configured
+maximum bounds desired replicas, but terminating Pods may briefly overlap
+replacement capacity. KEDA CRDs are retained when the release is uninstalled.
+
+Set `runners.runtime` to choose the runner isolation profile:
 
 | Value | Runner Pod |
 | --- | --- |
@@ -78,7 +83,7 @@ Set `runnerPool.runtime` to choose the runner isolation profile:
 | `kata` | An agent and privileged Docker native sidecar inside the `kata-qemu-runtime-rs` VM RuntimeClass. |
 | `sysbox` | An agent and unprivileged Docker native sidecar using the `sysbox-runc` RuntimeClass and Kubernetes user namespaces. |
 
-For example, add `--set-string runnerPool.runtime=kata` to the Helm command.
+For example, add `--set-string runners.runtime=kata` to the Helm command.
 Kata and Sysbox are host runtimes, so the chart deliberately does not install
 them or modify containerd. Before installing the chart, prepare dedicated nodes
 labelled and tainted with `experiments.buildkite.com/runtime=kata` or
@@ -162,8 +167,7 @@ or the `+kubebuilder:rbac` markers in
 [internal/controller/runnerpool_controller.go](internal/controller/runnerpool_controller.go).
 
 The standalone chart in `charts/buildkite-operator` is maintained independently
-from Kubebuilder manifests. After changing API markers, update its CRD and run
-the chart checks:
+from Kubebuilder manifests. Run its chart checks after changing it:
 
 ```bash
 make test-helm

@@ -1,25 +1,75 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["manager", "runnerPool", "agentToken"],
+  "required": ["runners", "docker", "agentToken", "metricsToken", "kedaCleanup", "keda"],
   "properties": {
-    "runnerPool": {
+    "runners": {
       "type": "object",
-      "required": ["enabled", "queue", "runtime", "maxRunners", "minIdleRunners"],
+      "required": ["enabled", "queue", "runtime", "minReplicas", "maxReplicas", "image"],
       "properties": {
         "enabled": { "type": "boolean" },
         "name": { "type": "string", "maxLength": 63 },
-        "queue": { "type": "string" },
+        "queue": { "type": "string", "pattern": "^[A-Za-z0-9_-]*$" },
         "runtime": { "type": "string", "enum": ["standard", "kata", "sysbox"] },
-        "maxRunners": { "type": "integer", "minimum": 0 },
-        "minIdleRunners": { "type": "integer", "minimum": 0 },
-        "idleTimeoutSeconds": { "type": "integer", "minimum": 0 },
+        "minReplicas": { "type": "integer", "minimum": 0 },
+        "maxReplicas": { "type": "integer", "minimum": 0 },
+        "pollingInterval": { "type": "integer", "minimum": 1 },
+        "cooldownPeriod": { "type": "integer", "minimum": 0 },
         "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
-        "image": { "type": "string", "minLength": 1 },
+        "image": {
+          "type": "object",
+          "required": ["repository", "tag", "pullPolicy"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 },
+            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
         "resources": { "type": "object" }
       }
     },
-    "agentToken": {
+    "docker": {
+      "type": "object",
+      "required": ["image", "resources", "storage"],
+      "properties": {
+        "image": { "$ref": "#/$defs/image" },
+        "resources": { "type": "object" },
+        "storage": {
+          "type": "object",
+          "required": ["data", "workspace"],
+          "properties": {
+            "data": { "type": "string", "minLength": 1 },
+            "workspace": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "agentToken": { "$ref": "#/$defs/token" },
+    "metricsToken": { "$ref": "#/$defs/token" },
+    "kedaCleanup": {
+      "type": "object",
+      "required": ["image"],
+      "properties": {
+        "image": { "$ref": "#/$defs/image" }
+      }
+    },
+    "keda": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": { "enabled": { "type": "boolean" } }
+    }
+  },
+  "$defs": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "token": {
       "type": "object",
       "required": ["value", "existingSecret"],
       "properties": {

@@ -17,18 +17,18 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 {{- end }}
 
-{{- define "buildkite-operator.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create }}
-{{- default (include "buildkite-operator.fullname" .) .Values.serviceAccount.name }}
-{{- else }}
-{{- required "serviceAccount.name is required when serviceAccount.create is false" .Values.serviceAccount.name }}
-{{- end }}
-{{- end }}
-
-{{- define "buildkite-operator.runnerPoolName" -}}
-{{- default (printf "%s-runner-pool" (include "buildkite-operator.fullname" .) | trunc 63 | trimSuffix "-") .Values.runnerPool.name | trunc 63 | trimSuffix "-" }}
+{{- define "buildkite-operator.runnerName" -}}
+{{- default (printf "%s-runners" (include "buildkite-operator.fullname" .) | trunc 63 | trimSuffix "-") .Values.runners.name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{- define "buildkite-operator.agentTokenSecretName" -}}
 {{- printf "%s-agent-token" (include "buildkite-operator.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "buildkite-operator.metricsTokenSecretName" -}}
+{{- if .Values.metricsToken.existingSecret.name }}
+{{- .Values.metricsToken.existingSecret.name }}
+{{- else }}
+{{- include "buildkite-operator.agentTokenSecretName" . }}
+{{- end }}
 {{- end }}
