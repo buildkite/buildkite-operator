@@ -2,7 +2,7 @@
 
 ## Summary
 
-Add a hand-maintained Helm chart under `charts/buildkite-operator` that installs usable Buildkite runners and queue-driven autoscaling as one customer-facing unit. The chart uses a standard Kubernetes `Deployment` scaled by KEDA rather than depending on this repository's custom `RunnerPool` API or operator.
+Add a hand-maintained Helm chart under `charts/buildkite-operator` that installs usable Buildkite runners and queue-driven autoscaling as one customer-facing unit. The chart uses a standard Kubernetes `Deployment` scaled by KEDA without depending on a custom API or operator.
 
 ## Requirements
 

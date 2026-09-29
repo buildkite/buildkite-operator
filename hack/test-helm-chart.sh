@@ -46,10 +46,6 @@ assert_contains "${direct}" "maxReplicaCount: 4"
 assert_contains "${direct}" "formula: scheduled + running"
 assert_contains "${direct}" 'valueLocation: "jobs.queues.linux.scheduled"'
 assert_contains "${direct}" "authorization: \"Token ${TOKEN}\""
-if [[ "${direct}" == *"kind: RunnerPool"* || "${direct}" == *"name: runnerpools.buildkite.com"* ]]; then
-	echo "Chart rendered legacy RunnerPool resources" >&2
-	exit 1
-fi
 
 existing=$(render \
 	--set-string agentToken.existingSecret.name=agent-token \
