@@ -3,3 +3,4 @@
 .gitignore
 *.swp
 *.tmp
+__pycache__/

@@ -31,3 +31,6 @@ go.work
 
 # Portal manifests are local to each cloud environment
 .amp/portals/*
+
+# Python bytecode from local test runs
+__pycache__/
