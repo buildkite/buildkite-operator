@@ -77,6 +77,13 @@ assert_contains "${direct}" "def deletion_cost():"
 	exit 1
 }
 assert_contains "${direct}" 'value: "queue=linux,runtime=standard"'
+assert_contains "${direct}" "value: /buildkite/builds"
+assert_contains "${direct}" "checksum/agent-token:"
+rotated=$(render --set-string agentToken.value="${TOKEN}-rotated")
+if [[ $(grep 'checksum/agent-token:' <<<"${direct}") == $(grep 'checksum/agent-token:' <<<"${rotated}") ]]; then
+	echo "Agent token rotation did not change the Pod template" >&2
+	exit 1
+fi
 assert_contains "${direct}" "minReplicaCount: 1"
 assert_contains "${direct}" "maxReplicaCount: 4"
 assert_contains "${direct}" "formula: scheduled + running"
@@ -102,6 +109,7 @@ existing=$(render \
 	--set-string metricsToken.existingSecret.name=metrics-token)
 assert_contains "${existing}" 'name: "agent-token"'
 assert_contains "${existing}" "name: metrics-token"
+assert_contains "${existing}" "value: /buildkite/builds"
 if [[ "${existing}" == *"kind: Secret"* ]]; then
 	echo "Existing Secret mode rendered a token Secret" >&2
 	exit 1

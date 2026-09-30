@@ -43,11 +43,17 @@ spec:
       labels:
         {{- include "buildkite-operator.labels" . | nindent 8 }}
         app.kubernetes.io/component: runner
-      {{- if .Values.deletionCost.enabled }}
+      {{- if or .Values.deletionCost.enabled .Values.agentToken.value }}
       annotations:
+        {{- if .Values.agentToken.value }}
+        # Roll agents when the chart-managed token changes; they read it at startup.
+        checksum/agent-token: {{ .Values.agentToken.value | sha256sum }}
+        {{- end }}
+        {{- if .Values.deletionCost.enabled }}
         # Treat agents as busy until the sidecar observes that they are idle.
         controller.kubernetes.io/pod-deletion-cost: "100"
         checksum/deletion-cost: {{ .Files.Get "files/deletion_cost.py" | sha256sum }}
+        {{- end }}
       {{- end }}
     spec:
       {{- if .Values.deletionCost.enabled }}
@@ -140,9 +146,9 @@ spec:
               value: {{ printf "queue=%s,runtime=%s" $queue .Values.runners.runtime | quote }}
             - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
               value: 0.0.0.0:8080
-            {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
             - name: BUILDKITE_BUILD_PATH
               value: /buildkite/builds
+            {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
             - name: BUILDKITE_PLUGINS_PATH
               value: /buildkite/plugins
             - name: BUILDKITE_SOCKETS_PATH
