@@ -43,7 +43,16 @@ spec:
       labels:
         {{- include "buildkite-operator.labels" . | nindent 8 }}
         app.kubernetes.io/component: runner
+      {{- if .Values.deletionCost.enabled }}
+      annotations:
+        # Treat agents as busy until the sidecar observes that they are idle.
+        controller.kubernetes.io/pod-deletion-cost: "100"
+        checksum/deletion-cost: {{ .Files.Get "files/deletion_cost.py" | sha256sum }}
+      {{- end }}
     spec:
+      {{- if .Values.deletionCost.enabled }}
+      serviceAccountName: {{ include "buildkite-operator.deletionCostName" . }}
+      {{- end }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.runners.terminationGracePeriodSeconds }}
       {{- if eq .Values.runners.runtime "kata" }}
@@ -161,8 +170,56 @@ spec:
             - name: workspace
               mountPath: /buildkite
           {{- end }}
-      {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+        {{- if .Values.deletionCost.enabled }}
+        - name: deletion-cost
+          image: "{{ .Values.deletionCost.image.repository }}:{{ .Values.deletionCost.image.tag }}"
+          imagePullPolicy: {{ .Values.deletionCost.image.pullPolicy }}
+          command: ["python3", "-u", "/opt/deletion-cost/deletion_cost.py"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.deletionCost.resources | nindent 12 }}
+          volumeMounts:
+            - name: deletion-cost-code
+              mountPath: /opt/deletion-cost
+              readOnly: true
+            - name: deletion-cost-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+        {{- end }}
+      {{- if or .Values.deletionCost.enabled (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
       volumes:
+        {{- if .Values.deletionCost.enabled }}
+        - name: deletion-cost-code
+          configMap:
+            name: {{ include "buildkite-operator.deletionCostName" . }}
+        - name: deletion-cost-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        {{- end }}
+        {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
         - name: docker-data
           emptyDir:
             sizeLimit: {{ .Values.docker.storage.data }}
@@ -173,5 +230,6 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: {{ .Values.docker.storage.workspace }}
+        {{- end }}
       {{- end }}
 {{- end }}

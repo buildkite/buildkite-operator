@@ -151,6 +151,7 @@ HELM_CHART_DIR ?= charts/buildkite-operator
 
 .PHONY: test-helm
 test-helm: ## Validate the standalone Helm chart.
+	python3 hack/test_deletion_cost.py
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-chart.sh
 
 .PHONY: test-helm-e2e

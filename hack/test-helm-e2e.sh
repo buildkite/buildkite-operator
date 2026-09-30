@@ -94,6 +94,24 @@ owner=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.o
 queue=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.containers[0].env[?(@.name=="BUILDKITE_AGENT_TAGS")].value}')
 [[ "${queue}" == "queue=e2e,runtime=standard" ]]
 
+# The pause image has no agent status endpoint, so the sidecar must keep the
+# retention cost by successfully patching its own Pod with the chart's RBAC.
+patched=false
+for _ in $(seq 1 90); do
+	if "${KUBECTL[@]}" logs "${pod}" -n "${NAMESPACE}" -c deletion-cost 2>/dev/null | grep -q '^Deletion cost: 100$'; then
+		patched=true
+		break
+	fi
+	sleep 1
+done
+if [[ "${patched}" != true ]]; then
+	echo "Deletion-cost sidecar did not patch its Pod" >&2
+	"${KUBECTL[@]}" logs "${pod}" -n "${NAMESPACE}" -c deletion-cost >&2 || true
+	exit 1
+fi
+cost=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.controller\.kubernetes\.io/pod-deletion-cost}')
+[[ "${cost}" == "100" ]]
+
 "${HELM_CLUSTER[@]}" uninstall "${RELEASE}" --namespace "${NAMESPACE}" --wait --timeout 2m
 for _ in $(seq 1 60); do
 	pod=$("${KUBECTL[@]}" get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=runner -o name)

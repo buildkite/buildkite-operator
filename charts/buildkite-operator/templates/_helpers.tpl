@@ -25,6 +25,10 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 {{- printf "%s-agent-token" (include "buildkite-operator.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "buildkite-operator.deletionCostName" -}}
+{{- printf "%s-deletion-cost" (include "buildkite-operator.runnerName" . | trunc 49 | trimSuffix "-") }}
+{{- end }}
+
 {{- define "buildkite-operator.metricsTokenSecretName" -}}
 {{- if .Values.metricsToken.existingSecret.name }}
 {{- .Values.metricsToken.existingSecret.name }}

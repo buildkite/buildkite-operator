@@ -66,6 +66,16 @@ assert_contains "${direct}" "kind: TriggerAuthentication"
 assert_contains "${direct}" "type: RollingUpdate"
 assert_contains "${direct}" "maxUnavailable: 0"
 assert_contains "${direct}" "maxSurge: 1"
+assert_contains "${direct}" 'controller.kubernetes.io/pod-deletion-cost: "100"'
+assert_contains "${direct}" "serviceAccountName: test-buildkite-operator-runners-deletion-cost"
+assert_contains "${direct}" "- name: deletion-cost"
+assert_contains "${direct}" "kind: Role"
+assert_contains "${direct}" 'verbs: ["patch"]'
+assert_contains "${direct}" "def deletion_cost():"
+[[ $(grep -c 'mountPath: /var/run/secrets/kubernetes.io/serviceaccount' <<<"${direct}") -eq 1 ]] || {
+	echo "Kubernetes API token was mounted into more than the deletion-cost sidecar" >&2
+	exit 1
+}
 assert_contains "${direct}" 'value: "queue=linux,runtime=standard"'
 assert_contains "${direct}" "minReplicaCount: 1"
 assert_contains "${direct}" "maxReplicaCount: 4"
@@ -101,6 +111,8 @@ kata=$(render --set-string agentToken.value="${TOKEN}" --set-string runners.runt
 assert_contains "${kata}" "runtimeClassName: kata-qemu-runtime-rs"
 assert_contains "${kata}" "privileged: true"
 assert_contains "${kata}" 'value: "queue=linux,runtime=kata"'
+assert_contains "${kata}" "- name: deletion-cost-code"
+assert_contains "${kata}" "- name: docker-data"
 
 sysbox=$(render --set-string agentToken.value="${TOKEN}" --set-string runners.runtime=sysbox)
 assert_contains "${sysbox}" "runtimeClassName: sysbox-runc"
@@ -108,8 +120,14 @@ assert_contains "${sysbox}" "hostUsers: false"
 assert_contains "${sysbox}" "- --storage-driver=overlay2"
 assert_contains "${sysbox}" 'value: "queue=linux,runtime=sysbox"'
 
+no_deletion_cost=$(render --set-string agentToken.value="${TOKEN}" --set deletionCost.enabled=false)
+if [[ "${no_deletion_cost}" == *"deletion-cost"* || "${no_deletion_cost}" == *"kind: Role"* || "${no_deletion_cost}" == *"volumes:"* ]]; then
+	echo "Disabled deletion cost rendered sidecar resources" >&2
+	exit 1
+fi
+
 disabled=$("${HELM}" template test "${CHART_DIR}" --set runners.enabled=false)
-if [[ "${disabled}" == *"kind: Deployment"* || "${disabled}" == *"kind: ScaledObject"* || "${disabled}" == *"kind: Secret"* ]]; then
+if [[ "${disabled}" == *"kind: Deployment"* || "${disabled}" == *"kind: ScaledObject"* || "${disabled}" == *"kind: Secret"* || "${disabled}" == *"kind: Role"* ]]; then
 	echo "Disabled runner mode rendered runner resources" >&2
 	exit 1
 fi

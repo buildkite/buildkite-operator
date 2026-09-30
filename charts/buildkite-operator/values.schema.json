@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["runners", "docker", "agentToken", "metricsToken", "keda"],
+  "required": ["runners", "docker", "deletionCost", "agentToken", "metricsToken", "keda"],
   "properties": {
     "runners": {
       "type": "object",
@@ -42,6 +42,15 @@
             "workspace": { "type": "string", "minLength": 1 }
           }
         }
+      }
+    },
+    "deletionCost": {
+      "type": "object",
+      "required": ["enabled", "image", "resources"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "$ref": "#/$defs/image" },
+        "resources": { "type": "object" }
       }
     },
     "agentToken": { "$ref": "#/$defs/token" },

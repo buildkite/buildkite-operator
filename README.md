@@ -70,6 +70,19 @@ replicas, but terminating Pods may briefly overlap replacement capacity. KEDA
 remains installed when a runner chart release is uninstalled and can be shared
 by multiple runner releases in the cluster.
 
+### Scale-in preference
+
+By default each runner Pod includes a small sidecar that polls the agent's
+local `/status.json` endpoint every second. Busy or unknown agents get
+`controller.kubernetes.io/pod-deletion-cost: "100"`; idle agents have the
+annotation removed, so the ReplicaSet prefers removing idle agents.
+
+This is best-effort. Kubernetes can still select a busy Pod, and deletion cost
+does not protect against node drains or evictions. The sidecar receives the
+only Kubernetes API token in the Pod, but because Deployment Pod names are
+generated, its Role can patch every Pod in the release namespace. Install the
+chart in a namespace dedicated to runners, or set `deletionCost.enabled=false`.
+
 ## Runner isolation
 
 Set `runners.runtime` to choose the runner isolation profile:
