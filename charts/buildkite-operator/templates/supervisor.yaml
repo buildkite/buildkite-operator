@@ -1,4 +1,6 @@
-{{- if and .Values.runners.enabled .Values.runners.singleUse }}
+{{- $singleUse := false }}
+{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}{{ if $entry.settings.singleUse }}{{ $singleUse = true }}{{ end }}{{ end }}
+{{- if $singleUse }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

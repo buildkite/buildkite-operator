@@ -12,10 +12,10 @@ SCRIPT="${CHART_DIR}/files/supervisor.sh"
 rendered=$("${HELM}" template test "${CHART_DIR}" \
 	--api-versions keda.sh/v1alpha1/ScaledObject \
 	--api-versions keda.sh/v1alpha1/TriggerAuthentication \
-	--set-string runners.queue=test \
-	--set runners.maxReplicas=1 \
-	--set-string runners.runtime=sysbox \
-	--set runners.singleUse=true \
+	--set-string queues.test.queue=test \
+	--set queues.test.maxReplicas=1 \
+	--set-string queues.test.runtime=sysbox \
+	--set queues.test.singleUse=true \
 	--set-string agentToken.value=unused)
 image_for() { grep -A1 -- "- name: $1\$" <<<"${rendered}" | sed -n 's/^ *image: "\(.*\)"$/\1/p'; }
 DIND_IMAGE=$(image_for dockerd)

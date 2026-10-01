@@ -1,10 +1,12 @@
-{{- if .Values.runners.enabled }}
-Buildkite runners are installed in {{ .Release.Namespace }}.
+{{- $entries := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- if $entries }}
+Buildkite runners are installed in {{ .Release.Namespace }}. KEDA scales each queue from Buildkite queue metrics:
+{{ range $entry := $entries }}
+  {{ $entry.name }}: queue {{ $entry.settings.queue }}, {{ $entry.settings.runtime }}{{ if $entry.settings.singleUse }} single-use{{ end }}, {{ $entry.settings.minReplicas }}-{{ $entry.settings.maxReplicas }} runners (Deployment {{ $entry.resourceName }})
+{{- end }}
 
-Deployment {{ include "buildkite-operator.runnerName" . }} keeps at least {{ .Values.runners.minReplicas }} agent(s) ready and KEDA scales it up to {{ .Values.runners.maxReplicas }} from Buildkite queue metrics.
-
-  kubectl get deployment,scaledobject {{ include "buildkite-operator.runnerName" . }} -n {{ .Release.Namespace }}
-  kubectl get pods -l app.kubernetes.io/component=runner -n {{ .Release.Namespace }}
+  kubectl get deployment,scaledobject -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
+  kubectl get pods -l app.kubernetes.io/component=runner -L buildkite.com/runner-set -n {{ .Release.Namespace }}
 {{- else }}
-Runner installation is disabled.
+No queues are configured, so no runners were installed. Add entries under queues.
 {{- end }}

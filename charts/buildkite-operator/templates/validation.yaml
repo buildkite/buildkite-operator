@@ -1,4 +1,4 @@
-{{- if and .Values.runners.enabled .Values.keda.validateInstallation }}
+{{- if and (include "buildkite-operator.queueEntries" . | fromJsonArray) .Values.keda.validateInstallation }}
 {{- if not (.Capabilities.APIVersions.Has "keda.sh/v1alpha1/ScaledObject") }}
 {{- fail "KEDA is required: the keda.sh/v1alpha1/ScaledObject API is not available" }}
 {{- end }}

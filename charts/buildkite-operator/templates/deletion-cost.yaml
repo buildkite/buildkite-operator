@@ -1,4 +1,4 @@
-{{- if .Values.runners.enabled }}
+{{- if include "buildkite-operator.queueEntries" . | fromJsonArray }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
