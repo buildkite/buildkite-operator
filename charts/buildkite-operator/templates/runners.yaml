@@ -43,22 +43,16 @@ spec:
       labels:
         {{- include "buildkite-operator.labels" . | nindent 8 }}
         app.kubernetes.io/component: runner
-      {{- if or .Values.deletionCost.enabled .Values.agentToken.value }}
       annotations:
         {{- if .Values.agentToken.value }}
         # Roll agents when the chart-managed token changes; they read it at startup.
         checksum/agent-token: {{ .Values.agentToken.value | sha256sum }}
         {{- end }}
-        {{- if .Values.deletionCost.enabled }}
         # Treat agents as busy until the sidecar observes that they are idle.
         controller.kubernetes.io/pod-deletion-cost: "100"
         checksum/deletion-cost: {{ .Files.Get "files/deletion_cost.py" | sha256sum }}
-        {{- end }}
-      {{- end }}
     spec:
-      {{- if .Values.deletionCost.enabled }}
       serviceAccountName: {{ include "buildkite-operator.deletionCostName" . }}
-      {{- end }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.runners.terminationGracePeriodSeconds }}
       {{- if eq .Values.runners.runtime "kata" }}
@@ -176,9 +170,8 @@ spec:
             - name: workspace
               mountPath: /buildkite
           {{- end }}
-        {{- if .Values.deletionCost.enabled }}
         - name: deletion-cost
-          image: "{{ .Values.deletionCost.image.repository }}:{{ .Values.deletionCost.image.tag }}"
+          image: "{{ .Values.deletionCost.image.repository }}:{{ .Values.deletionCost.image.tag }}@{{ .Values.deletionCost.image.digest }}"
           imagePullPolicy: {{ .Values.deletionCost.image.pullPolicy }}
           command: ["python3", "-u", "/opt/deletion-cost/deletion_cost.py"]
           env:
@@ -206,10 +199,7 @@ spec:
             - name: deletion-cost-api
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
-        {{- end }}
-      {{- if or .Values.deletionCost.enabled (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
       volumes:
-        {{- if .Values.deletionCost.enabled }}
         - name: deletion-cost-code
           configMap:
             name: {{ include "buildkite-operator.deletionCostName" . }}
@@ -224,7 +214,6 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
-        {{- end }}
         {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
         - name: docker-data
           emptyDir:
@@ -237,5 +226,4 @@ spec:
           emptyDir:
             sizeLimit: {{ .Values.docker.storage.workspace }}
         {{- end }}
-      {{- end }}
 {{- end }}

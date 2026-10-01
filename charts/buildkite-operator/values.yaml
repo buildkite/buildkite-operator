@@ -34,14 +34,15 @@ docker:
     data: 40Gi
     workspace: 10Gi
 
-# Best-effort scale-in preference: a sidecar marks busy or unknown agents with
+# Always-on scale-in preference: a sidecar marks busy or unknown agents with
 # pod-deletion-cost 100 and removes the annotation from idle agents. It needs
-# permission to patch Pods in the release namespace.
+# permission to patch Pods in the release namespace. The digest pins the
+# multi-platform image index for the tag.
 deletionCost:
-  enabled: true
   image:
     repository: python
-    tag: 3.12-alpine
+    tag: 3.12.14-alpine3.24
+    digest: sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111
     pullPolicy: IfNotPresent
   resources:
     requests:

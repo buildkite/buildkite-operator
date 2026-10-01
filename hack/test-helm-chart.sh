@@ -72,6 +72,7 @@ assert_contains "${direct}" "- name: deletion-cost"
 assert_contains "${direct}" "kind: Role"
 assert_contains "${direct}" 'verbs: ["patch"]'
 assert_contains "${direct}" "def deletion_cost():"
+assert_contains "${direct}" 'image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"'
 [[ $(grep -c 'mountPath: /var/run/secrets/kubernetes.io/serviceaccount' <<<"${direct}") -eq 1 ]] || {
 	echo "Kubernetes API token was mounted into more than the deletion-cost sidecar" >&2
 	exit 1
@@ -128,12 +129,6 @@ assert_contains "${sysbox}" "hostUsers: false"
 assert_contains "${sysbox}" "- --storage-driver=overlay2"
 assert_contains "${sysbox}" 'value: "queue=linux,runtime=sysbox"'
 
-no_deletion_cost=$(render --set-string agentToken.value="${TOKEN}" --set deletionCost.enabled=false)
-if [[ "${no_deletion_cost}" == *"deletion-cost"* || "${no_deletion_cost}" == *"kind: Role"* || "${no_deletion_cost}" == *"volumes:"* ]]; then
-	echo "Disabled deletion cost rendered sidecar resources" >&2
-	exit 1
-fi
-
 disabled=$("${HELM}" template test "${CHART_DIR}" --set runners.enabled=false)
 if [[ "${disabled}" == *"kind: Deployment"* || "${disabled}" == *"kind: ScaledObject"* || "${disabled}" == *"kind: Secret"* || "${disabled}" == *"kind: Role"* ]]; then
 	echo "Disabled runner mode rendered runner resources" >&2
@@ -158,6 +153,16 @@ assert_fails "metricsToken.value or metricsToken.existingSecret.name is required
 	--set-string runners.queue=linux \
 	--set runners.maxReplicas=1 \
 	--set-string agentToken.existingSecret.name=agent-token
+assert_fails "additional properties 'enabled' not allowed" \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=1 \
+	--set deletionCost.enabled=false \
+	--set-string agentToken.value="${TOKEN}"
+assert_fails "does not match pattern" \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=1 \
+	--set-string deletionCost.image.digest=latest \
+	--set-string agentToken.value="${TOKEN}"
 assert_fails "value must be one of 'standard', 'kata', 'sysbox'" \
 	--set-string runners.queue=linux \
 	--set runners.maxReplicas=1 \
