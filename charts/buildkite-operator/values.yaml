@@ -5,6 +5,10 @@ runners:
   # standard, kata, or sysbox. Kata and Sysbox require their RuntimeClass and
   # compatible, labelled nodes to be installed before this chart is installed.
   runtime: standard
+  # Run each job in a fresh agent container, then clear its containers,
+  # networks, volumes and workspace. The Pod, node, and Docker image and build
+  # caches persist. Requires runtime kata or sysbox.
+  singleUse: false
   minReplicas: 1
   maxReplicas: 0
   pollingInterval: 10
@@ -33,6 +37,22 @@ docker:
   storage:
     data: 40Gi
     workspace: 10Gi
+
+# Starts and replaces single-use agent containers. Used only when
+# runners.singleUse is true. The digest pins the multi-platform image index.
+supervisor:
+  image:
+    repository: docker
+    tag: 29.7.2-cli
+    digest: sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
 
 # Always-on scale-in preference: a sidecar marks busy or unknown agents with
 # pod-deletion-cost 100 and removes the annotation from idle agents. It needs

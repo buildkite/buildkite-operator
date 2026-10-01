@@ -64,7 +64,7 @@ def run():
 
 
 if __name__ == "__main__":
-    # This process is PID 1 in its container; handle SIGTERM explicitly so an
-    # idle Pod does not linger for the agent's full drain grace period.
+    # The chart's shell wrapper exits on SIGTERM even before this handler is
+    # installed; this keeps the script responsive when run directly.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     run()

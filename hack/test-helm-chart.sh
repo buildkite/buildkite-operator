@@ -128,6 +128,25 @@ assert_contains "${sysbox}" "runtimeClassName: sysbox-runc"
 assert_contains "${sysbox}" "hostUsers: false"
 assert_contains "${sysbox}" "- --storage-driver=overlay2"
 assert_contains "${sysbox}" 'value: "queue=linux,runtime=sysbox"'
+if [[ "${sysbox}" == *"name: supervisor"* ]]; then
+	echo "Long-lived runners rendered the single-use supervisor" >&2
+	exit 1
+fi
+
+single_use=$(render --set-string agentToken.value="${TOKEN}" --set-string runners.runtime=sysbox --set runners.singleUse=true)
+assert_contains "${single_use}" "- name: supervisor"
+assert_contains "${single_use}" 'image: "docker:29.7.2-cli@sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"'
+assert_contains "${single_use}" 'value: "buildkite/agent:4"'
+assert_contains "${single_use}" "checksum/supervisor:"
+assert_contains "${single_use}" "start --disconnect-after-job"
+assert_contains "${single_use}" "- name: dockerd"
+if [[ "${single_use}" == *"- name: agent"* ]]; then
+	echo "Single-use runners also rendered a long-lived agent container" >&2
+	exit 1
+fi
+single_use_kata=$(render --set-string agentToken.value="${TOKEN}" --set-string runners.runtime=kata --set runners.singleUse=true)
+assert_contains "${single_use_kata}" "runtimeClassName: kata-qemu-runtime-rs"
+assert_contains "${single_use_kata}" "- name: supervisor"
 
 disabled=$("${HELM}" template test "${CHART_DIR}" --set runners.enabled=false)
 if [[ "${disabled}" == *"kind: Deployment"* || "${disabled}" == *"kind: ScaledObject"* || "${disabled}" == *"kind: Secret"* || "${disabled}" == *"kind: Role"* ]]; then
@@ -167,6 +186,16 @@ assert_fails "value must be one of 'standard', 'kata', 'sysbox'" \
 	--set-string runners.queue=linux \
 	--set runners.maxReplicas=1 \
 	--set-string runners.runtime=gvisor \
+	--set-string agentToken.value="${TOKEN}"
+assert_fails "runners.singleUse requires runners.runtime kata or sysbox" \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=1 \
+	--set runners.singleUse=true \
+	--set-string agentToken.value="${TOKEN}"
+assert_fails "does not match pattern" \
+	--set-string runners.queue=linux \
+	--set runners.maxReplicas=1 \
+	--set-string supervisor.image.digest=latest \
 	--set-string agentToken.value="${TOKEN}"
 
 "${HELM}" lint "${CHART_DIR}" \

@@ -103,16 +103,39 @@ Both profiles require Kubernetes native sidecars; Sysbox additionally requires
 Kubernetes user namespaces. Their Docker data and workspace are Pod-local and
 are discarded when an agent Pod is removed.
 
+### Single-use job containers
+
+By default an agent container serves many jobs, so files, containers and
+volumes from one job remain for the next. With `kata` or `sysbox`, set
+`runners.singleUse=true` to run each job in a fresh agent container:
+
+```bash
+--set-string runners.runtime=sysbox --set runners.singleUse=true
+```
+
+A supervisor container then starts the agent inside the Pod's Docker daemon
+with `--disconnect-after-job`. After each job it removes the job's
+containers, networks and volumes, clears the workspace, and starts a new agent
+under a new name. The Pod, its node, and Docker's image and build caches
+persist. If cleanup fails, no new agent starts until it succeeds.
+
+This separates successive jobs' files and containers; it is not a security
+boundary between them. Anything a job can reach through the Pod's Docker
+daemon, including the cached images, remains available to later jobs. The
+`standard` profile has no Docker daemon, so the chart rejects `singleUse` with
+it.
+
 ## Development
 
 ```bash
-make test-helm      # lint and render the standalone chart
-make test-helm-e2e  # install and uninstall the chart in isolated Kind
-make lint           # golangci-lint
-make test           # Go tests and generated-file checks
+make test-helm        # lint and render the standalone chart
+make test-supervisor  # run the single-use supervisor against Docker
+make test-helm-e2e    # install and uninstall the chart in isolated Kind
+make lint             # golangci-lint
+make test             # Go tests and generated-file checks
 ```
 
-CI runs all four checks. The end-to-end check deletes its isolated Kind cluster
+CI runs all five checks. The end-to-end check deletes its isolated Kind cluster
 when it finishes, which may clear the current kubeconfig context.
 
 ## License

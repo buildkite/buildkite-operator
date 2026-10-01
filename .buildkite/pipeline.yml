@@ -27,5 +27,6 @@ steps:
       - export PATH="$$HOME/.local/bin:$$PATH"
       - mise install
       - mise exec -- make test-helm
+      - mise exec -- make test-supervisor
       - test -z "$(git status --porcelain)"
       - mise exec -- make test-helm-e2e

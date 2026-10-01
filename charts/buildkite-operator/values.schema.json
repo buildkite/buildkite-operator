@@ -1,16 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["runners", "docker", "deletionCost", "agentToken", "metricsToken", "keda"],
+  "required": ["runners", "docker", "supervisor", "deletionCost", "agentToken", "metricsToken", "keda"],
   "properties": {
     "runners": {
       "type": "object",
-      "required": ["enabled", "queue", "runtime", "minReplicas", "maxReplicas", "image"],
+      "required": ["enabled", "queue", "runtime", "singleUse", "minReplicas", "maxReplicas", "image"],
       "properties": {
         "enabled": { "type": "boolean" },
         "name": { "type": "string", "maxLength": 63 },
         "queue": { "type": "string", "pattern": "^[A-Za-z0-9_-]*$" },
         "runtime": { "type": "string", "enum": ["standard", "kata", "sysbox"] },
+        "singleUse": { "type": "boolean" },
         "minReplicas": { "type": "integer", "minimum": 0 },
         "maxReplicas": { "type": "integer", "minimum": 0 },
         "pollingInterval": { "type": "integer", "minimum": 1 },
@@ -44,7 +45,18 @@
         }
       }
     },
-    "deletionCost": {
+    "supervisor": { "$ref": "#/$defs/pinnedSidecar" },
+    "deletionCost": { "$ref": "#/$defs/pinnedSidecar" },
+    "agentToken": { "$ref": "#/$defs/token" },
+    "metricsToken": { "$ref": "#/$defs/token" },
+    "keda": {
+      "type": "object",
+      "required": ["validateInstallation"],
+      "properties": { "validateInstallation": { "type": "boolean" } }
+    }
+  },
+  "$defs": {
+    "pinnedSidecar": {
       "type": "object",
       "required": ["image", "resources"],
       "additionalProperties": false,
@@ -63,15 +75,6 @@
         "resources": { "type": "object" }
       }
     },
-    "agentToken": { "$ref": "#/$defs/token" },
-    "metricsToken": { "$ref": "#/$defs/token" },
-    "keda": {
-      "type": "object",
-      "required": ["validateInstallation"],
-      "properties": { "validateInstallation": { "type": "boolean" } }
-    }
-  },
-  "$defs": {
     "image": {
       "type": "object",
       "required": ["repository", "tag", "pullPolicy"],

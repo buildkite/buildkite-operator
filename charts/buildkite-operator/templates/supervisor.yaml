@@ -1,0 +1,12 @@
+{{- if and .Values.runners.enabled .Values.runners.singleUse }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "buildkite-operator.supervisorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+data:
+  supervisor.sh: |-
+{{ .Files.Get "files/supervisor.sh" | indent 4 }}
+{{- end }}

@@ -13,6 +13,11 @@
 {{- if and (not .Values.agentToken.value) (not .Values.agentToken.existingSecret.name) }}
 {{- fail "agentToken.value or agentToken.existingSecret.name is required when runners.enabled is true" }}
 {{- end }}
+{{- $docker := or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+{{- $singleUse := .Values.runners.singleUse }}
+{{- if and $singleUse (not $docker) }}
+{{- fail "runners.singleUse requires runners.runtime kata or sysbox, which provide a Docker daemon" }}
+{{- end }}
 {{- if and .Values.metricsToken.value .Values.metricsToken.existingSecret.name }}
 {{- fail "set only one of metricsToken.value or metricsToken.existingSecret.name" }}
 {{- end }}
@@ -51,6 +56,9 @@ spec:
         # Treat agents as busy until the sidecar observes that they are idle.
         controller.kubernetes.io/pod-deletion-cost: "100"
         checksum/deletion-cost: {{ .Files.Get "files/deletion_cost.py" | sha256sum }}
+        {{- if $singleUse }}
+        checksum/supervisor: {{ .Files.Get "files/supervisor.sh" | sha256sum }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "buildkite-operator.deletionCostName" . }}
       automountServiceAccountToken: false
@@ -75,7 +83,7 @@ spec:
           value: sysbox
           effect: NoSchedule
       {{- end }}
-      {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+      {{- if $docker }}
       initContainers:
         - name: dockerd
           image: "{{ .Values.docker.image.repository }}:{{ .Values.docker.image.tag }}"
@@ -114,6 +122,51 @@ spec:
               mountPath: /buildkite
       {{- end }}
       containers:
+        {{- if $singleUse }}
+        - name: supervisor
+          image: "{{ .Values.supervisor.image.repository }}:{{ .Values.supervisor.image.tag }}@{{ .Values.supervisor.image.digest }}"
+          imagePullPolicy: {{ .Values.supervisor.image.pullPolicy }}
+          command: ["/bin/sh", "/opt/supervisor/supervisor.sh"]
+          env:
+            - name: AGENT_IMAGE
+              value: "{{ .Values.runners.image.repository }}:{{ .Values.runners.image.tag }}"
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  {{- include "buildkite-operator.agentTokenSecretRef" . | nindent 18 }}
+            - name: AGENT_TAGS
+              value: {{ printf "queue=%s,runtime=%s" $queue .Values.runners.runtime | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TERMINATION_GRACE_PERIOD_SECONDS
+              value: {{ .Values.runners.terminationGracePeriodSeconds | quote }}
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          ports:
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.supervisor.resources | nindent 12 }}
+          volumeMounts:
+            - name: docker-run
+              mountPath: /var/run
+            - name: supervisor-script
+              mountPath: /opt/supervisor
+              readOnly: true
+        {{- else }}
         - name: agent
           image: "{{ .Values.runners.image.repository }}:{{ .Values.runners.image.tag }}"
           imagePullPolicy: {{ .Values.runners.image.pullPolicy }}
@@ -125,13 +178,7 @@ spec:
             - name: BUILDKITE_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  {{- if .Values.agentToken.existingSecret.name }}
-                  name: {{ .Values.agentToken.existingSecret.name | quote }}
-                  key: {{ .Values.agentToken.existingSecret.key | quote }}
-                  {{- else }}
-                  name: {{ include "buildkite-operator.agentTokenSecretName" . }}
-                  key: token
-                  {{- end }}
+                  {{- include "buildkite-operator.agentTokenSecretRef" . | nindent 18 }}
             - name: BUILDKITE_AGENT_NAME
               valueFrom:
                 fieldRef:
@@ -142,7 +189,7 @@ spec:
               value: 0.0.0.0:8080
             - name: BUILDKITE_BUILD_PATH
               value: /buildkite/builds
-            {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+            {{- if $docker }}
             - name: BUILDKITE_PLUGINS_PATH
               value: /buildkite/plugins
             - name: BUILDKITE_SOCKETS_PATH
@@ -163,17 +210,23 @@ spec:
             privileged: false
           resources:
             {{- toYaml .Values.runners.resources | nindent 12 }}
-          {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+          {{- if $docker }}
           volumeMounts:
             - name: docker-run
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
           {{- end }}
+        {{- end }}
         - name: deletion-cost
           image: "{{ .Values.deletionCost.image.repository }}:{{ .Values.deletionCost.image.tag }}@{{ .Values.deletionCost.image.digest }}"
           imagePullPolicy: {{ .Values.deletionCost.image.pullPolicy }}
-          command: ["python3", "-u", "/opt/deletion-cost/deletion_cost.py"]
+          # As PID 1, Python ignores SIGTERM until its handler is installed, so a
+          # Pod removed during startup would wait out the full grace period.
+          command:
+            - /bin/sh
+            - -c
+            - trap 'exit 0' TERM; python3 -u /opt/deletion-cost/deletion_cost.py & wait $!
           env:
             - name: POD_NAME
               valueFrom:
@@ -214,7 +267,12 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
-        {{- if or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
+        {{- if $singleUse }}
+        - name: supervisor-script
+          configMap:
+            name: {{ include "buildkite-operator.supervisorName" . }}
+        {{- end }}
+        {{- if $docker }}
         - name: docker-data
           emptyDir:
             sizeLimit: {{ .Values.docker.storage.data }}

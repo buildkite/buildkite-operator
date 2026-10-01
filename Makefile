@@ -154,6 +154,10 @@ test-helm: ## Validate the standalone Helm chart.
 	python3 hack/test_deletion_cost.py
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-chart.sh
 
+.PHONY: test-supervisor
+test-supervisor: ## Run the single-use supervisor against a real Docker daemon.
+	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-supervisor.sh
+
 .PHONY: test-helm-e2e
 test-helm-e2e: kind ## Install and uninstall the standalone chart in a fresh, isolated Kind cluster.
 	@set -eu; \

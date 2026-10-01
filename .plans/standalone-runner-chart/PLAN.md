@@ -13,6 +13,7 @@ Add a hand-maintained Helm chart under `charts/buildkite-operator` that installs
 - Require the supported KEDA 2.20.0 release to be installed separately and configured to watch the release namespace.
 - Validate that KEDA's `ScaledObject` and `TriggerAuthentication` APIs are discoverable before rendering runner resources.
 - Offer `standard`, `kata`, and `sysbox` runner profiles. Do not install Kata or Sysbox because both mutate node runtime configuration; document their RuntimeClass and node prerequisites.
+- Optionally run each job in a fresh agent container for the Docker-backed `kata` and `sysbox` profiles, keeping the Pod and node.
 - Keep AWS/EKS lab resources, observations, and credentials metadata out of the chart.
 - Verify the missing-KEDA failure, direct-token, existing-Secret, disabled-runner, invalid-input, KEDA readiness, runner Pod creation, and independent uninstall behavior.
 
@@ -26,6 +27,10 @@ Agents receive a long termination grace period and use the agent's first-SIGTERM
 
 An always-on, digest-pinned sidecar polls the agent's local status endpoint and patches its own Pod's `controller.kubernetes.io/pod-deletion-cost`: `100` for busy or unknown agents and no annotation for idle agents. Only the sidecar mounts a projected Kubernetes API token. Its namespaced Role can patch all Pods because Deployment Pod names are generated.
 
+### Single-use job containers
+
+`runners.singleUse` replaces the agent container with a pinned Docker CLI supervisor, adapted from the `dind-runner` example. It runs the agent inside the Pod's Docker daemon with `start --disconnect-after-job`, publishes its health port on the Pod so readiness and deletion cost keep working, and forwards SIGTERM so the agent drains its job. Between jobs it removes all containers, networks and volumes and clears the workspace, keeping image and build caches; a cleanup failure blocks the next agent. The chart rejects `singleUse` for `standard`, which has no daemon.
+
 ### Autoscaling
 
 Render a KEDA `TriggerAuthentication` and `ScaledObject` targeting the runner Deployment. Two `metrics-api` triggers read the queue's `scheduled` and `running` values from `https://agent.buildkite.com/v3/metrics`; a scaling modifier sums them with target `1`. Default to `minReplicaCount: 1`, a 10-second poll, 60-second zero cooldown, and a 30-second scale-down stabilization window.
@@ -38,6 +43,7 @@ Do not bundle KEDA or its cluster-scoped resources. Use Helm API capabilities to
 
 ### Verification
 
+- `make test-supervisor` runs the supervisor against a real Docker daemon with a stand-in agent and verifies per-job replacement, cleanup, cache retention and graceful shutdown.
 - `make test-helm` runs the deletion-cost sidecar unit tests and validates missing API failures, standard, Kata, Sysbox, deletion-cost, direct-token, existing-secret, disabled, and rejected-input renders, then lints the chart.
 - `make test-helm-e2e` first verifies the chart rejects a cluster without KEDA, installs KEDA separately, installs two runner releases, verifies the sidecar can patch its Pod, then confirms one runner release can be uninstalled without disrupting the other release or KEDA.
 - Existing repository lint, generation, and unit checks remain green.
