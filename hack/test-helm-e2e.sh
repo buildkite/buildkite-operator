@@ -15,26 +15,37 @@ HELM_CLUSTER=("${HELM}" --kubeconfig "${KUBECONFIG}" --kube-context "${KUBE_CONT
 KUBECTL=(kubectl --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}")
 NAMESPACE="buildkite-runners"
 RELEASE="buildkite-runners"
-RUNNERS="buildkite-runners-buildkite-operator-runners"
+# The first release serves two queues to verify entries stay independent.
+RUNNERS="${RELEASE}-e2e"
+OTHER_RUNNERS="${RELEASE}-e2e-other"
 SECOND_NAMESPACE="buildkite-runners-two"
 SECOND_RELEASE="buildkite-runners-two"
-SECOND_RUNNERS="buildkite-runners-two-buildkite-operator-runners"
+SECOND_RUNNERS="${SECOND_RELEASE}-e2e-secondary"
 KEDA_NAMESPACE="keda"
 KEDA_RELEASE="keda"
 
+# Installs a release with one queue entry per remaining argument, each named
+# after and serving the queue of the same name.
 install_runner_chart() {
 	local release="$1"
 	local namespace="$2"
-	local queue="$3"
+	shift 2
+	local args=()
+	for queue in "$@"; do
+		args+=(--set-string "queues.${queue}.queue=${queue}" --set "queues.${queue}.maxReplicas=1")
+	done
 	"${HELM_CLUSTER[@]}" install "${release}" "${CHART_DIR}" \
 		--namespace "${namespace}" \
-		--set-string runners.queue="${queue}" \
-		--set runners.maxReplicas=1 \
-		--set-string runners.image.repository=registry.k8s.io/pause \
-		--set-string runners.image.tag=3.10 \
-		--set-string runners.image.pullPolicy=IfNotPresent \
-		--set runners.terminationGracePeriodSeconds=5 \
-		--set-string agentToken.value=not-a-real-agent-token
+		--set-string defaults.image.repository=registry.k8s.io/pause \
+		--set-string defaults.image.tag=3.10 \
+		--set-string defaults.image.pullPolicy=IfNotPresent \
+		--set defaults.terminationGracePeriodSeconds=5 \
+		--set-string agentToken.value=not-a-real-agent-token \
+		"${args[@]}"
+}
+
+runner_pods() {
+	"${KUBECTL[@]}" get pods -n "$1" -l "app.kubernetes.io/component=runner,buildkite.com/runner-set=$2" -o name
 }
 
 cleanup() {
@@ -63,7 +74,7 @@ fi
 	--wait \
 	--timeout 3m
 
-install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e
+install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e e2e-other
 install_runner_chart "${SECOND_RELEASE}" "${SECOND_NAMESPACE}" e2e-secondary
 
 "${KUBECTL[@]}" rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=2m
@@ -71,23 +82,45 @@ install_runner_chart "${SECOND_RELEASE}" "${SECOND_NAMESPACE}" e2e-secondary
 "${KUBECTL[@]}" get secret/buildkite-runners-buildkite-operator-agent-token -n "${NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get deployment/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get scaledobject/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
-"${KUBECTL[@]}" get triggerauthentication/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get triggerauthentication/"${RELEASE}-buildkite-operator-metrics" -n "${NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get deployment/"${OTHER_RUNNERS}" -n "${NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get scaledobject/"${OTHER_RUNNERS}" -n "${NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get deployment/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get scaledobject/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
-"${KUBECTL[@]}" get triggerauthentication/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get triggerauthentication/"${SECOND_RELEASE}-buildkite-operator-metrics" -n "${SECOND_NAMESPACE}" >/dev/null
 
+# Each queue entry's Deployment owns exactly its own runner Pod.
 pod=""
+other_pod=""
 for _ in $(seq 1 60); do
-	pod=$("${KUBECTL[@]}" get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=runner -o name)
-	if [[ -n "${pod}" ]]; then
+	pod=$(runner_pods "${NAMESPACE}" e2e)
+	other_pod=$(runner_pods "${NAMESPACE}" e2e-other)
+	if [[ -n "${pod}" && -n "${other_pod}" ]]; then
 		break
 	fi
 	sleep 1
 done
-if [[ -z "${pod}" ]]; then
-	echo "Deployment did not create a runner Pod" >&2
+if [[ -z "${pod}" || -z "${other_pod}" ]]; then
+	echo "Each queue entry's Deployment did not create a runner Pod" >&2
 	exit 1
 fi
+[[ $(wc -l <<<"${pod}") -eq 1 && $(wc -l <<<"${other_pod}") -eq 1 ]]
+# The stand-in image never becomes Ready, so check ownership rather than
+# rollout: each Deployment must count exactly its own Pod.
+for deployment in "${RUNNERS}" "${OTHER_RUNNERS}"; do
+	replicas=""
+	for _ in $(seq 1 30); do
+		replicas=$("${KUBECTL[@]}" get deployment/"${deployment}" -n "${NAMESPACE}" -o jsonpath='{.status.replicas}')
+		[[ "${replicas}" == 1 ]] && break
+		sleep 1
+	done
+	[[ "${replicas}" == 1 ]] || {
+		echo "Deployment ${deployment} counted ${replicas:-0} Pods, expected only its own" >&2
+		exit 1
+	}
+done
+other_queue=$("${KUBECTL[@]}" get "${other_pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.containers[0].env[?(@.name=="BUILDKITE_AGENT_TAGS")].value}')
+[[ "${other_queue}" == "queue=e2e-other,runtime=standard" ]]
 
 owner=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.ownerReferences[0].kind}')
 [[ "${owner}" == "ReplicaSet" ]]

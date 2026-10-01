@@ -1,8 +1,8 @@
 # buildkite-operator
 
 This repository includes a standalone Helm chart for autoscaling Buildkite
-runners on Kubernetes. The chart installs a Buildkite agent `Deployment`, KEDA
-scaling resources, and the required token Secret.
+runners on Kubernetes. One release can serve several Buildkite queues; each gets
+its own agent `Deployment` and KEDA scaling, sharing one token Secret.
 
 ## Prerequisite
 
@@ -27,7 +27,9 @@ or which KEDA version serves those APIs.
 
 ## Quickstart
 
-Provide the Buildkite queue, maximum runner count, and cluster agent token:
+Add an entry under `queues` for each Buildkite queue, with its maximum runner
+count, and provide the cluster agent token. The entry name (`linux` below) is
+used in resource names:
 
 ```bash
 export BUILDKITE_AGENT_TOKEN='<agent-token>'
@@ -35,8 +37,8 @@ export BUILDKITE_AGENT_TOKEN='<agent-token>'
 helm upgrade --install buildkite-operator ./charts/buildkite-operator \
   --namespace buildkite-operator-system \
   --create-namespace \
-  --set-string runners.queue=<queue> \
-  --set runners.maxReplicas=<maximum> \
+  --set-string queues.linux.queue=<queue> \
+  --set queues.linux.maxReplicas=<maximum> \
   --set-string agentToken.value="$BUILDKITE_AGENT_TOKEN"
 ```
 
@@ -48,8 +50,8 @@ reference them instead:
 helm upgrade --install buildkite-operator ./charts/buildkite-operator \
   --namespace buildkite-operator-system \
   --create-namespace \
-  --set-string runners.queue=<queue> \
-  --set runners.maxReplicas=<maximum> \
+  --set-string queues.linux.queue=<queue> \
+  --set queues.linux.maxReplicas=<maximum> \
   --set-string agentToken.existingSecret.name=<agent-secret> \
   --set-string metricsToken.existingSecret.name=<metrics-secret>
 ```
@@ -57,15 +59,66 @@ helm upgrade --install buildkite-operator ./charts/buildkite-operator \
 The metrics Secret key must contain the complete `Authorization` value in the
 form `Token <cluster-agent-token>`.
 
+## Queues
+
+Each entry under `queues` serves one Buildkite queue and inherits every setting
+from `defaults`, overriding any of them. For example, a values file serving a
+Kata queue and a single-use Sysbox queue:
+
+```yaml
+defaults:
+  minReplicas: 1
+
+queues:
+  linux-kata:
+    queue: linux
+    runtime: kata
+    maxReplicas: 10
+  build-sysbox:
+    queue: build
+    runtime: sysbox
+    singleUse: true
+    minReplicas: 0
+    maxReplicas: 4
+    docker:
+      resources:
+        limits:
+          memory: 16Gi
+```
+
+Every entry needs `queue` and `maxReplicas`. Entry names are lowercase letters,
+digits and hyphens. Each Buildkite queue may appear in only one entry, because
+KEDA scales an entry on its queue's whole job count. Because `queues` is a map,
+a later values file can change one entry (`linux-kata: {maxReplicas: 25}`) or
+remove it (`build-sysbox: null`) without restating the others. With no
+entries, the chart installs nothing.
+
+Each entry gets a `Deployment` and `ScaledObject` named `<release>-<entry>`.
+The token Secret, KEDA `TriggerAuthentication`, and deletion-cost permissions
+and scripts are shared by all entries in a release. Queues in a different
+Buildkite cluster need a different token, so they use a separate release.
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `queue` | required | Buildkite queue key the agents serve and scale on. |
+| `maxReplicas` | required | Upper bound on runners. |
+| `minReplicas` | `1` | Runners kept when the queue is idle. |
+| `runtime` | `standard` | `standard`, `kata` or `sysbox`; see [Runner isolation](#runner-isolation). |
+| `singleUse` | `false` | Run each job in a fresh agent container; see [Single-use job containers](#single-use-job-containers). |
+| `terminationGracePeriodSeconds` | `3600` | Longest time an agent may take to drain its job. |
+| `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling and scale-to-zero cooldown, in seconds. |
+| `image`, `resources` | `buildkite/agent:4` | Agent image and resources. |
+| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `kata` and `sysbox`. |
+
 ## Autoscaling
 
-KEDA polls Buildkite's Agent Metrics API. It scales for `scheduled + running`
-jobs, keeps one runner warm by default, and scales up to
-`runners.maxReplicas`.
+KEDA polls Buildkite's Agent Metrics API. For each queue entry it scales for
+`scheduled + running` jobs, keeps one runner warm by default, and scales up to
+the entry's `maxReplicas`.
 
 KEDA's HPA chooses scale-in victims without confirming that a selected agent is
 idle. The agent drains a running job on its first SIGTERM, bounded by
-`runners.terminationGracePeriodSeconds`. The configured maximum bounds desired
+`terminationGracePeriodSeconds`. The configured maximum bounds desired
 replicas, but terminating Pods may briefly overlap replacement capacity. KEDA
 remains installed when a runner chart release is uninstalled and can be shared
 by multiple runner releases in the cluster.
@@ -86,7 +139,7 @@ the release namespace. Install the chart in a namespace dedicated to runners.
 
 ## Runner isolation
 
-Set `runners.runtime` to choose the runner isolation profile:
+Set `runtime` in `defaults` or on a queue entry to choose its isolation profile:
 
 | Value | Runner Pod |
 | --- | --- |
@@ -94,7 +147,7 @@ Set `runners.runtime` to choose the runner isolation profile:
 | `kata` | An agent and privileged Docker native sidecar inside the `kata-qemu-runtime-rs` VM RuntimeClass. |
 | `sysbox` | An agent and unprivileged Docker native sidecar using the `sysbox-runc` RuntimeClass and Kubernetes user namespaces. |
 
-For example, add `--set-string runners.runtime=kata` to the Helm command.
+Different entries in one release can use different profiles.
 Kata and Sysbox are host runtimes, so the chart deliberately does not install
 them or modify containerd. Before installing the chart, prepare dedicated nodes
 labelled and tainted with `experiments.buildkite.com/runtime=kata` or
@@ -107,10 +160,15 @@ are discarded when an agent Pod is removed.
 
 By default an agent container serves many jobs, so files, containers and
 volumes from one job remain for the next. With `kata` or `sysbox`, set
-`runners.singleUse=true` to run each job in a fresh agent container:
+`singleUse: true` on a queue entry to run each job in a fresh agent container:
 
-```bash
---set-string runners.runtime=sysbox --set runners.singleUse=true
+```yaml
+queues:
+  build-sysbox:
+    queue: build
+    runtime: sysbox
+    singleUse: true
+    maxReplicas: 4
 ```
 
 A supervisor container then starts the agent inside the Pod's Docker daemon

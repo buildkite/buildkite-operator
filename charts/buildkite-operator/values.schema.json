@@ -1,48 +1,30 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["runners", "docker", "supervisor", "deletionCost", "agentToken", "metricsToken", "keda"],
+  "required": ["defaults", "queues", "supervisor", "deletionCost", "agentToken", "metricsToken", "keda"],
   "properties": {
-    "runners": {
-      "type": "object",
-      "required": ["enabled", "queue", "runtime", "singleUse", "minReplicas", "maxReplicas", "image"],
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "name": { "type": "string", "maxLength": 63 },
-        "queue": { "type": "string", "pattern": "^[A-Za-z0-9_-]*$" },
-        "runtime": { "type": "string", "enum": ["standard", "kata", "sysbox"] },
-        "singleUse": { "type": "boolean" },
-        "minReplicas": { "type": "integer", "minimum": 0 },
-        "maxReplicas": { "type": "integer", "minimum": 0 },
-        "pollingInterval": { "type": "integer", "minimum": 1 },
-        "cooldownPeriod": { "type": "integer", "minimum": 0 },
-        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
-        "image": {
-          "type": "object",
-          "required": ["repository", "tag", "pullPolicy"],
+    "defaults": {
+      "allOf": [
+        { "$ref": "#/$defs/runnerSettings" },
+        {
+          "required": ["runtime", "singleUse", "minReplicas", "pollingInterval", "cooldownPeriod", "terminationGracePeriodSeconds", "image", "resources", "docker"],
           "properties": {
-            "repository": { "type": "string", "minLength": 1 },
-            "tag": { "type": "string", "minLength": 1 },
-            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
-          }
-        },
-        "resources": { "type": "object" }
-      }
-    },
-    "docker": {
-      "type": "object",
-      "required": ["image", "resources", "storage"],
-      "properties": {
-        "image": { "$ref": "#/$defs/image" },
-        "resources": { "type": "object" },
-        "storage": {
-          "type": "object",
-          "required": ["data", "workspace"],
-          "properties": {
-            "data": { "type": "string", "minLength": 1 },
-            "workspace": { "type": "string", "minLength": 1 }
+            "image": { "required": ["repository", "tag", "pullPolicy"] },
+            "docker": {
+              "required": ["image", "resources", "storage"],
+              "properties": {
+                "image": { "required": ["repository", "tag", "pullPolicy"] },
+                "storage": { "required": ["data", "workspace"] }
+              }
+            }
           }
         }
+      ]
+    },
+    "queues": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [{ "$ref": "#/$defs/runnerSettings" }, { "type": "null" }]
       }
     },
     "supervisor": { "$ref": "#/$defs/pinnedSidecar" },
@@ -52,7 +34,9 @@
     "keda": {
       "type": "object",
       "required": ["validateInstallation"],
-      "properties": { "validateInstallation": { "type": "boolean" } }
+      "properties": {
+        "validateInstallation": { "type": "boolean" }
+      }
     }
   },
   "$defs": {
@@ -77,12 +61,12 @@
     },
     "image": {
       "type": "object",
-      "required": ["repository", "tag", "pullPolicy"],
       "properties": {
         "repository": { "type": "string", "minLength": 1 },
         "tag": { "type": "string", "minLength": 1 },
         "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
-      }
+      },
+      "additionalProperties": false
     },
     "token": {
       "type": "object",
@@ -95,6 +79,38 @@
           "properties": {
             "name": { "type": "string" },
             "key": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "runnerSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "queue": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "runtime": { "type": "string", "enum": ["standard", "kata", "sysbox"] },
+        "singleUse": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 0 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "pollingInterval": { "type": "integer", "minimum": 1 },
+        "cooldownPeriod": { "type": "integer", "minimum": 0 },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
+        "image": { "$ref": "#/$defs/image" },
+        "resources": { "type": "object" },
+        "docker": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "$ref": "#/$defs/image" },
+            "resources": { "type": "object" },
+            "storage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "data": { "type": "string", "minLength": 1 },
+                "workspace": { "type": "string", "minLength": 1 }
+              }
+            }
           }
         }
       }

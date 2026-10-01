@@ -1,8 +1,9 @@
-{{- if .Values.runners.enabled }}
+{{- $entries := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- if $entries }}
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
 metadata:
-  name: {{ include "buildkite-operator.runnerName" . }}
+  name: {{ include "buildkite-operator.triggerAuthenticationName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "buildkite-operator.labels" . | nindent 4 }}
@@ -11,21 +12,25 @@ spec:
     - parameter: apiKey
       name: {{ include "buildkite-operator.metricsTokenSecretName" . }}
       key: {{ ternary .Values.metricsToken.existingSecret.key "authorization" (ne .Values.metricsToken.existingSecret.name "") }}
+{{- end }}
+{{- range $entry := $entries }}
+{{- $r := $entry.settings }}
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
-  name: {{ include "buildkite-operator.runnerName" . }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ $entry.resourceName }}
+  namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    {{- include "buildkite-operator.labels" $ | nindent 4 }}
+    buildkite.com/runner-set: {{ $entry.name | quote }}
 spec:
   scaleTargetRef:
-    name: {{ include "buildkite-operator.runnerName" . }}
-  pollingInterval: {{ .Values.runners.pollingInterval }}
-  cooldownPeriod: {{ .Values.runners.cooldownPeriod }}
-  minReplicaCount: {{ .Values.runners.minReplicas }}
-  maxReplicaCount: {{ .Values.runners.maxReplicas }}
+    name: {{ $entry.resourceName }}
+  pollingInterval: {{ $r.pollingInterval }}
+  cooldownPeriod: {{ $r.cooldownPeriod }}
+  minReplicaCount: {{ $r.minReplicas }}
+  maxReplicaCount: {{ $r.maxReplicas }}
   advanced:
     scalingModifiers:
       formula: scheduled + running
@@ -51,20 +56,20 @@ spec:
       name: scheduled
       metadata:
         url: https://agent.buildkite.com/v3/metrics
-        valueLocation: {{ printf "jobs.queues.%s.scheduled" .Values.runners.queue | quote }}
+        valueLocation: {{ printf "jobs.queues.%s.scheduled" $r.queue | quote }}
         targetValue: "1"
         authMode: apiKey
         keyParamName: Authorization
       authenticationRef:
-        name: {{ include "buildkite-operator.runnerName" . }}
+        name: {{ include "buildkite-operator.triggerAuthenticationName" $ }}
     - type: metrics-api
       name: running
       metadata:
         url: https://agent.buildkite.com/v3/metrics
-        valueLocation: {{ printf "jobs.queues.%s.running" .Values.runners.queue | quote }}
+        valueLocation: {{ printf "jobs.queues.%s.running" $r.queue | quote }}
         targetValue: "1"
         authMode: apiKey
         keyParamName: Authorization
       authenticationRef:
-        name: {{ include "buildkite-operator.runnerName" . }}
+        name: {{ include "buildkite-operator.triggerAuthenticationName" $ }}
 {{- end }}

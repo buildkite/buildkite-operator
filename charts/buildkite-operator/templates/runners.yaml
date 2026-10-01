@@ -1,22 +1,10 @@
-{{- if .Values.runners.enabled }}
-{{- $queue := required "runners.queue is required when runners.enabled is true" .Values.runners.queue }}
-{{- $maxReplicas := int .Values.runners.maxReplicas }}
-{{- if lt $maxReplicas 1 }}
-{{- fail "runners.maxReplicas must be at least 1 when runners.enabled is true" }}
-{{- end }}
-{{- if gt (int .Values.runners.minReplicas) $maxReplicas }}
-{{- fail "runners.minReplicas must be less than or equal to runners.maxReplicas" }}
-{{- end }}
+{{- $entries := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- if $entries }}
 {{- if and .Values.agentToken.value .Values.agentToken.existingSecret.name }}
 {{- fail "set only one of agentToken.value or agentToken.existingSecret.name" }}
 {{- end }}
 {{- if and (not .Values.agentToken.value) (not .Values.agentToken.existingSecret.name) }}
-{{- fail "agentToken.value or agentToken.existingSecret.name is required when runners.enabled is true" }}
-{{- end }}
-{{- $docker := or (eq .Values.runners.runtime "kata") (eq .Values.runners.runtime "sysbox") }}
-{{- $singleUse := .Values.runners.singleUse }}
-{{- if and $singleUse (not $docker) }}
-{{- fail "runners.singleUse requires runners.runtime kata or sysbox, which provide a Docker daemon" }}
+{{- fail "agentToken.value or agentToken.existingSecret.name is required when queues are configured" }}
 {{- end }}
 {{- if and .Values.metricsToken.value .Values.metricsToken.existingSecret.name }}
 {{- fail "set only one of metricsToken.value or metricsToken.existingSecret.name" }}
@@ -24,14 +12,21 @@
 {{- if and .Values.agentToken.existingSecret.name (not .Values.metricsToken.value) (not .Values.metricsToken.existingSecret.name) }}
 {{- fail "metricsToken.value or metricsToken.existingSecret.name is required when using an existing agent token Secret" }}
 {{- end }}
+{{- end }}
+{{- range $entry := $entries }}
+{{- $r := $entry.settings }}
+{{- $docker := has $r.runtime (list "kata" "sysbox") }}
+{{- $singleUse := $r.singleUse }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "buildkite-operator.runnerName" . }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ $entry.resourceName }}
+  namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    {{- include "buildkite-operator.labels" $ | nindent 4 }}
     app.kubernetes.io/component: runner
+    buildkite.com/runner-set: {{ $entry.name | quote }}
 spec:
   strategy:
     type: RollingUpdate
@@ -40,30 +35,32 @@ spec:
       maxSurge: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: {{ include "buildkite-operator.name" $ }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
       app.kubernetes.io/component: runner
+      buildkite.com/runner-set: {{ $entry.name | quote }}
   template:
     metadata:
       labels:
-        {{- include "buildkite-operator.labels" . | nindent 8 }}
+        {{- include "buildkite-operator.labels" $ | nindent 8 }}
         app.kubernetes.io/component: runner
+        buildkite.com/runner-set: {{ $entry.name | quote }}
       annotations:
-        {{- if .Values.agentToken.value }}
+        {{- if $.Values.agentToken.value }}
         # Roll agents when the chart-managed token changes; they read it at startup.
-        checksum/agent-token: {{ .Values.agentToken.value | sha256sum }}
+        checksum/agent-token: {{ $.Values.agentToken.value | sha256sum }}
         {{- end }}
         # Treat agents as busy until the sidecar observes that they are idle.
         controller.kubernetes.io/pod-deletion-cost: "100"
-        checksum/deletion-cost: {{ .Files.Get "files/deletion_cost.py" | sha256sum }}
+        checksum/deletion-cost: {{ $.Files.Get "files/deletion_cost.py" | sha256sum }}
         {{- if $singleUse }}
-        checksum/supervisor: {{ .Files.Get "files/supervisor.sh" | sha256sum }}
+        checksum/supervisor: {{ $.Files.Get "files/supervisor.sh" | sha256sum }}
         {{- end }}
     spec:
-      serviceAccountName: {{ include "buildkite-operator.deletionCostName" . }}
+      serviceAccountName: {{ include "buildkite-operator.deletionCostName" $ }}
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: {{ .Values.runners.terminationGracePeriodSeconds }}
-      {{- if eq .Values.runners.runtime "kata" }}
+      terminationGracePeriodSeconds: {{ $r.terminationGracePeriodSeconds }}
+      {{- if eq $r.runtime "kata" }}
       runtimeClassName: kata-qemu-runtime-rs
       nodeSelector:
         experiments.buildkite.com/runtime: kata
@@ -72,7 +69,7 @@ spec:
           operator: Equal
           value: kata
           effect: NoSchedule
-      {{- else if eq .Values.runners.runtime "sysbox" }}
+      {{- else if eq $r.runtime "sysbox" }}
       runtimeClassName: sysbox-runc
       hostUsers: false
       nodeSelector:
@@ -86,20 +83,20 @@ spec:
       {{- if $docker }}
       initContainers:
         - name: dockerd
-          image: "{{ .Values.docker.image.repository }}:{{ .Values.docker.image.tag }}"
-          imagePullPolicy: {{ .Values.docker.image.pullPolicy }}
+          image: "{{ $r.docker.image.repository }}:{{ $r.docker.image.tag }}"
+          imagePullPolicy: {{ $r.docker.image.pullPolicy }}
           restartPolicy: Always
           args:
             - dockerd
             - --host=unix:///var/run/docker.sock
-            {{- if eq .Values.runners.runtime "sysbox" }}
+            {{- if eq $r.runtime "sysbox" }}
             - --storage-driver=overlay2
             {{- end }}
           env:
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
           securityContext:
-            privileged: {{ eq .Values.runners.runtime "kata" }}
+            privileged: {{ eq $r.runtime "kata" }}
           startupProbe:
             exec:
               command: [docker, info]
@@ -112,7 +109,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
           resources:
-            {{- toYaml .Values.docker.resources | nindent 12 }}
+            {{- toYaml $r.docker.resources | nindent 12 }}
           volumeMounts:
             - name: docker-data
               mountPath: /var/lib/docker
@@ -124,24 +121,24 @@ spec:
       containers:
         {{- if $singleUse }}
         - name: supervisor
-          image: "{{ .Values.supervisor.image.repository }}:{{ .Values.supervisor.image.tag }}@{{ .Values.supervisor.image.digest }}"
-          imagePullPolicy: {{ .Values.supervisor.image.pullPolicy }}
+          image: "{{ $.Values.supervisor.image.repository }}:{{ $.Values.supervisor.image.tag }}@{{ $.Values.supervisor.image.digest }}"
+          imagePullPolicy: {{ $.Values.supervisor.image.pullPolicy }}
           command: ["/bin/sh", "/opt/supervisor/supervisor.sh"]
           env:
             - name: AGENT_IMAGE
-              value: "{{ .Values.runners.image.repository }}:{{ .Values.runners.image.tag }}"
+              value: "{{ $r.image.repository }}:{{ $r.image.tag }}"
             - name: BUILDKITE_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  {{- include "buildkite-operator.agentTokenSecretRef" . | nindent 18 }}
+                  {{- include "buildkite-operator.agentTokenSecretRef" $ | nindent 18 }}
             - name: AGENT_TAGS
-              value: {{ printf "queue=%s,runtime=%s" $queue .Values.runners.runtime | quote }}
+              value: {{ printf "queue=%s,runtime=%s" $r.queue $r.runtime | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
             - name: TERMINATION_GRACE_PERIOD_SECONDS
-              value: {{ .Values.runners.terminationGracePeriodSeconds | quote }}
+              value: {{ $r.terminationGracePeriodSeconds | quote }}
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
           ports:
@@ -159,7 +156,7 @@ spec:
             capabilities:
               drop: [ALL]
           resources:
-            {{- toYaml .Values.supervisor.resources | nindent 12 }}
+            {{- toYaml $.Values.supervisor.resources | nindent 12 }}
           volumeMounts:
             - name: docker-run
               mountPath: /var/run
@@ -168,8 +165,8 @@ spec:
               readOnly: true
         {{- else }}
         - name: agent
-          image: "{{ .Values.runners.image.repository }}:{{ .Values.runners.image.tag }}"
-          imagePullPolicy: {{ .Values.runners.image.pullPolicy }}
+          image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
+          imagePullPolicy: {{ $r.image.pullPolicy }}
           command: ["/usr/local/bin/buildkite-agent"]
           args: ["start"]
           env:
@@ -178,13 +175,13 @@ spec:
             - name: BUILDKITE_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  {{- include "buildkite-operator.agentTokenSecretRef" . | nindent 18 }}
+                  {{- include "buildkite-operator.agentTokenSecretRef" $ | nindent 18 }}
             - name: BUILDKITE_AGENT_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
             - name: BUILDKITE_AGENT_TAGS
-              value: {{ printf "queue=%s,runtime=%s" $queue .Values.runners.runtime | quote }}
+              value: {{ printf "queue=%s,runtime=%s" $r.queue $r.runtime | quote }}
             - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
               value: 0.0.0.0:8080
             - name: BUILDKITE_BUILD_PATH
@@ -209,7 +206,7 @@ spec:
             allowPrivilegeEscalation: false
             privileged: false
           resources:
-            {{- toYaml .Values.runners.resources | nindent 12 }}
+            {{- toYaml $r.resources | nindent 12 }}
           {{- if $docker }}
           volumeMounts:
             - name: docker-run
@@ -219,8 +216,8 @@ spec:
           {{- end }}
         {{- end }}
         - name: deletion-cost
-          image: "{{ .Values.deletionCost.image.repository }}:{{ .Values.deletionCost.image.tag }}@{{ .Values.deletionCost.image.digest }}"
-          imagePullPolicy: {{ .Values.deletionCost.image.pullPolicy }}
+          image: "{{ $.Values.deletionCost.image.repository }}:{{ $.Values.deletionCost.image.tag }}@{{ $.Values.deletionCost.image.digest }}"
+          imagePullPolicy: {{ $.Values.deletionCost.image.pullPolicy }}
           # As PID 1, Python ignores SIGTERM until its handler is installed, so a
           # Pod removed during startup would wait out the full grace period.
           command:
@@ -244,7 +241,7 @@ spec:
             capabilities:
               drop: [ALL]
           resources:
-            {{- toYaml .Values.deletionCost.resources | nindent 12 }}
+            {{- toYaml $.Values.deletionCost.resources | nindent 12 }}
           volumeMounts:
             - name: deletion-cost-code
               mountPath: /opt/deletion-cost
@@ -255,7 +252,7 @@ spec:
       volumes:
         - name: deletion-cost-code
           configMap:
-            name: {{ include "buildkite-operator.deletionCostName" . }}
+            name: {{ include "buildkite-operator.deletionCostName" $ }}
         - name: deletion-cost-api
           projected:
             sources:
@@ -270,18 +267,18 @@ spec:
         {{- if $singleUse }}
         - name: supervisor-script
           configMap:
-            name: {{ include "buildkite-operator.supervisorName" . }}
+            name: {{ include "buildkite-operator.supervisorName" $ }}
         {{- end }}
         {{- if $docker }}
         - name: docker-data
           emptyDir:
-            sizeLimit: {{ .Values.docker.storage.data }}
+            sizeLimit: {{ $r.docker.storage.data }}
         - name: docker-run
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
         - name: workspace
           emptyDir:
-            sizeLimit: {{ .Values.docker.storage.workspace }}
+            sizeLimit: {{ $r.docker.storage.workspace }}
         {{- end }}
 {{- end }}
