@@ -55,13 +55,21 @@ docker run --detach --privileged --name "${ID}-dockerd" \
 wait_for "Docker daemon" inner info
 
 # The stand-in agent checks the supervisor's arguments, records which agent
-# ran the job, and exits once the test releases it.
+# ran the job, and exits once the test releases it. Like the real agent, it
+# treats SIGTERM as a request to finish its in-flight job before exiting.
 docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /ctx && cat >/ctx/agent && chmod +x /ctx/agent' <<'EOF'
 #!/bin/sh
 [ "$*" = "start --disconnect-after-job" ] || { echo "unexpected arguments: $*" >&2; exit 64; }
 mkdir -p /buildkite/builds
 touch "/buildkite/builds/$BUILDKITE_AGENT_NAME"
-until [ -e "/buildkite/release-$BUILDKITE_AGENT_NAME" ]; do sleep 0.2; done
+draining=0
+trap 'draining=1' TERM
+until [ -e "/buildkite/release-$BUILDKITE_AGENT_NAME" ] || [ "$draining" -eq 1 ]; do sleep 0.2; done
+if [ "$draining" -eq 1 ]; then
+	touch /buildkite/drain-started
+	sleep 3
+	touch /buildkite/drain-finished
+fi
 EOF
 docker exec -i "${ID}-dockerd" sh -c 'cat >/ctx/Dockerfile && docker build --quiet --tag test-agent:1 /ctx >/dev/null' <<'EOF'
 FROM busybox:1.37
@@ -103,8 +111,19 @@ workspace=$(docker exec "${ID}-dockerd" ls -A /buildkite/builds)
 }
 inner image inspect busybox:1.37 >/dev/null # Image cache is retained.
 
+# Stopping the supervisor must let the in-flight job drain, not kill it at the
+# stop timeout.
 docker stop --time 30 "${ID}-supervisor" >/dev/null
 [[ "$(docker inspect --format '{{.State.ExitCode}}' "${ID}-supervisor")" == 0 ]]
 ! agent_running
+docker exec "${ID}-dockerd" test -e /buildkite/drain-started
+docker exec "${ID}-dockerd" test -e /buildkite/drain-finished || {
+	echo "Agent was stopped before its in-flight job finished draining" >&2
+	exit 1
+}
+[[ "$(inner inspect --format '{{.State.ExitCode}}' buildkite-agent)" == 0 ]] || {
+	echo "Agent did not exit cleanly after draining" >&2
+	exit 1
+}
 
-echo "Supervisor ran fresh agents for each job and cleaned state between them"
+echo "Supervisor ran fresh agents for each job, cleaned state between them, and drained on shutdown"
