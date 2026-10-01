@@ -69,7 +69,7 @@ assert_contains "${direct}" "maxSurge: 1"
 assert_contains "${direct}" 'controller.kubernetes.io/pod-deletion-cost: "100"'
 assert_contains "${direct}" "serviceAccountName: test-buildkite-operator-deletion-cost"
 assert_contains "${direct}" "name: test-linux"
-assert_contains "${direct}" "buildkite.com/runner-set: linux"
+assert_contains "${direct}" 'buildkite.com/runner-set: "linux"'
 assert_contains "${direct}" "- name: deletion-cost"
 assert_contains "${direct}" "kind: Role"
 assert_contains "${direct}" 'verbs: ["patch"]'
@@ -186,19 +186,19 @@ sysbox_runner=$(document "${multi}" Deployment test-build-sysbox)
 assert_contains "${kata_runner}" "runtimeClassName: kata-qemu-runtime-rs"
 assert_contains "${kata_runner}" "- name: agent"
 assert_contains "${kata_runner}" 'value: "queue=linux,runtime=kata"'
-assert_contains "${kata_runner}" "buildkite.com/runner-set: linux-kata"
+assert_contains "${kata_runner}" 'buildkite.com/runner-set: "linux-kata"'
 assert_contains "${kata_runner}" "memory: 8Gi"
 assert_contains "${sysbox_runner}" "runtimeClassName: sysbox-runc"
 assert_contains "${sysbox_runner}" "- name: supervisor"
 assert_contains "${sysbox_runner}" 'value: "queue=build,runtime=sysbox"'
-assert_contains "${sysbox_runner}" "buildkite.com/runner-set: build-sysbox"
+assert_contains "${sysbox_runner}" 'buildkite.com/runner-set: "build-sysbox"'
 assert_contains "${sysbox_runner}" "memory: 16Gi"
 assert_contains "${sysbox_runner}" 'cpu: "4"' # Inherited alongside the memory override.
 # Each Deployment must select only its own entry's Pods; otherwise a release's
 # Deployments would adopt each other's runners.
 for entry in linux-kata build-sysbox; do
 	selector=$(document "${multi}" Deployment "test-${entry}" | awk '/^  selector:$/ { found = 1; next } found && /^  [^ ]/ { exit } found { print }')
-	assert_contains "${selector}" "buildkite.com/runner-set: ${entry}"
+	assert_contains "${selector}" "buildkite.com/runner-set: \"${entry}\""
 done
 kata_scaling=$(document "${multi}" ScaledObject test-linux-kata)
 sysbox_scaling=$(document "${multi}" ScaledObject test-build-sysbox)
@@ -209,6 +209,24 @@ assert_contains "${sysbox_scaling}" "minReplicaCount: 0" # Overridden to zero.
 assert_contains "${sysbox_scaling}" "maxReplicaCount: 4"
 assert_contains "${sysbox_scaling}" 'valueLocation: "jobs.queues.build.scheduled"'
 assert_contains "${multi}" "name: test-buildkite-operator-supervisor"
+
+# Entry names that YAML would read as numbers or booleans stay strings, as
+# Kubernetes label values must be.
+numeric=$("${HELM}" template test "${CHART_DIR}" \
+	"${KEDA_API_VERSIONS[@]}" \
+	--set-string agentToken.value="${TOKEN}" \
+	--set-string queues.123.queue=linux \
+	--set queues.123.maxReplicas=1 \
+	--set-string queues.true.queue=build \
+	--set queues.true.maxReplicas=1)
+[[ $(grep -c 'buildkite.com/runner-set: "123"$' <<<"${numeric}") -eq 4 ]] || {
+	echo "Numeric entry name was not quoted in every runner-set label" >&2
+	exit 1
+}
+[[ $(grep -c 'buildkite.com/runner-set: "true"$' <<<"${numeric}") -eq 4 ]] || {
+	echo "Boolean-like entry name was not quoted in every runner-set label" >&2
+	exit 1
+}
 
 # A later values file can override or remove a single queue entry.
 values_dir=$(mktemp -d)
