@@ -203,7 +203,7 @@ assert_contains "${sysbox_runner}" 'cpu: "4"' # Inherited alongside the memory o
 # Each Deployment must select only its own entry's Pods; otherwise a release's
 # Deployments would adopt each other's runners.
 for entry in linux-kata build-sysbox; do
-	selector=$(document "${multi}" Deployment "test-${entry}" | awk '/^  selector:$/ { found = 1; next } found && /^  [^ ]/ { exit } found { print }')
+	selector=$(document "${multi}" Deployment "test-${entry}" | awk '/^  selector:$/ { found = 1; next } found && /^  [^ ]/ { found = 0 } found { print }')
 	assert_contains "${selector}" "buildkite.com/runner-set: \"${entry}\""
 done
 kata_scaling=$(document "${multi}" ScaledObject test-linux-kata)
