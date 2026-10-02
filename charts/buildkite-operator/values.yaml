@@ -10,7 +10,14 @@ defaults:
   singleUse: false
   minReplicas: 1
   pollingInterval: 10
+  # Seconds of idle time before KEDA scales a queue with minReplicas 0 from
+  # one runner to zero.
   cooldownPeriod: 60
+  # Seconds the HPA waits for lower job counts to persist before removing
+  # runners, so short dips between dependent steps do not recreate them. Applies
+  # to all scale-in above zero; 0 to 3600.
+  scaleDownStabilizationWindowSeconds: 60
+  # Longest time an agent may take to drain its job once a runner is removed.
   terminationGracePeriodSeconds: 3600
   image:
     repository: buildkite/agent

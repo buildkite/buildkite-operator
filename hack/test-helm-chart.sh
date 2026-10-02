@@ -90,6 +90,7 @@ fi
 assert_contains "${direct}" "minReplicaCount: 1"
 assert_contains "${direct}" "maxReplicaCount: 4"
 assert_contains "${direct}" "formula: scheduled + running"
+assert_contains "${direct}" $'scaleDown:\n          stabilizationWindowSeconds: 60\n'
 assert_contains "${direct}" 'valueLocation: "jobs.queues.linux.scheduled"'
 assert_contains "${direct}" "token: \"${TOKEN}\""
 assert_contains "${direct}" "authorization: \"Token ${TOKEN}\""
@@ -157,6 +158,7 @@ multi=$("${HELM}" template test "${CHART_DIR}" \
 	"${KEDA_API_VERSIONS[@]}" \
 	--set-string agentToken.value="${TOKEN}" \
 	--set defaults.minReplicas=2 \
+	--set defaults.scaleDownStabilizationWindowSeconds=120 \
 	--set-string queues.linux-kata.queue=linux \
 	--set-string queues.linux-kata.runtime=kata \
 	--set queues.linux-kata.maxReplicas=10 \
@@ -165,6 +167,7 @@ multi=$("${HELM}" template test "${CHART_DIR}" \
 	--set queues.build-sysbox.singleUse=true \
 	--set queues.build-sysbox.minReplicas=0 \
 	--set queues.build-sysbox.maxReplicas=4 \
+	--set queues.build-sysbox.scaleDownStabilizationWindowSeconds=0 \
 	--set-string queues.build-sysbox.docker.resources.limits.memory=16Gi)
 count_kind() { grep -c "^kind: $2\$" <<<"$1" || true; }
 for kind in Secret TriggerAuthentication ServiceAccount Role RoleBinding; do
@@ -204,9 +207,11 @@ kata_scaling=$(document "${multi}" ScaledObject test-linux-kata)
 sysbox_scaling=$(document "${multi}" ScaledObject test-build-sysbox)
 assert_contains "${kata_scaling}" "minReplicaCount: 2" # Inherited from defaults.
 assert_contains "${kata_scaling}" "maxReplicaCount: 10"
+assert_contains "${kata_scaling}" $'scaleDown:\n          stabilizationWindowSeconds: 120\n' # Inherited from defaults.
 assert_contains "${kata_scaling}" 'valueLocation: "jobs.queues.linux.running"'
 assert_contains "${sysbox_scaling}" "minReplicaCount: 0" # Overridden to zero.
 assert_contains "${sysbox_scaling}" "maxReplicaCount: 4"
+assert_contains "${sysbox_scaling}" $'scaleDown:\n          stabilizationWindowSeconds: 0\n' # Overridden to zero.
 assert_contains "${sysbox_scaling}" 'valueLocation: "jobs.queues.build.scheduled"'
 assert_contains "${multi}" "name: test-buildkite-operator-supervisor"
 
@@ -239,7 +244,7 @@ queues:
 EOF
 cat >"${values_dir}/override.yaml" <<EOF
 queues:
-  linux-kata: {maxReplicas: 25}
+  linux-kata: {maxReplicas: 25, scaleDownStabilizationWindowSeconds: 300}
   build-sysbox: null
 EOF
 overridden=$("${HELM}" template test "${CHART_DIR}" \
@@ -247,6 +252,7 @@ overridden=$("${HELM}" template test "${CHART_DIR}" \
 	-f "${values_dir}/base.yaml" \
 	-f "${values_dir}/override.yaml")
 assert_contains "${overridden}" "maxReplicaCount: 25"
+assert_contains "${overridden}" $'scaleDown:\n          stabilizationWindowSeconds: 300\n'
 assert_contains "${overridden}" "runtimeClassName: kata-qemu-runtime-rs" # Untouched settings are kept.
 [[ $(count_kind "${overridden}" Deployment) -eq 1 ]] || { echo "Null entry was not removed" >&2; exit 1; }
 if [[ "${overridden}" == *"name: test-buildkite-operator-supervisor"* ]]; then
@@ -298,6 +304,11 @@ assert_fails "queues.linux.singleUse requires runtime kata or sysbox" \
 	--set-string queues.linux.queue=linux \
 	--set queues.linux.maxReplicas=1 \
 	--set queues.linux.singleUse=true \
+	--set-string agentToken.value="${TOKEN}"
+assert_fails "maximum: got 3,601, want 3,600" \
+	--set-string queues.linux.queue=linux \
+	--set queues.linux.maxReplicas=1 \
+	--set queues.linux.scaleDownStabilizationWindowSeconds=3601 \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "does not match pattern" \
 	--set-string queues.linux.queue=linux \

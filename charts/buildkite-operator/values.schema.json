@@ -7,7 +7,7 @@
       "allOf": [
         { "$ref": "#/$defs/runnerSettings" },
         {
-          "required": ["runtime", "singleUse", "minReplicas", "pollingInterval", "cooldownPeriod", "terminationGracePeriodSeconds", "image", "resources", "docker"],
+          "required": ["runtime", "singleUse", "minReplicas", "pollingInterval", "cooldownPeriod", "scaleDownStabilizationWindowSeconds", "terminationGracePeriodSeconds", "image", "resources", "docker"],
           "properties": {
             "image": { "required": ["repository", "tag", "pullPolicy"] },
             "docker": {
@@ -94,6 +94,7 @@
         "maxReplicas": { "type": "integer", "minimum": 1 },
         "pollingInterval": { "type": "integer", "minimum": 1 },
         "cooldownPeriod": { "type": "integer", "minimum": 0 },
+        "scaleDownStabilizationWindowSeconds": { "type": "integer", "minimum": 0, "maximum": 3600 },
         "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
         "image": { "$ref": "#/$defs/image" },
         "resources": { "type": "object" },
