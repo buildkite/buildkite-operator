@@ -186,8 +186,35 @@ once per cluster before installing the chart:
 | `kata` | `kata-qemu-runtime-rs` | [kata-deploy](https://github.com/kata-containers/kata-containers/tree/main/tools/packaging/kata-deploy) | KVM-capable, labelled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=kata` |
 | `sysbox` | `sysbox-runc` | [sysbox-deploy-k8s](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md) | Kubernetes user namespaces support, labelled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=sysbox` |
 
-With node autoscaling, the installer must also run on newly added nodes before
-runners are scheduled there.
+Each installer must target the runtime's nodes and tolerate their
+`experiments.buildkite.com/runtime=<kata|sysbox>:NoSchedule` taint; neither
+does by default. With node autoscaling, the installer must also run on newly
+added nodes before runners are scheduled there. For kata-deploy, add to its
+Helm values:
+
+```yaml
+nodeSelector:
+  experiments.buildkite.com/runtime: kata
+tolerations:
+  - {key: experiments.buildkite.com/runtime, operator: Equal, value: kata, effect: NoSchedule}
+```
+
+For Sysbox, label the nodes `sysbox-install=yes` as upstream requires, and
+patch the `sysbox-deploy-k8s` DaemonSet, for example as a Kustomize patch.
+The tolerations list replaces upstream's, so keep its `sysbox-runtime=not-running`
+toleration:
+
+```yaml
+spec:
+  template:
+    spec:
+      nodeSelector:
+        experiments.buildkite.com/runtime: sysbox
+      tolerations:
+        - {key: sysbox-runtime, operator: Equal, value: not-running, effect: NoSchedule}
+        - {key: experiments.buildkite.com/runtime, operator: Equal, value: sysbox, effect: NoSchedule}
+```
+
 Both profiles require Kubernetes native sidecars; Sysbox additionally requires
 Kubernetes user namespaces. Their Docker data and workspace are Pod-local and
 are discarded when an agent Pod is removed.

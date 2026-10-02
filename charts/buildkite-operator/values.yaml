@@ -9,6 +9,7 @@ defaults:
   # - sysbox: RuntimeClass sysbox-runc (from sysbox-deploy-k8s) and nodes that
   #   support Kubernetes user namespaces, labelled and tainted (NoSchedule)
   #   experiments.buildkite.com/runtime=sysbox.
+  # Each installer must also select and tolerate those nodes; see the README.
   runtime: standard
   # Run each job in a fresh agent container, then clear its containers,
   # networks, volumes and workspace. The Pod, node, and Docker image and build
