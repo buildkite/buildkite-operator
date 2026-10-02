@@ -10,12 +10,14 @@ defaults:
   singleUse: false
   minReplicas: 1
   pollingInterval: 10
-  # Seconds of idle time before KEDA scales a queue with minReplicas 0 from
-  # one runner to zero.
+  # Seconds the queue must be fully idle before KEDA scales a queue with
+  # minReplicas 0 to zero. KEDA removes every remaining runner at once, without
+  # waiting for scaleDownStabilizationWindowSeconds; raise this to keep an idle
+  # pool longer.
   cooldownPeriod: 60
   # Seconds the HPA waits for lower job counts to persist before removing
-  # runners, so short dips between dependent steps do not recreate them. Applies
-  # to all scale-in above zero; 0 to 3600.
+  # runners while at least one is still needed, so short dips between dependent
+  # steps do not recreate them. 0 to 3600.
   scaleDownStabilizationWindowSeconds: 60
   # Longest time an agent may take to drain its job once a runner is removed.
   terminationGracePeriodSeconds: 3600

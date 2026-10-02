@@ -106,8 +106,8 @@ Buildkite cluster need a different token, so they use a separate release.
 | `runtime` | `standard` | `standard`, `kata` or `sysbox`; see [Runner isolation](#runner-isolation). |
 | `singleUse` | `false` | Run each job in a fresh agent container; see [Single-use job containers](#single-use-job-containers). |
 | `terminationGracePeriodSeconds` | `3600` | Longest time an agent may take to drain its job. |
-| `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling and scale-to-zero cooldown, in seconds. `cooldownPeriod` applies only to the last runner when `minReplicas` is `0`. |
-| `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600). Covers dips between dependent steps. Unlike `cooldownPeriod`, it applies to all scale-in. |
+| `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales an entry with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
+| `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
 | `image`, `resources` | `buildkite/agent:4` | Agent image and resources. |
 | `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `kata` and `sysbox`. |
 
@@ -115,9 +115,12 @@ Buildkite cluster need a different token, so they use a separate release.
 
 KEDA polls Buildkite's Agent Metrics API. For each queue entry it scales for
 `scheduled + running` jobs, keeps one runner warm by default, and scales up to
-the entry's `maxReplicas`. The HPA removes runners only after the lower count
-has persisted for `scaleDownStabilizationWindowSeconds`, because jobs blocked
-on `depends_on` are not counted until their dependencies finish.
+the entry's `maxReplicas`. While jobs are scheduled or running, the HPA
+removes runners only after the lower count has persisted for
+`scaleDownStabilizationWindowSeconds`, because jobs blocked on `depends_on` are
+not counted until their dependencies finish. Once the queue has no scheduled or
+running jobs, an entry with `minReplicas: 0` scales to zero after
+`cooldownPeriod` instead.
 
 KEDA's HPA chooses scale-in victims without confirming that a selected agent is
 idle. The agent drains a running job on its first SIGTERM, bounded by
