@@ -108,8 +108,8 @@ Buildkite cluster need a different token, so they use a separate release.
 | `terminationGracePeriodSeconds` | `3600` | Longest time an agent may take to drain its job. |
 | `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales an entry with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
 | `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
-| `image`, `resources` | `buildkite/agent:4` | Agent image and resources. |
-| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `kata` and `sysbox`. |
+| `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the long-lived agent container. With `singleUse`, `resources` is ignored: job containers run inside the Docker daemon and share its `docker.resources` budget. |
+| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `kata` and `sysbox`. With `singleUse`, `docker.resources` also bounds the job containers. |
 
 ## Autoscaling
 

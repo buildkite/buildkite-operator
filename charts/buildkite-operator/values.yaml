@@ -25,8 +25,12 @@ defaults:
     repository: buildkite/agent
     tag: "4"
     pullPolicy: Always
+  # Requests and limits for the long-lived agent container. Ignored with
+  # singleUse, where job containers run inside the Docker daemon and share
+  # docker.resources.
   resources: {}
-  # Docker daemon used by the kata and sysbox runtimes.
+  # Docker daemon used by the kata and sysbox runtimes. With singleUse, its
+  # resources also bound the job containers it runs.
   docker:
     image:
       repository: docker
