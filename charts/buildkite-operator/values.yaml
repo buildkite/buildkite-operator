@@ -1,8 +1,14 @@
 # Settings shared by every queue entry. Any of these can be overridden per entry
 # under queues.<name>.
 defaults:
-  # standard, kata, or sysbox. Kata and Sysbox require their RuntimeClass and
-  # compatible, labelled nodes to be installed before this chart is installed.
+  # standard, kata, or sysbox. kata and sysbox need cluster components that
+  # this chart does not install (see the README's "Runner isolation"):
+  # - kata: RuntimeClass kata-qemu-runtime-rs (for example from the kata-deploy
+  #   Helm chart) and KVM-capable nodes labelled and tainted (NoSchedule)
+  #   experiments.buildkite.com/runtime=kata.
+  # - sysbox: RuntimeClass sysbox-runc (from sysbox-deploy-k8s) and nodes that
+  #   support Kubernetes user namespaces, labelled and tainted (NoSchedule)
+  #   experiments.buildkite.com/runtime=sysbox.
   runtime: standard
   # Run each job in a fresh agent container, then clear its containers,
   # networks, volumes and workspace. The Pod, node, and Docker image and build

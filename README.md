@@ -178,9 +178,16 @@ Set `runtime` in `defaults` or on a queue entry to choose its isolation profile:
 
 Different entries in one release can use different profiles.
 Kata and Sysbox are host runtimes, so the chart deliberately does not install
-them or modify containerd. Before installing the chart, prepare dedicated nodes
-labelled and tainted with `experiments.buildkite.com/runtime=kata` or
-`experiments.buildkite.com/runtime=sysbox`, and install the matching RuntimeClass.
+them or modify containerd. Like KEDA, they are cluster-wide installs, done
+once per cluster before installing the chart:
+
+| `runtime` | RuntimeClass | Installer | Nodes |
+| --- | --- | --- | --- |
+| `kata` | `kata-qemu-runtime-rs` | [kata-deploy](https://github.com/kata-containers/kata-containers/tree/main/tools/packaging/kata-deploy) | KVM-capable, labelled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=kata` |
+| `sysbox` | `sysbox-runc` | [sysbox-deploy-k8s](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md) | Kubernetes user namespaces support, labelled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=sysbox` |
+
+With node autoscaling, the installer must also run on newly added nodes before
+runners are scheduled there.
 Both profiles require Kubernetes native sidecars; Sysbox additionally requires
 Kubernetes user namespaces. Their Docker data and workspace are Pod-local and
 are discarded when an agent Pod is removed.

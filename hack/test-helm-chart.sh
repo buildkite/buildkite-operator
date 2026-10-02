@@ -263,6 +263,25 @@ if [[ "${overridden}" == *"name: test-buildkite-operator-supervisor"* ]]; then
 	exit 1
 fi
 
+# NOTES lists the runtime prerequisites only for runtimes a release uses.
+# helm template does not render NOTES, so use a client-side dry-run install.
+notes() {
+	"${HELM}" install test "${CHART_DIR}" --dry-run=client \
+		--set keda.validateInstallation=false \
+		--set-string agentToken.value="${TOKEN}" \
+		"$@" | sed -n '/^NOTES:$/,$p'
+}
+runtime_notes=$(notes -f "${values_dir}/base.yaml")
+assert_contains "${runtime_notes}" "kata needs RuntimeClass kata-qemu-runtime-rs and nodes labelled and tainted experiments.buildkite.com/runtime=kata"
+assert_contains "${runtime_notes}" "sysbox needs RuntimeClass sysbox-runc and nodes labelled and tainted experiments.buildkite.com/runtime=sysbox"
+assert_contains "${runtime_notes}" '"RuntimeClass not found"'
+standard_notes=$(notes --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)
+assert_contains "${standard_notes}" "linux: queue linux, standard"
+if [[ "${standard_notes}" == *"RuntimeClass"* ]]; then
+	echo "NOTES listed runtime prerequisites for a standard-only release" >&2
+	exit 1
+fi
+
 # With no queues, nothing is rendered and neither a token nor KEDA is needed.
 empty=$("${HELM}" template test "${CHART_DIR}")
 if [[ "${empty}" == *"kind:"* ]]; then

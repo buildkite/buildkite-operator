@@ -7,6 +7,22 @@ Buildkite runners are installed in {{ .Release.Namespace }}. KEDA scales each qu
 
   kubectl get deployment,scaledobject -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
   kubectl get pods -l app.kubernetes.io/component=runner -L buildkite.com/runner-set -n {{ .Release.Namespace }}
+{{- $runtimes := list }}
+{{- range $entry := $entries }}
+{{- $runtimes = append $runtimes $entry.settings.runtime }}
+{{- end }}
+{{- $classes := dict "kata" "kata-qemu-runtime-rs" "sysbox" "sysbox-runc" }}
+{{- $needed := list }}
+{{- range $runtime := list "kata" "sysbox" }}
+{{- if has $runtime $runtimes }}
+{{- $needed = append $needed (printf "%s needs RuntimeClass %s and nodes labelled and tainted experiments.buildkite.com/runtime=%s" $runtime (get $classes $runtime) $runtime) }}
+{{- end }}
+{{- end }}
+{{- if $needed }}
+
+This chart does not install container runtimes: {{ join "; " $needed }}.
+If runner Pods don't start, check the ReplicaSet events for "RuntimeClass not found" and the Pods for FailedScheduling.
+{{- end }}
 {{- else }}
 No queues are configured, so no runners were installed. Add entries under queues.
 {{- end }}
