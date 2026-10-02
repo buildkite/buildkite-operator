@@ -132,16 +132,39 @@ by multiple runner releases in the cluster.
 ### Scale-in preference
 
 Each runner Pod includes a small sidecar that polls the agent's
-local `/status.json` endpoint every second. Busy or unknown agents get
-`controller.kubernetes.io/pod-deletion-cost: "100"`; idle agents have the
-annotation removed, so the ReplicaSet prefers removing idle agents.
+local `/status.json` endpoint every second. On each change between busy and
+idle it patches two annotations together, retrying until the patch succeeds:
 
-This is best-effort. Kubernetes can still select a busy Pod, and deletion cost
-does not protect against node drains or evictions. The sidecar is always enabled
+| Agent | `controller.kubernetes.io/pod-deletion-cost` | `cluster-autoscaler.kubernetes.io/safe-to-evict` |
+| --- | --- | --- |
+| Busy or unknown (including at startup) | `"100"` | `"false"` |
+| Idle | removed | `"true"` |
+
+The deletion cost makes the ReplicaSet prefer removing idle agents. This is
+best-effort. Kubernetes can still select a busy Pod, and deletion cost does not
+protect against node drains or evictions. The sidecar is always enabled
 because it is part of the chart's autoscaling behavior, and its Python image is
 pinned by digest. The sidecar receives the only Kubernetes API token in the Pod,
 but because Deployment Pod names are generated, its Role can patch every Pod in
 the release namespace. Install the chart in a namespace dedicated to runners.
+
+### Node autoscaling
+
+When [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler)
+removes an underused node, it evicts the node's Pods and caps their graceful
+termination at its `--max-graceful-termination-sec` (600 seconds by default),
+well below the chart's default `terminationGracePeriodSeconds`. A busy agent's
+`safe-to-evict: "false"` stops Cluster Autoscaler from removing its node, so
+running jobs are not cut short.
+
+Idle agents are marked `safe-to-evict: "true"` rather than left unannotated.
+`kata` and `sysbox` runners use disk-backed `emptyDir` volumes for Docker data
+and the workspace, and Cluster Autoscaler's default
+`--skip-nodes-with-local-storage=true` would otherwise never remove their
+nodes. This is also best-effort: an agent that accepts a job after Cluster
+Autoscaler checks its node but before eviction is still bounded by
+`--max-graceful-termination-sec`. Node drains outside Cluster Autoscaler,
+such as `kubectl drain` or spot interruptions, ignore the annotation.
 
 ## Runner isolation
 

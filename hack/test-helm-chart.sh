@@ -67,13 +67,15 @@ assert_contains "${direct}" "type: RollingUpdate"
 assert_contains "${direct}" "maxUnavailable: 0"
 assert_contains "${direct}" "maxSurge: 1"
 assert_contains "${direct}" 'controller.kubernetes.io/pod-deletion-cost: "100"'
+assert_contains "${direct}" 'cluster-autoscaler.kubernetes.io/safe-to-evict: "false"'
+assert_contains "${direct}" 'SAFE_TO_EVICT = "cluster-autoscaler.kubernetes.io/safe-to-evict"'
 assert_contains "${direct}" "serviceAccountName: test-buildkite-operator-deletion-cost"
 assert_contains "${direct}" "name: test-linux"
 assert_contains "${direct}" 'buildkite.com/runner-set: "linux"'
 assert_contains "${direct}" "- name: deletion-cost"
 assert_contains "${direct}" "kind: Role"
 assert_contains "${direct}" 'verbs: ["patch"]'
-assert_contains "${direct}" "def deletion_cost():"
+assert_contains "${direct}" "def agent_busy():"
 assert_contains "${direct}" 'image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"'
 [[ $(grep -c 'mountPath: /var/run/secrets/kubernetes.io/serviceaccount' <<<"${direct}") -eq 1 ]] || {
 	echo "Kubernetes API token was mounted into more than the deletion-cost sidecar" >&2
@@ -125,6 +127,7 @@ assert_contains "${kata}" "privileged: true"
 assert_contains "${kata}" 'value: "queue=linux,runtime=kata"'
 assert_contains "${kata}" "- name: deletion-cost-code"
 assert_contains "${kata}" "- name: docker-data"
+assert_contains "${kata}" 'cluster-autoscaler.kubernetes.io/safe-to-evict: "false"'
 
 sysbox=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox)
 assert_contains "${sysbox}" "runtimeClassName: sysbox-runc"

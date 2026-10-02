@@ -128,10 +128,11 @@ queue=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.conta
 [[ "${queue}" == "queue=e2e,runtime=standard" ]]
 
 # The pause image has no agent status endpoint, so the sidecar must keep the
-# retention cost by successfully patching its own Pod with the chart's RBAC.
+# retention annotations by successfully patching its own Pod with the chart's
+# RBAC.
 patched=false
 for _ in $(seq 1 90); do
-	if "${KUBECTL[@]}" logs "${pod}" -n "${NAMESPACE}" -c deletion-cost 2>/dev/null | grep -q '^Deletion cost: 100$'; then
+	if "${KUBECTL[@]}" logs "${pod}" -n "${NAMESPACE}" -c deletion-cost 2>/dev/null | grep -q '^Marked Pod busy$'; then
 		patched=true
 		break
 	fi
@@ -144,6 +145,8 @@ if [[ "${patched}" != true ]]; then
 fi
 cost=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.controller\.kubernetes\.io/pod-deletion-cost}')
 [[ "${cost}" == "100" ]]
+safe_to_evict=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.cluster-autoscaler\.kubernetes\.io/safe-to-evict}')
+[[ "${safe_to_evict}" == "false" ]]
 
 "${HELM_CLUSTER[@]}" uninstall "${RELEASE}" --namespace "${NAMESPACE}" --wait --timeout 2m
 for _ in $(seq 1 60); do

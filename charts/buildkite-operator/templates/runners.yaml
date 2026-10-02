@@ -52,6 +52,7 @@ spec:
         {{- end }}
         # Treat agents as busy until the sidecar observes that they are idle.
         controller.kubernetes.io/pod-deletion-cost: "100"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: {{ $.Files.Get "files/deletion_cost.py" | sha256sum }}
         {{- if $singleUse }}
         checksum/supervisor: {{ $.Files.Get "files/supervisor.sh" | sha256sum }}
