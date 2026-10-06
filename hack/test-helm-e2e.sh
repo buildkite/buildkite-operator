@@ -3,7 +3,6 @@
 set -euo pipefail
 
 HELM="${HELM:-helm}"
-KIND="${KIND:-kind}"
 CHART_DIR="${HELM_CHART_DIR:-charts/buildkite-operator}"
 : "${KUBECONFIG:?KUBECONFIG must identify the isolated test cluster}"
 : "${KUBE_CONTEXT:?KUBE_CONTEXT must identify the isolated test context}"
@@ -19,7 +18,7 @@ RELEASE="buildkite-runners"
 # The first release serves three queues to verify entries stay independent.
 RUNNERS="${RELEASE}-e2e"
 OTHER_RUNNERS="${RELEASE}-e2e-other"
-EPHEMERAL_AGENT_IMAGE="buildkite-operator-e2e-agent:1"
+EPHEMERAL_RUNNERS="${RELEASE}-e2e-ephemeral"
 SECOND_NAMESPACE="buildkite-runners-two"
 SECOND_RELEASE="buildkite-runners-two"
 SECOND_RUNNERS="${SECOND_RELEASE}-e2e-secondary"
@@ -66,11 +65,12 @@ cleanup() {
 trap cleanup EXIT
 
 # The pause image stands in for persistent agents. Ephemeral standard agents
-# need a shell, so build a stand-in agent that serves the health and status
-# endpoints, records which agent ran in the workspace, and runs a "job" until
-# the test releases it. Like the real agent, it finishes its job on SIGTERM.
+# need a shell, so they use busybox with a stand-in agent mounted from a
+# ConfigMap. The stand-in serves the health and status endpoints, records
+# which agent ran in the workspace, and runs a "job" until the test releases
+# it. Like the real agent, it finishes its job on SIGTERM.
 agent_dir=$(mktemp -d)
-cat >"${agent_dir}/agent" <<'AGENT'
+cat >"${agent_dir}/buildkite-agent" <<'AGENT'
 #!/bin/sh
 [ "$*" = "start --disconnect-after-job" ] || { echo "unexpected arguments: $*" >&2; exit 64; }
 mkdir -p /tmp/www/agent "$BUILDKITE_BUILD_PATH"
@@ -90,15 +90,10 @@ fi
 kill "$httpd_pid"
 wait "$httpd_pid" || true
 AGENT
-cat >"${agent_dir}/Dockerfile" <<'DOCKERFILE'
-FROM busybox:1.37
-COPY --chmod=755 agent /usr/local/bin/buildkite-agent
-DOCKERFILE
-docker build --quiet --tag "${EPHEMERAL_AGENT_IMAGE}" "${agent_dir}" >/dev/null
-"${KIND}" load docker-image "${EPHEMERAL_AGENT_IMAGE}" --name "${KIND_CLUSTER}"
 
 "${KUBECTL[@]}" create namespace "${NAMESPACE}"
 "${KUBECTL[@]}" create namespace "${SECOND_NAMESPACE}"
+"${KUBECTL[@]}" create configmap stand-in-agent -n "${NAMESPACE}" --from-file="${agent_dir}/buildkite-agent"
 if output=$(install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e 2>&1); then
 	echo "Expected installation without KEDA to fail" >&2
 	exit 1
@@ -115,10 +110,23 @@ fi
 
 install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e e2e-other e2e-ephemeral -- \
 	--set queues.e2e-ephemeral.ephemeralAgent=true \
-	--set-string queues.e2e-ephemeral.image.repository="${EPHEMERAL_AGENT_IMAGE%:*}" \
-	--set-string queues.e2e-ephemeral.image.tag="${EPHEMERAL_AGENT_IMAGE##*:}" \
-	--set-string queues.e2e-ephemeral.image.pullPolicy=Never \
+	--set-string queues.e2e-ephemeral.image.repository=busybox \
+	--set-string queues.e2e-ephemeral.image.tag=1.37 \
 	--set queues.e2e-ephemeral.terminationGracePeriodSeconds=30
+# The chart has no hook for extra volumes, so mount the stand-in agent where
+# the chart runs buildkite-agent. This rolls out a second Pod.
+"${KUBECTL[@]}" patch deployment/"${EPHEMERAL_RUNNERS}" -n "${NAMESPACE}" --patch '
+spec:
+  template:
+    spec:
+      volumes:
+        - name: stand-in-agent
+          configMap: {name: stand-in-agent, defaultMode: 493}
+      containers:
+        - name: agent
+          volumeMounts:
+            - {name: stand-in-agent, mountPath: /usr/local/bin/buildkite-agent, subPath: buildkite-agent}
+'
 install_runner_chart "${SECOND_RELEASE}" "${SECOND_NAMESPACE}" e2e-secondary
 
 "${KUBECTL[@]}" rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=2m
@@ -201,6 +209,14 @@ for _ in $(seq 1 60); do
 	sleep 1
 done
 [[ -n "${ephemeral_pod}" ]] || { echo "The ephemeral queue entry did not create a runner Pod" >&2; exit 1; }
+"${KUBECTL[@]}" rollout status deployment/"${EPHEMERAL_RUNNERS}" -n "${NAMESPACE}" --timeout=2m
+# Wait for the Pod from before the patch to go.
+for _ in $(seq 1 60); do
+	ephemeral_pod=$(runner_pods "${NAMESPACE}" e2e-ephemeral)
+	[[ $(wc -l <<<"${ephemeral_pod}") -eq 1 ]] && break
+	sleep 1
+done
+[[ $(wc -l <<<"${ephemeral_pod}") -eq 1 ]] || { echo "The unpatched ephemeral runner Pod did not go" >&2; exit 1; }
 "${KUBECTL[@]}" wait --for=condition=Ready "${ephemeral_pod}" -n "${NAMESPACE}" --timeout=2m
 in_agent() { "${KUBECTL[@]}" exec "${ephemeral_pod}" -n "${NAMESPACE}" -c agent -- "$@"; }
 first=$(in_agent ls -A /buildkite/builds)
