@@ -20,10 +20,16 @@ defaults:
   #   the next job. Checkouts are reused, so builds start faster.
   # - true (ephemeral): the agent disconnects after one job and is replaced by
   #   a newly registered agent, named <pod>-<suffix>, with a clean workspace.
-  #   With kata or sysbox, a supervisor starts each agent as a fresh container
-  #   in the Pod's Docker daemon and, between jobs, removes the job's
-  #   containers, networks, volumes and the /buildkite workspace. The daemon
-  #   and its image and build caches persist. Requires runtime kata or sysbox.
+  #   What else is reset depends on runtime:
+  #   - standard: a loop in the agent container restarts the agent process
+  #     and empties the build and plugin directories under /buildkite. The
+  #     container is not restarted, so everything else in its filesystem
+  #     (such as /tmp, the home directory and installed packages) and any
+  #     processes a job left running persist. The image needs /bin/sh.
+  #   - kata, sysbox: a supervisor starts each agent as a fresh container in
+  #     the Pod's Docker daemon and, between jobs, removes the job's
+  #     containers, networks, volumes and the /buildkite workspace. The daemon
+  #     and its image and build caches persist.
   # Ephemeral agents keep successive jobs' state apart; they are not a security
   # boundary between jobs. See the README's "Ephemeral agents".
   ephemeralAgent: false
@@ -77,6 +83,14 @@ defaults:
 # Examples (the README's "Queues" section explains each):
 #
 # queues:
+#   # Ephemeral standard agents: a fresh agent and empty workspace for every
+#   # job in a plain Pod with no Docker daemon. The container keeps running,
+#   # so files outside the workspace carry over between jobs.
+#   linux:
+#     queue: linux
+#     ephemeralAgent: true
+#     maxReplicas: 10
+#
 #   # Persistent sysbox agents: one long-lived agent per Pod alongside an
 #   # unprivileged Docker daemon. Containers, volumes and caches carry over
 #   # between jobs. Scales to zero when the queue is idle.

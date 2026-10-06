@@ -54,9 +54,6 @@ over .Values.defaults, with the entry taking precedence.
 {{- if gt (int $settings.minReplicas) $maxReplicas }}
 {{- fail (printf "queues.%s.minReplicas must be less than or equal to maxReplicas" $name) }}
 {{- end }}
-{{- if and $settings.ephemeralAgent (not (has $settings.runtime (list "kata" "sysbox"))) }}
-{{- fail (printf "queues.%s.ephemeralAgent requires runtime kata or sysbox, which provide a Docker daemon" $name) }}
-{{- end }}
 {{- $entries = append $entries (dict "name" $name "resourceName" $resourceName "settings" $settings) }}
 {{- end }}
 {{- toJson $entries }}
@@ -74,8 +71,8 @@ over .Values.defaults, with the entry taking precedence.
 {{- printf "%s-deletion-cost" (include "buildkite-operator.fullname" . | trunc 49 | trimSuffix "-") }}
 {{- end }}
 
-{{- define "buildkite-operator.supervisorName" -}}
-{{- printf "%s-supervisor" (include "buildkite-operator.fullname" . | trunc 52 | trimSuffix "-") }}
+{{- define "buildkite-operator.ephemeralAgentName" -}}
+{{- printf "%s-ephemeral-agent" (include "buildkite-operator.fullname" . | trunc 47 | trimSuffix "-") }}
 {{- end }}
 
 {{- define "buildkite-operator.agentTokenSecretRef" -}}

@@ -111,10 +111,22 @@ separate release.
 | `terminationGracePeriodSeconds` | `3600` | Longest time an agent may take to drain its job. |
 | `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales an entry with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
 | `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
-| `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. |
+| `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. With `standard` and `ephemeralAgent`, the image also needs `/bin/sh`. |
 | `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. |
 
 ### Examples
+
+Ephemeral standard agents. Every job gets a fresh agent and an empty workspace
+in a plain Pod with no Docker daemon. The container keeps running, so files
+outside the workspace carry over between jobs:
+
+```yaml
+queues:
+  linux:
+    queue: linux
+    ephemeralAgent: true
+    maxReplicas: 10
+```
 
 Persistent Sysbox agents. Each Pod runs one long-lived agent next to an
 unprivileged Docker daemon, so containers, volumes, checkouts and caches carry
@@ -273,22 +285,37 @@ By default (`ephemeralAgent: false`) agents are persistent: one agent registers
 when its Pod starts and runs job after job, so whatever a job leaves behind is
 still there for the next. With `ephemeralAgent: true`, the agent disconnects
 after one job and is replaced by a newly registered agent, named
-`<pod>-<suffix>`, with a clean workspace. With `kata` or `sysbox`, a supervisor
-container starts each agent as a fresh container inside the Pod's Docker daemon
-with `--disconnect-after-job`. After each job it removes the job's containers,
-networks and volumes, clears the `/buildkite` workspace, and starts the next
-agent. If cleanup fails, no new agent starts until it succeeds.
+`<pod>-<suffix>`, with a clean workspace. How depends on the runtime:
+
+- `standard`: the agent container runs a small loop instead of the agent
+  itself. It empties the build and plugin directories, runs
+  `buildkite-agent start --disconnect-after-job`, and repeats when the agent
+  exits. The container is never restarted, so the kubelet's restart backoff
+  does not slow down the next job. The agent image needs `/bin/sh`.
+- `kata`, `sysbox`: a supervisor container starts each agent as a fresh
+  container inside the Pod's Docker daemon with `--disconnect-after-job`.
+  After each job it removes the job's containers, networks and volumes, clears
+  the `/buildkite` workspace, and starts the next agent.
+
+If cleanup fails, no new agent starts until it succeeds. Scaling in, upgrades
+and node scale-down behave as for persistent agents: on SIGTERM the current
+agent finishes its job, bounded by `terminationGracePeriodSeconds`, and no
+further agent starts. If the deletion-cost sidecar polls while one agent is
+being replaced by the next, it finds no agent status and marks the Pod busy
+until the new agent reports idle, so the Pod is briefly protected rather than
+exposed.
 
 What is reset between jobs:
 
-| | Reset | Persists |
+| `runtime` | Reset | Persists |
 | --- | --- | --- |
+| `standard` | The agent process and its registration, and the contents of `/buildkite/builds` (checkouts) and `/buildkite/plugins`. | The Pod and its node, and the agent container with the rest of its filesystem: `/tmp`, the home directory, packages or tools a job installed, caches outside `/buildkite`, and any processes a job left running. |
 | `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches. |
 
 Ephemeral agents keep successive jobs' state apart; they are not a security
-boundary between them. Anything a job can reach that persists, such as the
-Pod's Docker image cache, remains available to later jobs. The `standard`
-profile has no Docker daemon, so the chart rejects `ephemeralAgent` with it.
+boundary between them. Anything a job can reach that persists, such as files
+outside the workspace in a `standard` container or the Pod's Docker image
+cache, remains available to later jobs.
 
 ## Development
 

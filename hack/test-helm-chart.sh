@@ -39,6 +39,14 @@ assert_fails() {
 	assert_contains "${output}" "${expected}"
 }
 
+# Print the rendered document of the given kind and name.
+document() {
+	awk -v kind="$2" -v name="$3" '
+		/^---$/ { if (doc ~ "\nkind: " kind "\n" && doc ~ "\n  name: " name "\n") printf "%s", doc; doc = "\n"; next }
+		{ doc = doc $0 "\n" }
+		END { if (doc ~ "\nkind: " kind "\n" && doc ~ "\n  name: " name "\n") printf "%s", doc }' <<<"$1"
+}
+
 if missing_keda=$("${HELM}" template test "${CHART_DIR}" \
 	--set-string queues.linux.queue=linux \
 	--set queues.linux.maxReplicas=4 \
@@ -101,6 +109,10 @@ if [[ "${direct}" == *$'\n  replicas:'* ]]; then
 	echo "Deployment rendered spec.replicas even though KEDA owns scaling" >&2
 	exit 1
 fi
+if [[ "${direct}" == *"ephemeral-agent"* ]]; then
+	echo "Persistent agents rendered the ephemeral agent loop" >&2
+	exit 1
+fi
 
 direct_with_reserved_key=$(render \
 	--set-string agentToken.value="${TOKEN}" \
@@ -142,18 +154,49 @@ fi
 
 ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox --set queues.linux.ephemeralAgent=true)
 assert_contains "${ephemeral}" "- name: supervisor"
+assert_contains "${ephemeral}" 'command: ["/bin/sh", "/opt/ephemeral-agent/supervisor.sh"]'
+assert_contains "${ephemeral}" "name: test-buildkite-operator-ephemeral-agent"
 assert_contains "${ephemeral}" 'image: "docker:29.7.2-cli@sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"'
 assert_contains "${ephemeral}" 'value: "buildkite/agent:4"'
 assert_contains "${ephemeral}" "checksum/supervisor:"
 assert_contains "${ephemeral}" "start --disconnect-after-job"
 assert_contains "${ephemeral}" "- name: dockerd"
-if [[ "${ephemeral}" == *"- name: agent"* ]]; then
-	echo "Ephemeral sysbox agents also rendered a persistent agent container" >&2
+if [[ "${ephemeral}" == *"- name: agent"* || "${ephemeral}" == *"checksum/ephemeral-agent:"* ]]; then
+	echo "Ephemeral sysbox agents also rendered an agent container" >&2
 	exit 1
 fi
 ephemeral_kata=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=kata --set queues.linux.ephemeralAgent=true)
 assert_contains "${ephemeral_kata}" "runtimeClassName: kata-qemu-runtime-rs"
 assert_contains "${ephemeral_kata}" "- name: supervisor"
+
+# Standard ephemeral agents restart in a loop inside the agent container, which
+# keeps the agent's own resources.
+ephemeral_standard=$(render --set-string agentToken.value="${TOKEN}" --set queues.linux.ephemeralAgent=true \
+	--set-string queues.linux.resources.limits.memory=2Gi)
+standard_runner=$(document "${ephemeral_standard}" Deployment test-linux)
+assert_contains "${standard_runner}" "- name: agent"
+assert_contains "${standard_runner}" 'command: ["/bin/sh", "/opt/ephemeral-agent/ephemeral-agent.sh"]'
+assert_contains "${standard_runner}" "checksum/ephemeral-agent:"
+assert_contains "${standard_runner}" 'value: "queue=linux,runtime=standard"'
+assert_contains "${standard_runner}" "value: /buildkite/plugins"
+assert_contains "${standard_runner}" "memory: 2Gi"
+assert_contains "${standard_runner}" $'- name: ephemeral-agent-scripts\n              mountPath: /opt/ephemeral-agent'
+assert_contains "${standard_runner}" 'cluster-autoscaler.kubernetes.io/safe-to-evict: "false"'
+assert_contains "${standard_runner}" "- name: deletion-cost"
+assert_contains "${ephemeral_standard}" "start --disconnect-after-job"
+assert_contains "${ephemeral_standard}" 'clean_workspace() {'
+for unexpected in "- name: supervisor" "- name: dockerd" "checksum/supervisor:" 'args: ["start"]' "runtimeClassName:"; do
+	if [[ "${standard_runner}" == *"${unexpected}"* ]]; then
+		echo "Standard ephemeral agents rendered ${unexpected}" >&2
+		exit 1
+	fi
+done
+# The workspace wipe would be unbounded without these paths.
+for env in BUILDKITE_AGENT_NAME BUILDKITE_BUILD_PATH BUILDKITE_PLUGINS_PATH; do
+	assert_contains "${standard_runner}" "- name: ${env}"
+done
+inherited=$(render --set-string agentToken.value="${TOKEN}" --set defaults.ephemeralAgent=true)
+assert_contains "${inherited}" 'command: ["/bin/sh", "/opt/ephemeral-agent/ephemeral-agent.sh"]'
 
 # Queue entries inherit defaults and override any field. Shared resources are
 # rendered once; each entry gets its own Deployment and ScaledObject.
@@ -180,13 +223,6 @@ done
 [[ $(count_kind "${multi}" Deployment) -eq 2 && $(count_kind "${multi}" ScaledObject) -eq 2 ]] || {
 	echo "Expected one Deployment and ScaledObject per queue entry" >&2
 	exit 1
-}
-# Print the rendered document of the given kind and name.
-document() {
-	awk -v kind="$2" -v name="$3" '
-		/^---$/ { if (doc ~ "\nkind: " kind "\n" && doc ~ "\n  name: " name "\n") printf "%s", doc; doc = "\n"; next }
-		{ doc = doc $0 "\n" }
-		END { if (doc ~ "\nkind: " kind "\n" && doc ~ "\n  name: " name "\n") printf "%s", doc }' <<<"$1"
 }
 kata_runner=$(document "${multi}" Deployment test-linux-kata)
 sysbox_runner=$(document "${multi}" Deployment test-build-sysbox)
@@ -217,7 +253,7 @@ assert_contains "${sysbox_scaling}" "minReplicaCount: 0" # Overridden to zero.
 assert_contains "${sysbox_scaling}" "maxReplicaCount: 4"
 assert_contains "${sysbox_scaling}" $'scaleDown:\n          stabilizationWindowSeconds: 0\n' # Overridden to zero.
 assert_contains "${sysbox_scaling}" 'valueLocation: "jobs.queues.build.scheduled"'
-assert_contains "${multi}" "name: test-buildkite-operator-supervisor"
+assert_contains "${multi}" "name: test-buildkite-operator-ephemeral-agent"
 
 # Entry names that YAML would read as numbers or booleans stay strings, as
 # Kubernetes label values must be.
@@ -259,8 +295,8 @@ assert_contains "${overridden}" "maxReplicaCount: 25"
 assert_contains "${overridden}" $'scaleDown:\n          stabilizationWindowSeconds: 300\n'
 assert_contains "${overridden}" "runtimeClassName: kata-qemu-runtime-rs" # Untouched settings are kept.
 [[ $(count_kind "${overridden}" Deployment) -eq 1 ]] || { echo "Null entry was not removed" >&2; exit 1; }
-if [[ "${overridden}" == *"name: test-buildkite-operator-supervisor"* ]]; then
-	echo "Supervisor ConfigMap rendered with no ephemeral queue" >&2
+if [[ "${overridden}" == *"name: test-buildkite-operator-ephemeral-agent"* ]]; then
+	echo "Ephemeral agent ConfigMap rendered with no ephemeral queue" >&2
 	exit 1
 fi
 
@@ -324,11 +360,6 @@ assert_fails "value must be one of 'standard', 'kata', 'sysbox'" \
 	--set queues.linux.maxReplicas=1 \
 	--set-string queues.linux.runtime=gvisor \
 	--set-string agentToken.value="${TOKEN}"
-assert_fails "queues.linux.ephemeralAgent requires runtime kata or sysbox" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1 \
-	--set queues.linux.ephemeralAgent=true \
-	--set-string agentToken.value="${TOKEN}"
 assert_fails "maximum: got 3,601, want 3,600" \
 	--set-string queues.linux.queue=linux \
 	--set queues.linux.maxReplicas=1 \
@@ -353,11 +384,6 @@ assert_fails "queues.Linux_Pool: names must be lowercase" \
 assert_fails "must be at most 50 characters" \
 	--set-string queues.an-extremely-long-queue-entry-name-for-testing.queue=linux \
 	--set queues.an-extremely-long-queue-entry-name-for-testing.maxReplicas=1 \
-	--set-string agentToken.value="${TOKEN}"
-assert_fails "queues.linux.ephemeralAgent requires runtime kata or sysbox" \
-	--set defaults.ephemeralAgent=true \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1 \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "additional properties 'replicas' not allowed" \
 	--set-string queues.linux.queue=linux \

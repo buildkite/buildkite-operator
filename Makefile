@@ -166,7 +166,7 @@ test-helm-e2e: kind ## Install and uninstall the standalone chart in a fresh, is
 		cleanup() { $(KIND) delete cluster --name "$$cluster" --kubeconfig "$$kubeconfig"; rm -f "$$kubeconfig"; }; \
 		trap cleanup EXIT INT TERM; \
 		$(KIND) create cluster --name "$$cluster" --kubeconfig "$$kubeconfig"; \
-		KUBECONFIG="$$kubeconfig" KUBE_CONTEXT="kind-$$cluster" KIND_CLUSTER="$$cluster" \
+		KUBECONFIG="$$kubeconfig" KUBE_CONTEXT="kind-$$cluster" KIND_CLUSTER="$$cluster" KIND=$(KIND) \
 			HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-e2e.sh
 
 ##@ Deployment

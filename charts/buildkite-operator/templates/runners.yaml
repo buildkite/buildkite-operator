@@ -16,7 +16,10 @@
 {{- range $entry := $entries }}
 {{- $r := $entry.settings }}
 {{- $docker := has $r.runtime (list "kata" "sysbox") }}
-{{- $ephemeralAgent := $r.ephemeralAgent }}
+{{- /* Ephemeral agents run under a supervisor in the Docker daemon with kata
+or sysbox, and in a restart loop inside the agent container with standard. */}}
+{{- $supervised := and $r.ephemeralAgent $docker }}
+{{- $agentLoop := and $r.ephemeralAgent (not $docker) }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -54,8 +57,11 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: {{ $.Files.Get "files/deletion_cost.py" | sha256sum }}
-        {{- if $ephemeralAgent }}
+        {{- if $supervised }}
         checksum/supervisor: {{ $.Files.Get "files/supervisor.sh" | sha256sum }}
+        {{- end }}
+        {{- if $agentLoop }}
+        checksum/ephemeral-agent: {{ $.Files.Get "files/ephemeral-agent.sh" | sha256sum }}
         {{- end }}
     spec:
       serviceAccountName: {{ include "buildkite-operator.deletionCostName" $ }}
@@ -120,11 +126,11 @@ spec:
               mountPath: /buildkite
       {{- end }}
       containers:
-        {{- if $ephemeralAgent }}
+        {{- if $supervised }}
         - name: supervisor
           image: "{{ $.Values.supervisor.image.repository }}:{{ $.Values.supervisor.image.tag }}@{{ $.Values.supervisor.image.digest }}"
           imagePullPolicy: {{ $.Values.supervisor.image.pullPolicy }}
-          command: ["/bin/sh", "/opt/supervisor/supervisor.sh"]
+          command: ["/bin/sh", "/opt/ephemeral-agent/supervisor.sh"]
           env:
             - name: AGENT_IMAGE
               value: "{{ $r.image.repository }}:{{ $r.image.tag }}"
@@ -161,15 +167,20 @@ spec:
           volumeMounts:
             - name: docker-run
               mountPath: /var/run
-            - name: supervisor-script
-              mountPath: /opt/supervisor
+            - name: ephemeral-agent-scripts
+              mountPath: /opt/ephemeral-agent
               readOnly: true
         {{- else }}
         - name: agent
           image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
           imagePullPolicy: {{ $r.image.pullPolicy }}
+          {{- if $agentLoop }}
+          # Restarts the agent after each job without restarting the container.
+          command: ["/bin/sh", "/opt/ephemeral-agent/ephemeral-agent.sh"]
+          {{- else }}
           command: ["/usr/local/bin/buildkite-agent"]
           args: ["start"]
+          {{- end }}
           env:
             - name: BUILDKITE_AGENT_CONFIG
               value: /dev/null
@@ -209,12 +220,19 @@ spec:
             privileged: false
           resources:
             {{- toYaml $r.resources | nindent 12 }}
-          {{- if $docker }}
+          {{- if or $docker $agentLoop }}
           volumeMounts:
+            {{- if $docker }}
             - name: docker-run
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            {{- end }}
+            {{- if $agentLoop }}
+            - name: ephemeral-agent-scripts
+              mountPath: /opt/ephemeral-agent
+              readOnly: true
+            {{- end }}
           {{- end }}
         {{- end }}
         - name: deletion-cost
@@ -266,10 +284,10 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
-        {{- if $ephemeralAgent }}
-        - name: supervisor-script
+        {{- if $r.ephemeralAgent }}
+        - name: ephemeral-agent-scripts
           configMap:
-            name: {{ include "buildkite-operator.supervisorName" $ }}
+            name: {{ include "buildkite-operator.ephemeralAgentName" $ }}
         {{- end }}
         {{- if $docker }}
         - name: docker-data
