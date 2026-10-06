@@ -1,0 +1,196 @@
+# Settings shared by every queue entry. Any of these can be overridden per entry
+# under queues.<name>.
+defaults:
+  # standard, dind, kata, or sysbox (see the README's "Runner isolation").
+  # - standard: the agent alone, with no Docker daemon.
+  # - dind: the agent plus a privileged Docker daemon on any node. Nothing to
+  #   install, but the namespace must allow privileged Pods (Pod Security
+  #   Admission level privileged). WARNING: a privileged container has
+  #   host-level access to its node, so this is not isolation; only run
+  #   trusted jobs.
+  # kata and sysbox run a Docker daemon with stronger isolation, but need
+  # cluster components that this chart does not install:
+  # - kata: RuntimeClass kata-qemu-runtime-rs (for example from the kata-deploy
+  #   Helm chart) and KVM-capable nodes labelled and tainted (NoSchedule)
+  #   experiments.buildkite.com/runtime=kata.
+  # - sysbox: RuntimeClass sysbox-runc (from sysbox-deploy-k8s) and nodes that
+  #   support Kubernetes user namespaces, labelled and tainted (NoSchedule)
+  #   experiments.buildkite.com/runtime=sysbox.
+  # Each installer must also select and tolerate those nodes; see the README.
+  runtime: standard
+  # Whether each runner's Buildkite agent is ephemeral. This is about the
+  # agent, not the Pod: runner Pods always persist across jobs, and only
+  # autoscaling adds or removes them.
+  # - false (persistent): one agent registers when the Pod starts and runs job
+  #   after job. Whatever a job leaves behind (files, processes and, with kata
+  #   or sysbox, Docker containers, networks and volumes) is still there for
+  #   the next job. Checkouts are reused, so builds start faster.
+  # - true (ephemeral): the agent disconnects after one job and is replaced by
+  #   a newly registered agent, named <pod>-<suffix>, with a clean workspace.
+  #   What else is reset depends on runtime:
+  #   - standard: a loop in the agent container restarts the agent process
+  #     and empties the build and plugin directories under /buildkite. The
+  #     container is not restarted, so everything else in its filesystem
+  #     (such as /tmp, the home directory and installed packages) and any
+  #     processes a job left running persist. The image needs /bin/sh.
+  #   - dind, kata, sysbox: a supervisor starts each agent as a fresh
+  #     container in the Pod's Docker daemon and, between jobs, removes the
+  #     job's containers, networks, volumes and the /buildkite workspace.
+  #     The daemon and its image and build caches persist.
+  # Ephemeral agents keep successive jobs' state apart; they are not a security
+  # boundary between jobs. See the README's "Ephemeral agents".
+  ephemeralAgent: false
+  minReplicas: 1
+  pollingInterval: 10
+  # Seconds the queue must be fully idle before KEDA scales a queue with
+  # minReplicas 0 to zero. KEDA removes every remaining runner at once, without
+  # waiting for scaleDownStabilizationWindowSeconds; raise this to keep an idle
+  # pool longer.
+  cooldownPeriod: 60
+  # Seconds the HPA waits for lower job counts to persist before removing
+  # runners while at least one is still needed, so short dips between dependent
+  # steps do not recreate them. 0 to 3600.
+  scaleDownStabilizationWindowSeconds: 60
+  # Longest time an agent may take to drain its job once a runner is removed.
+  terminationGracePeriodSeconds: 3600
+  # repository and tag are separate so an override can set only the tag, for
+  # example --set defaults.image.tag=4.2.0.
+  image:
+    repository: buildkite/agent
+    tag: "4"
+    pullPolicy: Always
+  # Requests and limits for the agent container. Ignored with dind, kata or
+  # sysbox and ephemeralAgent, where agents run as containers inside the
+  # Docker daemon and share docker.resources.
+  resources: {}
+  # Docker daemon used by the dind, kata and sysbox runtimes. With
+  # ephemeralAgent, its resources also bound the agent containers it runs.
+  docker:
+    image:
+      repository: docker
+      tag: 29.7.2-dind
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4Gi
+        ephemeral-storage: 15Gi
+      limits:
+        cpu: "4"
+        memory: 8Gi
+        ephemeral-storage: 50Gi
+    storage:
+      data: 40Gi
+      workspace: 10Gi
+
+# One entry per Buildkite queue, keyed by a short name used in resource names
+# (<release>-<name>). Each entry becomes a runner pool: a Deployment of runner
+# Pods labelled buildkite.com/runner-pool=<name>, autoscaled by KEDA. Each
+# entry needs a queue and maxReplicas, and inherits everything else from
+# defaults. Each Buildkite queue may appear only once.
+#
+# Examples (the README's "Queues" section explains each):
+#
+# queues:
+#   # Ephemeral standard agents: a fresh agent and empty workspace for every
+#   # job in a plain Pod with no Docker daemon. The container keeps running,
+#   # so files outside the workspace carry over between jobs.
+#   linux:
+#     queue: linux
+#     ephemeralAgent: true
+#     maxReplicas: 10
+#
+#   # Persistent sysbox agents: one long-lived agent per Pod alongside an
+#   # unprivileged Docker daemon. Containers, volumes and caches carry over
+#   # between jobs. Scales to zero when the queue is idle.
+#   docker-builds:
+#     queue: docker-builds
+#     runtime: sysbox
+#     minReplicas: 0
+#     maxReplicas: 4
+#
+#   # Persistent dind agents for trusted jobs on clusters that can't run kata
+#   # or sysbox: one long-lived agent per Pod next to a privileged Docker
+#   # daemon, on any node.
+#   docker:
+#     queue: docker
+#     runtime: dind
+#     maxReplicas: 4
+#
+#   # Ephemeral kata agents: each job runs in a fresh agent container inside a
+#   # VM-isolated Pod. Afterwards the job's containers, networks, volumes and
+#   # workspace are removed; Docker's image and build caches are kept.
+#   untrusted:
+#     queue: untrusted
+#     runtime: kata
+#     ephemeralAgent: true
+#     maxReplicas: 6
+#
+# To turn a pool off, comment out or delete its entry, or set it to null with
+# --set queues.<name>=null or in a later values file, for example
+# `helm upgrade ... -f values.yaml -f off.yaml` with off.yaml containing:
+#
+# queues:
+#   untrusted: null
+#
+# The pool's Deployment is then removed and its agents drain their current
+# jobs. maxReplicas must be at least 1; to keep a pool without idle runners,
+# set minReplicas: 0 instead.
+queues: {}
+
+# Starts and replaces ephemeral agent containers in the Docker daemon. Used only
+# by dind, kata and sysbox queue entries with ephemeralAgent. The digest pins
+# the multi-platform image index.
+supervisor:
+  image:
+    repository: docker
+    tag: 29.7.2-cli
+    digest: sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# Always-on scale-in preference: a sidecar marks busy or unknown agents with
+# pod-deletion-cost 100 and removes the annotation from idle agents. It needs
+# permission to patch Pods in the release namespace. The digest pins the
+# multi-platform image index for the tag.
+deletionCost:
+  image:
+    repository: python
+    tag: 3.12.14-alpine3.24
+    digest: sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+agentToken:
+  value: ""
+  existingSecret:
+    name: ""
+    key: token
+
+# The metrics API uses an Authorization value in the form "Token <token>".
+# When agentToken.value is set, it is reused and prefixed automatically. With
+# an existing agent Secret, provide a metrics token or reference a Secret whose
+# key already contains the complete Authorization value.
+metricsToken:
+  value: ""
+  existingSecret:
+    name: ""
+    key: authorization
+
+# KEDA 2.20.0 must be installed separately and configured to watch this release
+# namespace. Disable validation only for offline rendering and linting, where
+# Helm cannot discover APIs from a cluster.
+keda:
+  validateInstallation: true

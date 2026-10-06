@@ -1,0 +1,18 @@
+{{- $ephemeralAgent := false }}
+{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}{{ if $entry.settings.ephemeralAgent }}{{ $ephemeralAgent = true }}{{ end }}{{ end }}
+{{- if $ephemeralAgent }}
+# supervisor.sh runs kata and sysbox ephemeral agents; ephemeral-agent.sh runs
+# standard ones.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "buildkite-operator.ephemeralAgentName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+data:
+  ephemeral-agent.sh: |-
+{{ .Files.Get "files/ephemeral-agent.sh" | indent 4 }}
+  supervisor.sh: |-
+{{ .Files.Get "files/supervisor.sh" | indent 4 }}
+{{- end }}

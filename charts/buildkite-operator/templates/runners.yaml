@@ -1,0 +1,308 @@
+{{- $entries := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- if $entries }}
+{{- if and .Values.agentToken.value .Values.agentToken.existingSecret.name }}
+{{- fail "set only one of agentToken.value or agentToken.existingSecret.name" }}
+{{- end }}
+{{- if and (not .Values.agentToken.value) (not .Values.agentToken.existingSecret.name) }}
+{{- fail "agentToken.value or agentToken.existingSecret.name is required when queues are configured" }}
+{{- end }}
+{{- if and .Values.metricsToken.value .Values.metricsToken.existingSecret.name }}
+{{- fail "set only one of metricsToken.value or metricsToken.existingSecret.name" }}
+{{- end }}
+{{- if and .Values.agentToken.existingSecret.name (not .Values.metricsToken.value) (not .Values.metricsToken.existingSecret.name) }}
+{{- fail "metricsToken.value or metricsToken.existingSecret.name is required when using an existing agent token Secret" }}
+{{- end }}
+{{- end }}
+{{- range $entry := $entries }}
+{{- $r := $entry.settings }}
+{{- $docker := has $r.runtime (list "dind" "kata" "sysbox") }}
+{{- /* Ephemeral agents run under a supervisor in the Docker daemon with dind,
+kata or sysbox, and in a restart loop inside the agent container with
+standard. */}}
+{{- $supervised := and $r.ephemeralAgent $docker }}
+{{- $agentLoop := and $r.ephemeralAgent (not $docker) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $entry.resourceName }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: runner
+    buildkite.com/runner-pool: {{ $entry.name | quote }}
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "buildkite-operator.name" $ }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: runner
+      buildkite.com/runner-pool: {{ $entry.name | quote }}
+  template:
+    metadata:
+      labels:
+        {{- include "buildkite-operator.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: runner
+        buildkite.com/runner-pool: {{ $entry.name | quote }}
+      annotations:
+        {{- if $.Values.agentToken.value }}
+        # Roll agents when the chart-managed token changes; they read it at startup.
+        checksum/agent-token: {{ $.Values.agentToken.value | sha256sum }}
+        {{- end }}
+        # Treat agents as busy until the sidecar observes that they are idle.
+        controller.kubernetes.io/pod-deletion-cost: "100"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        checksum/deletion-cost: {{ $.Files.Get "files/deletion_cost.py" | sha256sum }}
+        {{- if $supervised }}
+        checksum/supervisor: {{ $.Files.Get "files/supervisor.sh" | sha256sum }}
+        {{- end }}
+        {{- if $agentLoop }}
+        checksum/ephemeral-agent: {{ $.Files.Get "files/ephemeral-agent.sh" | sha256sum }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "buildkite-operator.deletionCostName" $ }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $r.terminationGracePeriodSeconds }}
+      {{- if eq $r.runtime "kata" }}
+      runtimeClassName: kata-qemu-runtime-rs
+      nodeSelector:
+        experiments.buildkite.com/runtime: kata
+      tolerations:
+        - key: experiments.buildkite.com/runtime
+          operator: Equal
+          value: kata
+          effect: NoSchedule
+      {{- else if eq $r.runtime "sysbox" }}
+      runtimeClassName: sysbox-runc
+      hostUsers: false
+      nodeSelector:
+        experiments.buildkite.com/runtime: sysbox
+      tolerations:
+        - key: experiments.buildkite.com/runtime
+          operator: Equal
+          value: sysbox
+          effect: NoSchedule
+      {{- end }}
+      {{- if $docker }}
+      initContainers:
+        - name: dockerd
+          image: "{{ $r.docker.image.repository }}:{{ $r.docker.image.tag }}"
+          imagePullPolicy: {{ $r.docker.image.pullPolicy }}
+          restartPolicy: Always
+          args:
+            - dockerd
+            - --host=unix:///var/run/docker.sock
+            {{- if eq $r.runtime "sysbox" }}
+            - --storage-driver=overlay2
+            {{- end }}
+          env:
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
+          # Pod's user namespace. Kata's is privileged, but only inside the VM.
+          # Dind's is privileged on the node itself, with host-level access.
+          securityContext:
+            privileged: {{ ne $r.runtime "sysbox" }}
+          startupProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 90
+          readinessProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml $r.docker.resources | nindent 12 }}
+          volumeMounts:
+            - name: docker-data
+              mountPath: /var/lib/docker
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /buildkite
+      {{- end }}
+      containers:
+        {{- if $supervised }}
+        - name: supervisor
+          image: "{{ $.Values.supervisor.image.repository }}:{{ $.Values.supervisor.image.tag }}@{{ $.Values.supervisor.image.digest }}"
+          imagePullPolicy: {{ $.Values.supervisor.image.pullPolicy }}
+          command: ["/bin/sh", "/opt/ephemeral-agent/supervisor.sh"]
+          env:
+            - name: AGENT_IMAGE
+              value: "{{ $r.image.repository }}:{{ $r.image.tag }}"
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  {{- include "buildkite-operator.agentTokenSecretRef" $ | nindent 18 }}
+            - name: AGENT_TAGS
+              value: {{ printf "queue=%s,runtime=%s" $r.queue $r.runtime | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TERMINATION_GRACE_PERIOD_SECONDS
+              value: {{ $r.terminationGracePeriodSeconds | quote }}
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          ports:
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $.Values.supervisor.resources | nindent 12 }}
+          volumeMounts:
+            - name: docker-run
+              mountPath: /var/run
+            - name: ephemeral-agent-scripts
+              mountPath: /opt/ephemeral-agent
+              readOnly: true
+        {{- else }}
+        - name: agent
+          image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
+          imagePullPolicy: {{ $r.image.pullPolicy }}
+          {{- if $agentLoop }}
+          # Restarts the agent after each job without restarting the container.
+          command: ["/bin/sh", "/opt/ephemeral-agent/ephemeral-agent.sh"]
+          {{- else }}
+          command: ["/usr/local/bin/buildkite-agent"]
+          args: ["start"]
+          {{- end }}
+          env:
+            - name: BUILDKITE_AGENT_CONFIG
+              value: /dev/null
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  {{- include "buildkite-operator.agentTokenSecretRef" $ | nindent 18 }}
+            - name: BUILDKITE_AGENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BUILDKITE_AGENT_TAGS
+              value: {{ printf "queue=%s,runtime=%s" $r.queue $r.runtime | quote }}
+            - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
+              value: 0.0.0.0:8080
+            - name: BUILDKITE_BUILD_PATH
+              value: /buildkite/builds
+            # The agent cannot check out plugins without a plugins path.
+            - name: BUILDKITE_PLUGINS_PATH
+              value: /buildkite/plugins
+            {{- if $docker }}
+            - name: BUILDKITE_SOCKETS_PATH
+              value: /buildkite/sockets
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+          resources:
+            {{- toYaml $r.resources | nindent 12 }}
+          {{- if or $docker $agentLoop }}
+          volumeMounts:
+            {{- if $docker }}
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /buildkite
+            {{- end }}
+            {{- if $agentLoop }}
+            - name: ephemeral-agent-scripts
+              mountPath: /opt/ephemeral-agent
+              readOnly: true
+            {{- end }}
+          {{- end }}
+        {{- end }}
+        - name: deletion-cost
+          image: "{{ $.Values.deletionCost.image.repository }}:{{ $.Values.deletionCost.image.tag }}@{{ $.Values.deletionCost.image.digest }}"
+          imagePullPolicy: {{ $.Values.deletionCost.image.pullPolicy }}
+          # As PID 1, Python ignores SIGTERM until its handler is installed, so a
+          # Pod removed during startup would wait out the full grace period.
+          command:
+            - /bin/sh
+            - -c
+            - trap 'exit 0' TERM; python3 -u /opt/deletion-cost/deletion_cost.py & wait $!
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $.Values.deletionCost.resources | nindent 12 }}
+          volumeMounts:
+            - name: deletion-cost-code
+              mountPath: /opt/deletion-cost
+              readOnly: true
+            - name: deletion-cost-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: deletion-cost-code
+          configMap:
+            name: {{ include "buildkite-operator.deletionCostName" $ }}
+        - name: deletion-cost-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        {{- if $r.ephemeralAgent }}
+        - name: ephemeral-agent-scripts
+          configMap:
+            name: {{ include "buildkite-operator.ephemeralAgentName" $ }}
+        {{- end }}
+        {{- if $docker }}
+        - name: docker-data
+          emptyDir:
+            sizeLimit: {{ $r.docker.storage.data }}
+        - name: docker-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: workspace
+          emptyDir:
+            sizeLimit: {{ $r.docker.storage.workspace }}
+        {{- end }}
+{{- end }}

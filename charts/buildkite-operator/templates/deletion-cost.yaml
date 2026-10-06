@@ -1,0 +1,51 @@
+{{- if include "buildkite-operator.queueEntries" . | fromJsonArray }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "buildkite-operator.deletionCostName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+data:
+  deletion_cost.py: |-
+{{ .Files.Get "files/deletion_cost.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "buildkite-operator.deletionCostName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# Deployment Pods have generated names, so this Role cannot be limited to each
+# Pod patching only itself. Install the chart in a namespace dedicated to runners.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "buildkite-operator.deletionCostName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "buildkite-operator.deletionCostName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "buildkite-operator.deletionCostName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "buildkite-operator.deletionCostName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

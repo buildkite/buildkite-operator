@@ -1,0 +1,75 @@
+{{- $entries := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- if $entries }}
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ include "buildkite-operator.triggerAuthenticationName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+spec:
+  secretTargetRef:
+    - parameter: apiKey
+      name: {{ include "buildkite-operator.metricsTokenSecretName" . }}
+      key: {{ ternary .Values.metricsToken.existingSecret.key "authorization" (ne .Values.metricsToken.existingSecret.name "") }}
+{{- end }}
+{{- range $entry := $entries }}
+{{- $r := $entry.settings }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $entry.resourceName }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" $ | nindent 4 }}
+    buildkite.com/runner-pool: {{ $entry.name | quote }}
+spec:
+  scaleTargetRef:
+    name: {{ $entry.resourceName }}
+  pollingInterval: {{ $r.pollingInterval }}
+  cooldownPeriod: {{ $r.cooldownPeriod }}
+  minReplicaCount: {{ $r.minReplicas }}
+  maxReplicaCount: {{ $r.maxReplicas }}
+  advanced:
+    scalingModifiers:
+      formula: scheduled + running
+      target: "1"
+      activationTarget: "0"
+      metricType: AverageValue
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: {{ $r.scaleDownStabilizationWindowSeconds }}
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 5
+              periodSeconds: 15
+  triggers:
+    - type: metrics-api
+      name: scheduled
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: {{ printf "jobs.queues.%s.scheduled" $r.queue | quote }}
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: {{ include "buildkite-operator.triggerAuthenticationName" $ }}
+    - type: metrics-api
+      name: running
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: {{ printf "jobs.queues.%s.running" $r.queue | quote }}
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: {{ include "buildkite-operator.triggerAuthenticationName" $ }}
+{{- end }}

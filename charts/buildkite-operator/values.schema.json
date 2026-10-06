@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["defaults", "queues", "supervisor", "deletionCost", "agentToken", "metricsToken", "keda"],
+  "properties": {
+    "defaults": {
+      "allOf": [
+        { "$ref": "#/$defs/runnerSettings" },
+        {
+          "required": ["runtime", "ephemeralAgent", "minReplicas", "pollingInterval", "cooldownPeriod", "scaleDownStabilizationWindowSeconds", "terminationGracePeriodSeconds", "image", "resources", "docker"],
+          "properties": {
+            "image": { "required": ["repository", "tag", "pullPolicy"] },
+            "docker": {
+              "required": ["image", "resources", "storage"],
+              "properties": {
+                "image": { "required": ["repository", "tag", "pullPolicy"] },
+                "storage": { "required": ["data", "workspace"] }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "queues": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [{ "$ref": "#/$defs/runnerSettings" }, { "type": "null" }]
+      }
+    },
+    "supervisor": { "$ref": "#/$defs/pinnedSidecar" },
+    "deletionCost": { "$ref": "#/$defs/pinnedSidecar" },
+    "agentToken": { "$ref": "#/$defs/token" },
+    "metricsToken": { "$ref": "#/$defs/token" },
+    "keda": {
+      "type": "object",
+      "required": ["validateInstallation"],
+      "properties": {
+        "validateInstallation": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "pinnedSidecar": {
+      "type": "object",
+      "required": ["image", "resources"],
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "required": ["repository", "tag", "digest", "pullPolicy"],
+          "additionalProperties": false,
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 },
+            "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "resources": { "type": "object" }
+      }
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      },
+      "additionalProperties": false
+    },
+    "token": {
+      "type": "object",
+      "required": ["value", "existingSecret"],
+      "properties": {
+        "value": { "type": "string" },
+        "existingSecret": {
+          "type": "object",
+          "required": ["name", "key"],
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "runnerSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "queue": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "runtime": { "type": "string", "enum": ["standard", "dind", "kata", "sysbox"] },
+        "ephemeralAgent": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 0 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "pollingInterval": { "type": "integer", "minimum": 1 },
+        "cooldownPeriod": { "type": "integer", "minimum": 0 },
+        "scaleDownStabilizationWindowSeconds": { "type": "integer", "minimum": 0, "maximum": 3600 },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
+        "image": { "$ref": "#/$defs/image" },
+        "resources": { "type": "object" },
+        "docker": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "$ref": "#/$defs/image" },
+            "resources": { "type": "object" },
+            "storage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "data": { "type": "string", "minLength": 1 },
+                "workspace": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
