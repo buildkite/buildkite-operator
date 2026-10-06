@@ -101,13 +101,21 @@ if output=$(install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e 2>&1); then
 fi
 [[ "${output}" == *"KEDA is required"* ]]
 
-"${HELM_CLUSTER[@]}" upgrade --install "${KEDA_RELEASE}" keda \
+# KEDA usually becomes ready within a minute, but on CI it has sometimes taken
+# over three. Show why before the cluster is deleted if it does not become ready.
+if ! "${HELM_CLUSTER[@]}" upgrade --install "${KEDA_RELEASE}" keda \
 	--repo https://kedacore.github.io/charts \
 	--version 2.20.0 \
 	--namespace "${KEDA_NAMESPACE}" \
 	--create-namespace \
 	--wait \
-	--timeout 3m
+	--timeout 5m; then
+	echo "KEDA did not become ready" >&2
+	"${KUBECTL[@]}" get pods -n "${KEDA_NAMESPACE}" -o wide >&2 || true
+	"${KUBECTL[@]}" describe pods -n "${KEDA_NAMESPACE}" >&2 || true
+	"${KUBECTL[@]}" get events -n "${KEDA_NAMESPACE}" --sort-by=.lastTimestamp >&2 || true
+	exit 1
+fi
 
 # The dind queue's Docker daemon requests far less than the chart's default so
 # it fits on the single Kind node.
