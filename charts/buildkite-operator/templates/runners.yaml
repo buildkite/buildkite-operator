@@ -26,7 +26,7 @@ metadata:
   labels:
     {{- include "buildkite-operator.labels" $ | nindent 4 }}
     app.kubernetes.io/component: runner
-    buildkite.com/runner-set: {{ $entry.name | quote }}
+    buildkite.com/runner-pool: {{ $entry.name | quote }}
 spec:
   strategy:
     type: RollingUpdate
@@ -38,13 +38,13 @@ spec:
       app.kubernetes.io/name: {{ include "buildkite-operator.name" $ }}
       app.kubernetes.io/instance: {{ $.Release.Name }}
       app.kubernetes.io/component: runner
-      buildkite.com/runner-set: {{ $entry.name | quote }}
+      buildkite.com/runner-pool: {{ $entry.name | quote }}
   template:
     metadata:
       labels:
         {{- include "buildkite-operator.labels" $ | nindent 8 }}
         app.kubernetes.io/component: runner
-        buildkite.com/runner-set: {{ $entry.name | quote }}
+        buildkite.com/runner-pool: {{ $entry.name | quote }}
       annotations:
         {{- if $.Values.agentToken.value }}
         # Roll agents when the chart-managed token changes; they read it at startup.

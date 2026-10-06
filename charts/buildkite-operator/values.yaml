@@ -57,8 +57,10 @@ defaults:
       workspace: 10Gi
 
 # One entry per Buildkite queue, keyed by a short name used in resource names
-# (<release>-<name>). Each entry needs a queue and maxReplicas, and inherits
-# everything else from defaults. Each Buildkite queue may appear only once.
+# (<release>-<name>). Each entry becomes a runner pool: a Deployment of runner
+# Pods labelled buildkite.com/runner-pool=<name>, autoscaled by KEDA. Each
+# entry needs a queue and maxReplicas, and inherits everything else from
+# defaults. Each Buildkite queue may appear only once.
 # Set an entry to null in an override file (or --set queues.<name>=null) to
 # remove it.
 #

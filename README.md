@@ -2,7 +2,8 @@
 
 This repository includes a standalone Helm chart for autoscaling Buildkite
 runners on Kubernetes. One release can serve several Buildkite queues; each gets
-its own agent `Deployment` and KEDA scaling, sharing one token Secret.
+its own runner pool (a `Deployment` of agent Pods) and KEDA scaling, sharing one
+token Secret.
 
 ## Prerequisite
 
@@ -93,10 +94,12 @@ a later values file can change one entry (`linux-kata: {maxReplicas: 25}`) or
 remove it (`build-sysbox: null`) without restating the others. With no
 entries, the chart installs nothing.
 
-Each entry gets a `Deployment` and `ScaledObject` named `<release>-<entry>`.
-The token Secret, KEDA `TriggerAuthentication`, and deletion-cost permissions
-and scripts are shared by all entries in a release. Queues in a different
-Buildkite cluster need a different token, so they use a separate release.
+Each entry gets a runner pool: a `Deployment` whose Pods are labelled
+`buildkite.com/runner-pool: <entry>`, and a `ScaledObject` that scales it, both
+named `<release>-<entry>`. The token Secret, KEDA `TriggerAuthentication`, and
+deletion-cost permissions and scripts are shared by all entries in a release.
+Queues in a different Buildkite cluster need a different token, so they use a
+separate release.
 
 | Setting | Default | Description |
 | --- | --- | --- |

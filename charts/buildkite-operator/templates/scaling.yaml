@@ -23,7 +23,7 @@ metadata:
   namespace: {{ $.Release.Namespace }}
   labels:
     {{- include "buildkite-operator.labels" $ | nindent 4 }}
-    buildkite.com/runner-set: {{ $entry.name | quote }}
+    buildkite.com/runner-pool: {{ $entry.name | quote }}
 spec:
   scaleTargetRef:
     name: {{ $entry.resourceName }}

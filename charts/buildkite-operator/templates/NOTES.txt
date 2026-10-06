@@ -6,7 +6,7 @@ Buildkite runners are installed in {{ .Release.Namespace }}. KEDA scales each qu
 {{- end }}
 
   kubectl get deployment,scaledobject -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
-  kubectl get pods -l app.kubernetes.io/component=runner -L buildkite.com/runner-set -n {{ .Release.Namespace }}
+  kubectl get pods -l app.kubernetes.io/component=runner -L buildkite.com/runner-pool -n {{ .Release.Namespace }}
 {{- $runtimes := list }}
 {{- range $entry := $entries }}
 {{- $runtimes = append $runtimes $entry.settings.runtime }}

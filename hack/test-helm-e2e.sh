@@ -45,7 +45,7 @@ install_runner_chart() {
 }
 
 runner_pods() {
-	"${KUBECTL[@]}" get pods -n "$1" -l "app.kubernetes.io/component=runner,buildkite.com/runner-set=$2" -o name
+	"${KUBECTL[@]}" get pods -n "$1" -l "app.kubernetes.io/component=runner,buildkite.com/runner-pool=$2" -o name
 }
 
 cleanup() {
