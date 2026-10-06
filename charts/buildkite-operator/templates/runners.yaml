@@ -102,6 +102,8 @@ spec:
           env:
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+          # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
+          # Pod's user namespace. Kata's is privileged, but only inside the VM.
           securityContext:
             privileged: {{ eq $r.runtime "kata" }}
           startupProbe:

@@ -46,6 +46,8 @@ defaults:
   scaleDownStabilizationWindowSeconds: 60
   # Longest time an agent may take to drain its job once a runner is removed.
   terminationGracePeriodSeconds: 3600
+  # repository and tag are separate so an override can set only the tag, for
+  # example --set defaults.image.tag=4.2.0.
   image:
     repository: buildkite/agent
     tag: "4"
