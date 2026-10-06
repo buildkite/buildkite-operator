@@ -152,6 +152,37 @@ if [[ "${sysbox}" == *"name: supervisor"* ]]; then
 	exit 1
 fi
 
+# dind runs the same Docker daemon sidecar, privileged and without a
+# RuntimeClass, node selector or toleration, so it schedules on any node.
+dind=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind)
+dind_runner=$(document "${dind}" Deployment test-linux)
+assert_contains "${dind_runner}" "- name: dockerd"
+assert_contains "${dind_runner}" $'securityContext:\n            privileged: true'
+assert_contains "${dind_runner}" "- name: agent"
+assert_contains "${dind_runner}" 'value: "queue=linux,runtime=dind"'
+assert_contains "${dind_runner}" "value: unix:///var/run/docker.sock"
+assert_contains "${dind_runner}" "- name: docker-data"
+assert_contains "${dind_runner}" 'cluster-autoscaler.kubernetes.io/safe-to-evict: "false"'
+for unexpected in "runtimeClassName:" "nodeSelector:" "tolerations:" "hostUsers:" "--storage-driver" "- name: supervisor"; do
+	if [[ "${dind_runner}" == *"${unexpected}"* ]]; then
+		echo "dind runners rendered ${unexpected}" >&2
+		exit 1
+	fi
+done
+ephemeral_dind=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind --set queues.linux.ephemeralAgent=true)
+ephemeral_dind_runner=$(document "${ephemeral_dind}" Deployment test-linux)
+assert_contains "${ephemeral_dind_runner}" "- name: supervisor"
+assert_contains "${ephemeral_dind_runner}" "- name: dockerd"
+assert_contains "${ephemeral_dind_runner}" "checksum/supervisor:"
+if [[ "${ephemeral_dind_runner}" == *"- name: agent"* || "${ephemeral_dind_runner}" == *"runtimeClassName:"* ]]; then
+	echo "Ephemeral dind agents rendered an agent container or RuntimeClass" >&2
+	exit 1
+fi
+[[ $(grep -c 'privileged: true' <<<"${ephemeral_dind_runner}") -eq 1 ]] || {
+	echo "Only the dind Docker daemon should be privileged" >&2
+	exit 1
+}
+
 ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox --set queues.linux.ephemeralAgent=true)
 assert_contains "${ephemeral}" "- name: supervisor"
 assert_contains "${ephemeral}" 'command: ["/bin/sh", "/opt/ephemeral-agent/supervisor.sh"]'
@@ -315,8 +346,18 @@ assert_contains "${runtime_notes}" '"RuntimeClass not found"'
 assert_contains "${runtime_notes}" "build-sysbox: queue build, sysbox, ephemeral agents, 1-4 runners"
 standard_notes=$(notes --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)
 assert_contains "${standard_notes}" "linux: queue linux, standard, persistent agents, 1-1 runners"
-if [[ "${standard_notes}" == *"RuntimeClass"* ]]; then
+if [[ "${standard_notes}" == *"RuntimeClass"* || "${standard_notes}" == *"privileged"* ]]; then
 	echo "NOTES listed runtime prerequisites for a standard-only release" >&2
+	exit 1
+fi
+assert_contains "${runtime_notes}" 'kata runner Pods include a privileged Docker daemon, so the namespace must allow privileged Pods (Pod Security Admission level "privileged")'
+dind_notes=$(notes --set-string queues.docker.queue=docker --set queues.docker.maxReplicas=1 --set-string queues.docker.runtime=dind)
+assert_contains "${dind_notes}" "docker: queue docker, dind, persistent agents"
+assert_contains "${dind_notes}" "dind runner Pods include a privileged Docker daemon"
+assert_contains "${dind_notes}" "WARNING: dind needs nothing installed"
+assert_contains "${dind_notes}" "only run trusted jobs on dind queues"
+if [[ "${dind_notes}" == *"RuntimeClass"* ]]; then
+	echo "NOTES listed RuntimeClass prerequisites for a dind-only release" >&2
 	exit 1
 fi
 
@@ -355,7 +396,7 @@ assert_fails "does not match pattern" \
 	--set queues.linux.maxReplicas=1 \
 	--set-string deletionCost.image.digest=latest \
 	--set-string agentToken.value="${TOKEN}"
-assert_fails "value must be one of 'standard', 'kata', 'sysbox'" \
+assert_fails "value must be one of 'standard', 'dind', 'kata', 'sysbox'" \
 	--set-string queues.linux.queue=linux \
 	--set queues.linux.maxReplicas=1 \
 	--set-string queues.linux.runtime=gvisor \

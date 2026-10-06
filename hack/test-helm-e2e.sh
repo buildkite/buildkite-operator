@@ -15,10 +15,11 @@ HELM_CLUSTER=("${HELM}" --kubeconfig "${KUBECONFIG}" --kube-context "${KUBE_CONT
 KUBECTL=(kubectl --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}")
 NAMESPACE="buildkite-runners"
 RELEASE="buildkite-runners"
-# The first release serves three queues to verify entries stay independent.
+# The first release serves four queues to verify entries stay independent.
 RUNNERS="${RELEASE}-e2e"
 OTHER_RUNNERS="${RELEASE}-e2e-other"
 EPHEMERAL_RUNNERS="${RELEASE}-e2e-ephemeral"
+DIND_RUNNERS="${RELEASE}-e2e-dind"
 SECOND_NAMESPACE="buildkite-runners-two"
 SECOND_RELEASE="buildkite-runners-two"
 SECOND_RUNNERS="${SECOND_RELEASE}-e2e-secondary"
@@ -108,7 +109,13 @@ fi
 	--wait \
 	--timeout 3m
 
-install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e e2e-other e2e-ephemeral -- \
+# The dind queue's Docker daemon requests far less than the chart's default so
+# it fits on the single Kind node.
+install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e e2e-other e2e-ephemeral e2e-dind -- \
+	--set-string queues.e2e-dind.runtime=dind \
+	--set-string queues.e2e-dind.docker.resources.requests.cpu=100m \
+	--set-string queues.e2e-dind.docker.resources.requests.memory=256Mi \
+	--set-string queues.e2e-dind.docker.resources.requests.ephemeral-storage=1Gi \
 	--set queues.e2e-ephemeral.ephemeralAgent=true \
 	--set-string queues.e2e-ephemeral.image.repository=busybox \
 	--set-string queues.e2e-ephemeral.image.tag=1.37 \
@@ -136,6 +143,7 @@ install_runner_chart "${SECOND_RELEASE}" "${SECOND_NAMESPACE}" e2e-secondary
 "${KUBECTL[@]}" get scaledobject/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get triggerauthentication/"${RELEASE}-buildkite-operator-metrics" -n "${NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get deployment/"${OTHER_RUNNERS}" -n "${NAMESPACE}" >/dev/null
+"${KUBECTL[@]}" get deployment/"${DIND_RUNNERS}" -n "${NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get scaledobject/"${OTHER_RUNNERS}" -n "${NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get deployment/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get scaledobject/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
@@ -266,6 +274,30 @@ if ! grep -q "^Drained agent ${second} after 1 SIGTERM$" "${agent_logs}" ||
 	exit 1
 fi
 [[ "${elapsed}" -lt 25 ]] || { echo "Ephemeral runner took ${elapsed}s to stop" >&2; exit 1; }
+
+# dind: a real privileged Docker daemon starts on an ordinary node, and can run
+# containers. The Pod is Initialized once the daemon's startup probe passes.
+dind_pod=""
+for _ in $(seq 1 60); do
+	dind_pod=$(runner_pods "${NAMESPACE}" e2e-dind)
+	[[ -n "${dind_pod}" ]] && break
+	sleep 1
+done
+[[ -n "${dind_pod}" ]] || { echo "The dind queue entry did not create a runner Pod" >&2; exit 1; }
+"${KUBECTL[@]}" wait --for=condition=Initialized "${dind_pod}" -n "${NAMESPACE}" --timeout=3m || {
+	"${KUBECTL[@]}" describe "${dind_pod}" -n "${NAMESPACE}" >&2 || true
+	"${KUBECTL[@]}" logs "${dind_pod}" -n "${NAMESPACE}" -c dockerd >&2 || true
+	exit 1
+}
+[[ -z "$("${KUBECTL[@]}" get "${dind_pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.runtimeClassName}')" ]]
+privileged=$("${KUBECTL[@]}" get "${dind_pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.initContainers[?(@.name=="dockerd")].securityContext.privileged}')
+[[ "${privileged}" == true ]]
+in_dockerd() { "${KUBECTL[@]}" exec "${dind_pod}" -n "${NAMESPACE}" -c dockerd -- "$@"; }
+[[ -n "$(in_dockerd docker info --format '{{.ServerVersion}}')" ]]
+[[ "$(in_dockerd docker run --quiet --rm --network none busybox:1.37 echo ran)" == ran ]] || {
+	echo "dind Docker daemon could not run a container" >&2
+	exit 1
+}
 
 "${HELM_CLUSTER[@]}" uninstall "${RELEASE}" --namespace "${NAMESPACE}" --wait --timeout 2m
 for _ in $(seq 1 60); do

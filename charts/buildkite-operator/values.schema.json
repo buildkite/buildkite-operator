@@ -88,7 +88,7 @@
       "additionalProperties": false,
       "properties": {
         "queue": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
-        "runtime": { "type": "string", "enum": ["standard", "kata", "sysbox"] },
+        "runtime": { "type": "string", "enum": ["standard", "dind", "kata", "sysbox"] },
         "ephemeralAgent": { "type": "boolean" },
         "minReplicas": { "type": "integer", "minimum": 0 },
         "maxReplicas": { "type": "integer", "minimum": 1 },

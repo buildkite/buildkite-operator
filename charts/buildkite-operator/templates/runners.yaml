@@ -15,9 +15,10 @@
 {{- end }}
 {{- range $entry := $entries }}
 {{- $r := $entry.settings }}
-{{- $docker := has $r.runtime (list "kata" "sysbox") }}
-{{- /* Ephemeral agents run under a supervisor in the Docker daemon with kata
-or sysbox, and in a restart loop inside the agent container with standard. */}}
+{{- $docker := has $r.runtime (list "dind" "kata" "sysbox") }}
+{{- /* Ephemeral agents run under a supervisor in the Docker daemon with dind,
+kata or sysbox, and in a restart loop inside the agent container with
+standard. */}}
 {{- $supervised := and $r.ephemeralAgent $docker }}
 {{- $agentLoop := and $r.ephemeralAgent (not $docker) }}
 ---
@@ -104,8 +105,9 @@ spec:
               value: unix:///var/run/docker.sock
           # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
           # Pod's user namespace. Kata's is privileged, but only inside the VM.
+          # Dind's is privileged on the node itself, with host-level access.
           securityContext:
-            privileged: {{ eq $r.runtime "kata" }}
+            privileged: {{ ne $r.runtime "sysbox" }}
           startupProbe:
             exec:
               command: [docker, info]

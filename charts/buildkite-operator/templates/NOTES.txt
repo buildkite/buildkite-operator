@@ -23,6 +23,20 @@ Buildkite runners are installed in {{ .Release.Namespace }}. KEDA scales each qu
 This chart does not install container runtimes: {{ join "; " $needed }}.
 If runner Pods don't start, check the ReplicaSet events for "RuntimeClass not found" and the Pods for FailedScheduling.
 {{- end }}
+{{- $privileged := list }}
+{{- range $runtime := list "dind" "kata" }}
+{{- if has $runtime $runtimes }}
+{{- $privileged = append $privileged $runtime }}
+{{- end }}
+{{- end }}
+{{- if $privileged }}
+
+{{ join " and " $privileged }} runner Pods include a privileged Docker daemon, so the namespace must allow privileged Pods (Pod Security Admission level "privileged"). If runner Pods don't appear, check the ReplicaSet events for "violates PodSecurity".
+{{- end }}
+{{- if has "dind" $runtimes }}
+
+WARNING: dind needs nothing installed, but its privileged Docker daemon has host-level access to its node. It is not isolation: only run trusted jobs on dind queues.
+{{- end }}
 {{- else }}
 No queues are configured, so no runners were installed. Add entries under queues.
 {{- end }}

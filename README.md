@@ -106,13 +106,13 @@ separate release.
 | `queue` | required | Buildkite queue key the agents serve and scale on. |
 | `maxReplicas` | required | Upper bound on runners. |
 | `minReplicas` | `1` | Runners kept when the queue is idle. |
-| `runtime` | `standard` | `standard`, `kata` or `sysbox`; see [Runner isolation](#runner-isolation). |
+| `runtime` | `standard` | `standard`, `dind`, `kata` or `sysbox`; see [Runner isolation](#runner-isolation). |
 | `ephemeralAgent` | `false` | Replace the agent after every job, with a clean workspace. The Pod persists. See [Ephemeral agents](#ephemeral-agents). |
 | `terminationGracePeriodSeconds` | `3600` | Longest time an agent may take to drain its job. |
 | `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales an entry with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
 | `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
-| `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. With `standard` and `ephemeralAgent`, the image also needs `/bin/sh`. |
-| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. |
+| `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `dind`, `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. With `standard` and `ephemeralAgent`, the image also needs `/bin/sh`. |
+| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `dind`, `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. |
 
 ### Examples
 
@@ -138,6 +138,19 @@ queues:
     queue: docker-builds
     runtime: sysbox
     minReplicas: 0
+    maxReplicas: 4
+```
+
+Persistent Docker-in-Docker agents, for trusted jobs on clusters that can't
+run Kata or Sysbox. Each Pod runs one long-lived agent next to a privileged
+Docker daemon, on any node; see [Privileged Docker-in-Docker](#privileged-docker-in-docker)
+before using it:
+
+```yaml
+queues:
+  docker:
+    queue: docker
+    runtime: dind
     maxReplicas: 4
 ```
 
@@ -215,8 +228,8 @@ well below the chart's default `terminationGracePeriodSeconds`. A busy agent's
 running jobs are not cut short.
 
 Idle agents are marked `safe-to-evict: "true"` rather than left unannotated.
-`kata` and `sysbox` runners use disk-backed `emptyDir` volumes for Docker data
-and the workspace, and Cluster Autoscaler's default
+`dind`, `kata` and `sysbox` runners use disk-backed `emptyDir` volumes for
+Docker data and the workspace, and Cluster Autoscaler's default
 `--skip-nodes-with-local-storage=true` would otherwise never remove their
 nodes. This is also best-effort: an agent that accepts a job after Cluster
 Autoscaler checks its node but before eviction is still bounded by
@@ -229,13 +242,14 @@ Set `runtime` in `defaults` or on a queue entry to choose its isolation profile:
 
 | Value | Runner Pod |
 | --- | --- |
-| `standard` (default) | A Buildkite agent in a regular Kubernetes Pod. |
+| `standard` (default) | A Buildkite agent in a regular Kubernetes Pod, with no Docker daemon. |
+| `dind` | An agent and privileged Docker native sidecar in a regular Pod on any node. Not isolation; see [Privileged Docker-in-Docker](#privileged-docker-in-docker). |
 | `kata` | An agent and privileged Docker native sidecar inside the `kata-qemu-runtime-rs` VM RuntimeClass. |
 | `sysbox` | An agent and unprivileged Docker native sidecar using the `sysbox-runc` RuntimeClass and Kubernetes user namespaces. |
 
-Different entries in one release can use different profiles.
-Kata and Sysbox are host runtimes, so the chart deliberately does not install
-them or modify containerd. Like KEDA, they are cluster-wide installs, done
+Different entries in one release can use different profiles. `standard` and
+`dind` need nothing installed. Kata and Sysbox are host runtimes, so the chart
+deliberately does not install them or modify containerd. Like KEDA, they are cluster-wide installs, done
 once per cluster before installing the chart:
 
 | `runtime` | RuntimeClass | Installer | Nodes |
@@ -272,9 +286,29 @@ spec:
         - {key: experiments.buildkite.com/runtime, operator: Equal, value: sysbox, effect: NoSchedule}
 ```
 
-Both profiles require Kubernetes native sidecars; Sysbox additionally requires
-Kubernetes user namespaces. Their Docker data and workspace are Pod-local and
-are discarded when an agent Pod is removed.
+The `dind`, `kata` and `sysbox` profiles require Kubernetes native sidecars;
+Sysbox additionally requires Kubernetes user namespaces. Their Docker data and
+workspace are Pod-local and are discarded when an agent Pod is removed.
+
+### Privileged Docker-in-Docker
+
+`runtime: dind` is for clusters that can't run Kata or Sysbox but whose jobs
+need Docker. The Pod runs the same Docker daemon sidecar as `kata` and
+`sysbox`, privileged and without a RuntimeClass, so it schedules on any node.
+
+> [!WARNING]
+> A privileged container has host-level access to its node: it can see host
+> devices, load kernel modules and escape to the host. `dind` is not isolation.
+> Only run trusted jobs on `dind` queues, and don't share their nodes with
+> workloads those jobs must not reach.
+
+The namespace must allow privileged Pods. With Pod Security Admission, label it
+for the `privileged` level, for example
+`kubectl label namespace <namespace> pod-security.kubernetes.io/enforce=privileged`.
+`kata` runners need the same, because their Docker daemon is privileged inside
+the VM. The chart adds no node selector or toleration for `dind`, so its Pods
+can land on any node; dedicated nodes for `dind` runners aren't configurable
+yet.
 
 ### Ephemeral agents
 
@@ -292,7 +326,7 @@ after one job and is replaced by a newly registered agent, named
   `buildkite-agent start --disconnect-after-job`, and repeats when the agent
   exits. The container is never restarted, so the kubelet's restart backoff
   does not slow down the next job. The agent image needs `/bin/sh`.
-- `kata`, `sysbox`: a supervisor container starts each agent as a fresh
+- `dind`, `kata`, `sysbox`: a supervisor container starts each agent as a fresh
   container inside the Pod's Docker daemon with `--disconnect-after-job`.
   After each job it removes the job's containers, networks and volumes, clears
   the `/buildkite` workspace, and starts the next agent.
@@ -310,7 +344,7 @@ What is reset between jobs:
 | `runtime` | Reset | Persists |
 | --- | --- | --- |
 | `standard` | The agent process and its registration, and the contents of `/buildkite/builds` (checkouts) and `/buildkite/plugins`. | The Pod and its node, and the agent container with the rest of its filesystem: `/tmp`, the home directory, packages or tools a job installed, caches outside `/buildkite`, and any processes a job left running. |
-| `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches. |
+| `dind`, `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches. |
 
 Ephemeral agents keep successive jobs' state apart; they are not a security
 boundary between them. Anything a job can reach that persists, such as files

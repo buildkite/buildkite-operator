@@ -1,8 +1,15 @@
 # Settings shared by every queue entry. Any of these can be overridden per entry
 # under queues.<name>.
 defaults:
-  # standard, kata, or sysbox. kata and sysbox need cluster components that
-  # this chart does not install (see the README's "Runner isolation"):
+  # standard, dind, kata, or sysbox (see the README's "Runner isolation").
+  # - standard: the agent alone, with no Docker daemon.
+  # - dind: the agent plus a privileged Docker daemon on any node. Nothing to
+  #   install, but the namespace must allow privileged Pods (Pod Security
+  #   Admission level privileged). WARNING: a privileged container has
+  #   host-level access to its node, so this is not isolation; only run
+  #   trusted jobs.
+  # kata and sysbox run a Docker daemon with stronger isolation, but need
+  # cluster components that this chart does not install:
   # - kata: RuntimeClass kata-qemu-runtime-rs (for example from the kata-deploy
   #   Helm chart) and KVM-capable nodes labelled and tainted (NoSchedule)
   #   experiments.buildkite.com/runtime=kata.
@@ -26,10 +33,10 @@ defaults:
   #     container is not restarted, so everything else in its filesystem
   #     (such as /tmp, the home directory and installed packages) and any
   #     processes a job left running persist. The image needs /bin/sh.
-  #   - kata, sysbox: a supervisor starts each agent as a fresh container in
-  #     the Pod's Docker daemon and, between jobs, removes the job's
-  #     containers, networks, volumes and the /buildkite workspace. The daemon
-  #     and its image and build caches persist.
+  #   - dind, kata, sysbox: a supervisor starts each agent as a fresh
+  #     container in the Pod's Docker daemon and, between jobs, removes the
+  #     job's containers, networks, volumes and the /buildkite workspace.
+  #     The daemon and its image and build caches persist.
   # Ephemeral agents keep successive jobs' state apart; they are not a security
   # boundary between jobs. See the README's "Ephemeral agents".
   ephemeralAgent: false
@@ -52,12 +59,12 @@ defaults:
     repository: buildkite/agent
     tag: "4"
     pullPolicy: Always
-  # Requests and limits for the agent container. Ignored with kata or sysbox
-  # and ephemeralAgent, where agents run as containers inside the Docker daemon
-  # and share docker.resources.
+  # Requests and limits for the agent container. Ignored with dind, kata or
+  # sysbox and ephemeralAgent, where agents run as containers inside the
+  # Docker daemon and share docker.resources.
   resources: {}
-  # Docker daemon used by the kata and sysbox runtimes. With ephemeralAgent, its
-  # resources also bound the agent containers it runs.
+  # Docker daemon used by the dind, kata and sysbox runtimes. With
+  # ephemeralAgent, its resources also bound the agent containers it runs.
   docker:
     image:
       repository: docker
@@ -102,6 +109,14 @@ defaults:
 #     minReplicas: 0
 #     maxReplicas: 4
 #
+#   # Persistent dind agents for trusted jobs on clusters that can't run kata
+#   # or sysbox: one long-lived agent per Pod next to a privileged Docker
+#   # daemon, on any node.
+#   docker:
+#     queue: docker
+#     runtime: dind
+#     maxReplicas: 4
+#
 #   # Ephemeral kata agents: each job runs in a fresh agent container inside a
 #   # VM-isolated Pod. Afterwards the job's containers, networks, volumes and
 #   # workspace are removed; Docker's image and build caches are kept.
@@ -124,8 +139,8 @@ defaults:
 queues: {}
 
 # Starts and replaces ephemeral agent containers in the Docker daemon. Used only
-# by kata and sysbox queue entries with ephemeralAgent. The digest pins the
-# multi-platform image index.
+# by dind, kata and sysbox queue entries with ephemeralAgent. The digest pins
+# the multi-platform image index.
 supervisor:
   image:
     repository: docker
