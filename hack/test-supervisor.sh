@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercises the single-use supervisor against a real Docker daemon, using a
+# Exercises the ephemeral-agent supervisor against a real Docker daemon, using a
 # stand-in agent image so no Buildkite token or API is needed.
 
 set -euo pipefail
@@ -8,14 +8,14 @@ HELM="${HELM:-helm}"
 CHART_DIR="${HELM_CHART_DIR:-charts/buildkite-operator}"
 SCRIPT="${CHART_DIR}/files/supervisor.sh"
 
-# Use the chart's own pinned images, as rendered for a single-use runner.
+# Use the chart's own pinned images, as rendered for an ephemeral sysbox runner.
 rendered=$("${HELM}" template test "${CHART_DIR}" \
 	--api-versions keda.sh/v1alpha1/ScaledObject \
 	--api-versions keda.sh/v1alpha1/TriggerAuthentication \
 	--set-string queues.test.queue=test \
 	--set queues.test.maxReplicas=1 \
 	--set-string queues.test.runtime=sysbox \
-	--set queues.test.singleUse=true \
+	--set queues.test.ephemeralAgent=true \
 	--set-string agentToken.value=unused)
 image_for() { grep -A1 -- "- name: $1\$" <<<"${rendered}" | sed -n 's/^ *image: "\(.*\)"$/\1/p'; }
 DIND_IMAGE=$(image_for dockerd)

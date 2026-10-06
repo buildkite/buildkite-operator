@@ -135,24 +135,24 @@ assert_contains "${sysbox}" "hostUsers: false"
 assert_contains "${sysbox}" "- --storage-driver=overlay2"
 assert_contains "${sysbox}" 'value: "queue=linux,runtime=sysbox"'
 if [[ "${sysbox}" == *"name: supervisor"* ]]; then
-	echo "Long-lived runners rendered the single-use supervisor" >&2
+	echo "Persistent agents rendered the ephemeral-agent supervisor" >&2
 	exit 1
 fi
 
-single_use=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox --set queues.linux.singleUse=true)
-assert_contains "${single_use}" "- name: supervisor"
-assert_contains "${single_use}" 'image: "docker:29.7.2-cli@sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"'
-assert_contains "${single_use}" 'value: "buildkite/agent:4"'
-assert_contains "${single_use}" "checksum/supervisor:"
-assert_contains "${single_use}" "start --disconnect-after-job"
-assert_contains "${single_use}" "- name: dockerd"
-if [[ "${single_use}" == *"- name: agent"* ]]; then
-	echo "Single-use runners also rendered a long-lived agent container" >&2
+ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox --set queues.linux.ephemeralAgent=true)
+assert_contains "${ephemeral}" "- name: supervisor"
+assert_contains "${ephemeral}" 'image: "docker:29.7.2-cli@sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"'
+assert_contains "${ephemeral}" 'value: "buildkite/agent:4"'
+assert_contains "${ephemeral}" "checksum/supervisor:"
+assert_contains "${ephemeral}" "start --disconnect-after-job"
+assert_contains "${ephemeral}" "- name: dockerd"
+if [[ "${ephemeral}" == *"- name: agent"* ]]; then
+	echo "Ephemeral sysbox agents also rendered a persistent agent container" >&2
 	exit 1
 fi
-single_use_kata=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=kata --set queues.linux.singleUse=true)
-assert_contains "${single_use_kata}" "runtimeClassName: kata-qemu-runtime-rs"
-assert_contains "${single_use_kata}" "- name: supervisor"
+ephemeral_kata=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=kata --set queues.linux.ephemeralAgent=true)
+assert_contains "${ephemeral_kata}" "runtimeClassName: kata-qemu-runtime-rs"
+assert_contains "${ephemeral_kata}" "- name: supervisor"
 
 # Queue entries inherit defaults and override any field. Shared resources are
 # rendered once; each entry gets its own Deployment and ScaledObject.
@@ -167,7 +167,7 @@ multi=$("${HELM}" template test "${CHART_DIR}" \
 	--set queues.linux-kata.maxReplicas=10 \
 	--set-string queues.build-sysbox.queue=build \
 	--set-string queues.build-sysbox.runtime=sysbox \
-	--set queues.build-sysbox.singleUse=true \
+	--set queues.build-sysbox.ephemeralAgent=true \
 	--set queues.build-sysbox.minReplicas=0 \
 	--set queues.build-sysbox.maxReplicas=4 \
 	--set queues.build-sysbox.scaleDownStabilizationWindowSeconds=0 \
@@ -243,7 +243,7 @@ cat >"${values_dir}/base.yaml" <<EOF
 agentToken: {value: ${TOKEN}}
 queues:
   linux-kata: {queue: linux, runtime: kata, maxReplicas: 10}
-  build-sysbox: {queue: build, runtime: sysbox, singleUse: true, maxReplicas: 4}
+  build-sysbox: {queue: build, runtime: sysbox, ephemeralAgent: true, maxReplicas: 4}
 EOF
 cat >"${values_dir}/override.yaml" <<EOF
 queues:
@@ -259,7 +259,7 @@ assert_contains "${overridden}" $'scaleDown:\n          stabilizationWindowSecon
 assert_contains "${overridden}" "runtimeClassName: kata-qemu-runtime-rs" # Untouched settings are kept.
 [[ $(count_kind "${overridden}" Deployment) -eq 1 ]] || { echo "Null entry was not removed" >&2; exit 1; }
 if [[ "${overridden}" == *"name: test-buildkite-operator-supervisor"* ]]; then
-	echo "Supervisor ConfigMap rendered with no single-use queue" >&2
+	echo "Supervisor ConfigMap rendered with no ephemeral queue" >&2
 	exit 1
 fi
 
@@ -275,8 +275,9 @@ runtime_notes=$(notes -f "${values_dir}/base.yaml")
 assert_contains "${runtime_notes}" "kata needs RuntimeClass kata-qemu-runtime-rs and nodes labelled and tainted experiments.buildkite.com/runtime=kata"
 assert_contains "${runtime_notes}" "sysbox needs RuntimeClass sysbox-runc and nodes labelled and tainted experiments.buildkite.com/runtime=sysbox"
 assert_contains "${runtime_notes}" '"RuntimeClass not found"'
+assert_contains "${runtime_notes}" "build-sysbox: queue build, sysbox, ephemeral agents, 1-4 runners"
 standard_notes=$(notes --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)
-assert_contains "${standard_notes}" "linux: queue linux, standard"
+assert_contains "${standard_notes}" "linux: queue linux, standard, persistent agents, 1-1 runners"
 if [[ "${standard_notes}" == *"RuntimeClass"* ]]; then
 	echo "NOTES listed runtime prerequisites for a standard-only release" >&2
 	exit 1
@@ -322,10 +323,10 @@ assert_fails "value must be one of 'standard', 'kata', 'sysbox'" \
 	--set queues.linux.maxReplicas=1 \
 	--set-string queues.linux.runtime=gvisor \
 	--set-string agentToken.value="${TOKEN}"
-assert_fails "queues.linux.singleUse requires runtime kata or sysbox" \
+assert_fails "queues.linux.ephemeralAgent requires runtime kata or sysbox" \
 	--set-string queues.linux.queue=linux \
 	--set queues.linux.maxReplicas=1 \
-	--set queues.linux.singleUse=true \
+	--set queues.linux.ephemeralAgent=true \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "maximum: got 3,601, want 3,600" \
 	--set-string queues.linux.queue=linux \
@@ -352,8 +353,8 @@ assert_fails "must be at most 50 characters" \
 	--set-string queues.an-extremely-long-queue-entry-name-for-testing.queue=linux \
 	--set queues.an-extremely-long-queue-entry-name-for-testing.maxReplicas=1 \
 	--set-string agentToken.value="${TOKEN}"
-assert_fails "queues.linux.singleUse requires runtime kata or sysbox" \
-	--set defaults.singleUse=true \
+assert_fails "queues.linux.ephemeralAgent requires runtime kata or sysbox" \
+	--set defaults.ephemeralAgent=true \
 	--set-string queues.linux.queue=linux \
 	--set queues.linux.maxReplicas=1 \
 	--set-string agentToken.value="${TOKEN}"

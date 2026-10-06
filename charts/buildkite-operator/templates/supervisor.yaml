@@ -1,6 +1,6 @@
-{{- $singleUse := false }}
-{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}{{ if $entry.settings.singleUse }}{{ $singleUse = true }}{{ end }}{{ end }}
-{{- if $singleUse }}
+{{- $ephemeralAgent := false }}
+{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}{{ if $entry.settings.ephemeralAgent }}{{ $ephemeralAgent = true }}{{ end }}{{ end }}
+{{- if $ephemeralAgent }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

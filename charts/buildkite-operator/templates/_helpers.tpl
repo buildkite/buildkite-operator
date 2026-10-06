@@ -54,8 +54,8 @@ over .Values.defaults, with the entry taking precedence.
 {{- if gt (int $settings.minReplicas) $maxReplicas }}
 {{- fail (printf "queues.%s.minReplicas must be less than or equal to maxReplicas" $name) }}
 {{- end }}
-{{- if and $settings.singleUse (not (has $settings.runtime (list "kata" "sysbox"))) }}
-{{- fail (printf "queues.%s.singleUse requires runtime kata or sysbox, which provide a Docker daemon" $name) }}
+{{- if and $settings.ephemeralAgent (not (has $settings.runtime (list "kata" "sysbox"))) }}
+{{- fail (printf "queues.%s.ephemeralAgent requires runtime kata or sysbox, which provide a Docker daemon" $name) }}
 {{- end }}
 {{- $entries = append $entries (dict "name" $name "resourceName" $resourceName "settings" $settings) }}
 {{- end }}

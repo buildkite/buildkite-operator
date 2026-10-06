@@ -64,7 +64,7 @@ form `Token <cluster-agent-token>`.
 
 Each entry under `queues` serves one Buildkite queue and inherits every setting
 from `defaults`, overriding any of them. For example, a values file serving a
-Kata queue and a single-use Sysbox queue:
+Kata queue and a Sysbox queue with ephemeral agents:
 
 ```yaml
 defaults:
@@ -78,7 +78,7 @@ queues:
   build-sysbox:
     queue: build
     runtime: sysbox
-    singleUse: true
+    ephemeralAgent: true
     minReplicas: 0
     maxReplicas: 4
     docker:
@@ -107,12 +107,54 @@ separate release.
 | `maxReplicas` | required | Upper bound on runners. |
 | `minReplicas` | `1` | Runners kept when the queue is idle. |
 | `runtime` | `standard` | `standard`, `kata` or `sysbox`; see [Runner isolation](#runner-isolation). |
-| `singleUse` | `false` | Run each job in a fresh agent container; see [Single-use job containers](#single-use-job-containers). |
+| `ephemeralAgent` | `false` | Replace the agent after every job, with a clean workspace. The Pod persists. See [Ephemeral agents](#ephemeral-agents). |
 | `terminationGracePeriodSeconds` | `3600` | Longest time an agent may take to drain its job. |
 | `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales an entry with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
 | `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
-| `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the long-lived agent container. With `singleUse`, `resources` is ignored: job containers run inside the Docker daemon and share its `docker.resources` budget. |
-| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `kata` and `sysbox`. With `singleUse`, `docker.resources` also bounds the job containers. |
+| `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. |
+| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. |
+
+### Examples
+
+Persistent Sysbox agents. Each Pod runs one long-lived agent next to an
+unprivileged Docker daemon, so containers, volumes, checkouts and caches carry
+over between jobs. The pool scales to zero when the queue is idle:
+
+```yaml
+queues:
+  docker-builds:
+    queue: docker-builds
+    runtime: sysbox
+    minReplicas: 0
+    maxReplicas: 4
+```
+
+Ephemeral Kata agents. Each job runs in a fresh agent container inside a
+VM-isolated Pod. Afterwards its containers, networks, volumes and workspace are
+removed, while Docker's image and build caches are kept:
+
+```yaml
+queues:
+  untrusted:
+    queue: untrusted
+    runtime: kata
+    ephemeralAgent: true
+    maxReplicas: 6
+```
+
+To turn a pool off, comment out or delete its entry, or set it to `null` in a
+later values file, for example `helm upgrade ... -f values.yaml -f off.yaml`
+with:
+
+```yaml
+# off.yaml
+queues:
+  untrusted: null
+```
+
+Helm then removes the pool's `Deployment` and `ScaledObject`, and its agents
+drain their current jobs. `maxReplicas` must be at least 1; to keep a pool
+without idle runners, set `minReplicas: 0` instead.
 
 ## Autoscaling
 
@@ -222,38 +264,37 @@ Both profiles require Kubernetes native sidecars; Sysbox additionally requires
 Kubernetes user namespaces. Their Docker data and workspace are Pod-local and
 are discarded when an agent Pod is removed.
 
-### Single-use job containers
+### Ephemeral agents
 
-By default an agent container serves many jobs, so files, containers and
-volumes from one job remain for the next. With `kata` or `sysbox`, set
-`singleUse: true` on a queue entry to run each job in a fresh agent container:
+`ephemeralAgent` controls the Buildkite agent, not the Pod. Runner Pods always
+persist across jobs; only autoscaling adds or removes them.
 
-```yaml
-queues:
-  build-sysbox:
-    queue: build
-    runtime: sysbox
-    singleUse: true
-    maxReplicas: 4
-```
+By default (`ephemeralAgent: false`) agents are persistent: one agent registers
+when its Pod starts and runs job after job, so whatever a job leaves behind is
+still there for the next. With `ephemeralAgent: true`, the agent disconnects
+after one job and is replaced by a newly registered agent, named
+`<pod>-<suffix>`, with a clean workspace. With `kata` or `sysbox`, a supervisor
+container starts each agent as a fresh container inside the Pod's Docker daemon
+with `--disconnect-after-job`. After each job it removes the job's containers,
+networks and volumes, clears the `/buildkite` workspace, and starts the next
+agent. If cleanup fails, no new agent starts until it succeeds.
 
-A supervisor container then starts the agent inside the Pod's Docker daemon
-with `--disconnect-after-job`. After each job it removes the job's
-containers, networks and volumes, clears the workspace, and starts a new agent
-under a new name. The Pod, its node, and Docker's image and build caches
-persist. If cleanup fails, no new agent starts until it succeeds.
+What is reset between jobs:
 
-This separates successive jobs' files and containers; it is not a security
-boundary between them. Anything a job can reach through the Pod's Docker
-daemon, including the cached images, remains available to later jobs. The
-`standard` profile has no Docker daemon, so the chart rejects `singleUse` with
-it.
+| | Reset | Persists |
+| --- | --- | --- |
+| `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches. |
+
+Ephemeral agents keep successive jobs' state apart; they are not a security
+boundary between them. Anything a job can reach that persists, such as the
+Pod's Docker image cache, remains available to later jobs. The `standard`
+profile has no Docker daemon, so the chart rejects `ephemeralAgent` with it.
 
 ## Development
 
 ```bash
 make test-helm        # lint and render the standalone chart
-make test-supervisor  # run the single-use supervisor against Docker
+make test-supervisor  # run the ephemeral-agent supervisor against Docker
 make test-helm-e2e    # install and uninstall the chart in isolated Kind
 make lint             # golangci-lint
 make test             # Go tests and generated-file checks

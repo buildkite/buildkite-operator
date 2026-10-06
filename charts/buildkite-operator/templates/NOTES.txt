@@ -2,7 +2,7 @@
 {{- if $entries }}
 Buildkite runners are installed in {{ .Release.Namespace }}. KEDA scales each queue from Buildkite queue metrics:
 {{ range $entry := $entries }}
-  {{ $entry.name }}: queue {{ $entry.settings.queue }}, {{ $entry.settings.runtime }}{{ if $entry.settings.singleUse }} single-use{{ end }}, {{ $entry.settings.minReplicas }}-{{ $entry.settings.maxReplicas }} runners (Deployment {{ $entry.resourceName }})
+  {{ $entry.name }}: queue {{ $entry.settings.queue }}, {{ $entry.settings.runtime }}, {{ ternary "ephemeral" "persistent" (eq $entry.settings.ephemeralAgent true) }} agents, {{ $entry.settings.minReplicas }}-{{ $entry.settings.maxReplicas }} runners (Deployment {{ $entry.resourceName }})
 {{- end }}
 
   kubectl get deployment,scaledobject -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}

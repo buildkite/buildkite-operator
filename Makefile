@@ -155,7 +155,7 @@ test-helm: ## Validate the standalone Helm chart.
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-chart.sh
 
 .PHONY: test-supervisor
-test-supervisor: ## Run the single-use supervisor against a real Docker daemon.
+test-supervisor: ## Run the ephemeral-agent supervisor against a real Docker daemon.
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-supervisor.sh
 
 .PHONY: test-helm-e2e

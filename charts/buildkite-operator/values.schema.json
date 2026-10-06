@@ -7,7 +7,7 @@
       "allOf": [
         { "$ref": "#/$defs/runnerSettings" },
         {
-          "required": ["runtime", "singleUse", "minReplicas", "pollingInterval", "cooldownPeriod", "scaleDownStabilizationWindowSeconds", "terminationGracePeriodSeconds", "image", "resources", "docker"],
+          "required": ["runtime", "ephemeralAgent", "minReplicas", "pollingInterval", "cooldownPeriod", "scaleDownStabilizationWindowSeconds", "terminationGracePeriodSeconds", "image", "resources", "docker"],
           "properties": {
             "image": { "required": ["repository", "tag", "pullPolicy"] },
             "docker": {
@@ -89,7 +89,7 @@
       "properties": {
         "queue": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
         "runtime": { "type": "string", "enum": ["standard", "kata", "sysbox"] },
-        "singleUse": { "type": "boolean" },
+        "ephemeralAgent": { "type": "boolean" },
         "minReplicas": { "type": "integer", "minimum": 0 },
         "maxReplicas": { "type": "integer", "minimum": 1 },
         "pollingInterval": { "type": "integer", "minimum": 1 },

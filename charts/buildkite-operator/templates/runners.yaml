@@ -16,7 +16,7 @@
 {{- range $entry := $entries }}
 {{- $r := $entry.settings }}
 {{- $docker := has $r.runtime (list "kata" "sysbox") }}
-{{- $singleUse := $r.singleUse }}
+{{- $ephemeralAgent := $r.ephemeralAgent }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -54,7 +54,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: {{ $.Files.Get "files/deletion_cost.py" | sha256sum }}
-        {{- if $singleUse }}
+        {{- if $ephemeralAgent }}
         checksum/supervisor: {{ $.Files.Get "files/supervisor.sh" | sha256sum }}
         {{- end }}
     spec:
@@ -120,7 +120,7 @@ spec:
               mountPath: /buildkite
       {{- end }}
       containers:
-        {{- if $singleUse }}
+        {{- if $ephemeralAgent }}
         - name: supervisor
           image: "{{ $.Values.supervisor.image.repository }}:{{ $.Values.supervisor.image.tag }}@{{ $.Values.supervisor.image.digest }}"
           imagePullPolicy: {{ $.Values.supervisor.image.pullPolicy }}
@@ -265,7 +265,7 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
-        {{- if $singleUse }}
+        {{- if $ephemeralAgent }}
         - name: supervisor-script
           configMap:
             name: {{ include "buildkite-operator.supervisorName" $ }}
