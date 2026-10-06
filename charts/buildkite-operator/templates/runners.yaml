@@ -187,9 +187,10 @@ spec:
               value: 0.0.0.0:8080
             - name: BUILDKITE_BUILD_PATH
               value: /buildkite/builds
-            {{- if $docker }}
+            # The agent cannot check out plugins without a plugins path.
             - name: BUILDKITE_PLUGINS_PATH
               value: /buildkite/plugins
+            {{- if $docker }}
             - name: BUILDKITE_SOCKETS_PATH
               value: /buildkite/sockets
             - name: DOCKER_HOST

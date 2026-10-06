@@ -83,6 +83,7 @@ assert_contains "${direct}" 'image: "python:3.12.14-alpine3.24@sha256:4c47124a83
 }
 assert_contains "${direct}" 'value: "queue=linux,runtime=standard"'
 assert_contains "${direct}" "value: /buildkite/builds"
+assert_contains "${direct}" "value: /buildkite/plugins"
 assert_contains "${direct}" "checksum/agent-token:"
 rotated=$(render --set-string agentToken.value="${TOKEN}-rotated")
 if [[ $(grep 'checksum/agent-token:' <<<"${direct}") == $(grep 'checksum/agent-token:' <<<"${rotated}") ]]; then
