@@ -5,13 +5,13 @@ victims, and are marked not safe to evict, which stops Cluster Autoscaler from
 removing their node.
 """
 
+import http.client
 import json
 import os
 import signal
 import ssl
 import sys
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -63,14 +63,16 @@ def run():
     while True:
         try:
             busy = agent_busy()
-        except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as error:
+        # urllib only wraps connection errors in URLError; errors while reading
+        # the response, such as a reset while the agent restarts, surface raw.
+        except (OSError, http.client.HTTPException, ValueError, KeyError) as error:
             print(f"Agent status unavailable; preferring retention: {error}", flush=True)
             busy = True
 
         if busy != applied:
             try:
                 patch_annotations(annotations(busy))
-            except (urllib.error.URLError, TimeoutError, OSError) as error:
+            except (OSError, http.client.HTTPException) as error:
                 print(f"Could not update scale-in annotations; retrying: {error}", flush=True)
             else:
                 print(f"Marked Pod {'busy' if busy else 'idle'}", flush=True)

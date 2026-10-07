@@ -1,3 +1,4 @@
+import http.client
 import importlib.util
 import io
 import json
@@ -71,6 +72,23 @@ class DeletionCostTest(unittest.TestCase):
                 deletion_cost.run()
         self.assertEqual(patch.call_args_list, [
             mock.call(idle), mock.call(idle), mock.call(busy), mock.call(idle),
+        ])
+
+    def test_response_read_errors_prefer_retention_without_crashing(self):
+        # urllib leaves errors raised while reading the response unwrapped.
+        busy, idle = deletion_cost.annotations(True), deletion_cost.annotations(False)
+        with mock.patch.object(deletion_cost, "agent_busy", side_effect=[
+            False, ConnectionResetError(104, "Connection reset by peer"),
+            http.client.IncompleteRead(b""), False, False,
+        ]), mock.patch.object(deletion_cost, "patch_annotations", side_effect=[
+            None, None, http.client.IncompleteRead(b""), None,
+        ]) as patch, mock.patch.object(deletion_cost.time, "sleep", side_effect=[
+            None, None, None, None, StopIteration,
+        ]), mock.patch("builtins.print"):
+            with self.assertRaises(StopIteration):
+                deletion_cost.run()
+        self.assertEqual(patch.call_args_list, [
+            mock.call(idle), mock.call(busy), mock.call(idle), mock.call(idle),
         ])
 
     def test_pid_one_style_sigterm_exits_cleanly(self):
