@@ -22,6 +22,8 @@ standard. */}}
 {{- $supervised := and $r.ephemeralAgent $docker }}
 {{- $agentLoop := and $r.ephemeralAgent (not $docker) }}
 {{- $accelerated := include "buildkite-operator.usesOciAccelerator" (dict "root" $ "settings" $r) }}
+{{- $registryCredentials := include "buildkite-operator.registryCredentialsEnabled" $ }}
+{{- $dockerConfig := include "buildkite-operator.dockerConfigPath" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -55,6 +57,9 @@ spec:
         # Roll agents when the chart-managed token changes; they read it at startup.
         checksum/agent-token: {{ $.Values.agentToken.value | sha256sum }}
         {{- end }}
+        {{- with include "buildkite-operator.registryCredentialsChecksum" $ }}
+        {{- . | nindent 8 }}
+        {{- end }}
         # Treat agents as busy until the sidecar observes that they are idle.
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
@@ -69,6 +74,9 @@ spec:
       serviceAccountName: {{ include "buildkite-operator.deletionCostName" $ }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ $r.terminationGracePeriodSeconds }}
+      {{- with include "buildkite-operator.imagePullSecrets" $ }}
+      {{- . | nindent 6 }}
+      {{- end }}
       {{- if eq $r.runtime "kata" }}
       runtimeClassName: kata-qemu-runtime-rs
       nodeSelector:
@@ -91,6 +99,27 @@ spec:
       {{- end }}
       {{- if $docker }}
       initContainers:
+        {{- if $registryCredentials }}
+        # Copied rather than mounted so jobs can still docker login and keep
+        # buildx state alongside the credentials.
+        - name: docker-config
+          image: "{{ $.Values.supervisor.image.repository }}:{{ $.Values.supervisor.image.tag }}@{{ $.Values.supervisor.image.digest }}"
+          imagePullPolicy: {{ $.Values.supervisor.image.pullPolicy }}
+          command: ["cp", "/registry-credentials/config.json", "{{ $dockerConfig }}/config.json"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $.Values.supervisor.resources | nindent 12 }}
+          volumeMounts:
+            - name: registry-credentials
+              mountPath: /registry-credentials
+              readOnly: true
+            - name: docker-config
+              mountPath: {{ $dockerConfig }}
+        {{- end }}
         - name: dockerd
           image: "{{ $r.docker.image.repository }}:{{ $r.docker.image.tag }}"
           imagePullPolicy: {{ $r.docker.image.pullPolicy }}
@@ -142,6 +171,11 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            {{- if $supervised }}
+            # The supervisor bind-mounts this into each agent container.
+            - name: docker-config
+              mountPath: {{ $dockerConfig }}
+            {{- end }}
             {{- if $accelerated }}
             - name: oci-accelerator-ca
               mountPath: /etc/oci-accelerator
@@ -171,6 +205,8 @@ spec:
               value: {{ $r.terminationGracePeriodSeconds | quote }}
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            - name: DOCKER_CONFIG
+              value: {{ $dockerConfig }}
           ports:
             - name: health
               containerPort: 8080
@@ -193,6 +229,8 @@ spec:
             - name: ephemeral-agent-scripts
               mountPath: /opt/ephemeral-agent
               readOnly: true
+            - name: docker-config
+              mountPath: {{ $dockerConfig }}
         {{- else }}
         - name: agent
           image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
@@ -229,6 +267,8 @@ spec:
               value: /buildkite/sockets
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            - name: DOCKER_CONFIG
+              value: {{ $dockerConfig }}
             {{- end }}
           ports:
             - name: health
@@ -250,6 +290,8 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            - name: docker-config
+              mountPath: {{ $dockerConfig }}
             {{- end }}
             {{- if $agentLoop }}
             - name: ephemeral-agent-scripts
@@ -323,6 +365,19 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: {{ $r.docker.storage.workspace }}
+        # Docker client configuration for the Pod's lifetime, shared by every
+        # job, so logins and buildx state persist across jobs.
+        - name: docker-config
+          emptyDir:
+            sizeLimit: 16Mi
+        {{- if $registryCredentials }}
+        - name: registry-credentials
+          secret:
+            secretName: {{ include "buildkite-operator.registryCredentialsSecretName" $ | quote }}
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+        {{- end }}
         {{- end }}
         {{- if $accelerated }}
         # Only the public certificate; the private key stays with the proxy.

@@ -25,7 +25,7 @@ ID="bk-supervisor-test-$$"
 
 cleanup() {
 	docker rm --force "${ID}-supervisor" "${ID}-dockerd" >/dev/null 2>&1 || true
-	docker volume rm "${ID}-run" "${ID}-workspace" >/dev/null 2>&1 || true
+	docker volume rm "${ID}-run" "${ID}-workspace" "${ID}-docker-config" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -49,10 +49,13 @@ agent_name() { inner inspect --format '{{range .Config.Env}}{{println .}}{{end}}
 agent_running() { [[ "$(inner inspect --format '{{.State.Running}}' buildkite-agent 2>/dev/null)" == true ]]; }
 new_agent_running() { agent_running && [[ "$(agent_name)" != "$1" ]]; }
 
+DOCKER_CONFIG_DIR=/etc/buildkite-agent/docker
 docker run --detach --privileged --name "${ID}-dockerd" \
 	--volume "${ID}-run:/var/run" --volume "${ID}-workspace:/buildkite" \
+	--volume "${ID}-docker-config:${DOCKER_CONFIG_DIR}" \
 	"${DIND_IMAGE}" dockerd --host=unix:///var/run/docker.sock >/dev/null
 wait_for "Docker daemon" inner info
+docker exec "${ID}-dockerd" sh -c "echo '{\"auths\":{}}' >${DOCKER_CONFIG_DIR}/config.json"
 
 # The stand-in agent checks the supervisor's arguments, records which agent
 # ran the job, and exits once the test releases it. Like the real agent, it
@@ -60,6 +63,9 @@ wait_for "Docker daemon" inner info
 docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /ctx && cat >/ctx/agent && chmod +x /ctx/agent' <<'EOF'
 #!/bin/sh
 [ "$*" = "start --disconnect-after-job" ] || { echo "unexpected arguments: $*" >&2; exit 64; }
+[ "$DOCKER_CONFIG" = /etc/buildkite-agent/docker ] && [ -f "$DOCKER_CONFIG/config.json" ] ||
+	{ echo "Docker client configuration missing" >&2; exit 65; }
+touch "$DOCKER_CONFIG/seen-$BUILDKITE_AGENT_NAME"
 mkdir -p /buildkite/builds
 touch "/buildkite/builds/$BUILDKITE_AGENT_NAME"
 draining=0
@@ -78,7 +84,9 @@ EOF
 
 docker run --detach --read-only --name "${ID}-supervisor" \
 	--volume "${ID}-run:/var/run" \
+	--volume "${ID}-docker-config:${DOCKER_CONFIG_DIR}" \
 	--volume "$(pwd)/${SCRIPT}:/opt/supervisor/supervisor.sh:ro" \
+	--env "DOCKER_CONFIG=${DOCKER_CONFIG_DIR}" \
 	--env AGENT_IMAGE=test-agent:1 --env BUILDKITE_AGENT_TOKEN=unused \
 	--env AGENT_TAGS=queue=test --env POD_NAME=runner-pod \
 	--env TERMINATION_GRACE_PERIOD_SECONDS=20 \
@@ -110,6 +118,9 @@ workspace=$(docker exec "${ID}-dockerd" ls -A /buildkite/builds)
 	exit 1
 }
 inner image inspect busybox:1.37 >/dev/null # Image cache is retained.
+# Every agent shares the Pod's Docker client configuration, which persists.
+docker exec "${ID}-dockerd" test -e "${DOCKER_CONFIG_DIR}/seen-${first}"
+wait_for "second agent's Docker client configuration" docker exec "${ID}-dockerd" test -e "${DOCKER_CONFIG_DIR}/seen-${second}"
 
 # Stopping the supervisor must let the in-flight job drain, not kill it at the
 # stop timeout.

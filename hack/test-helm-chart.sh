@@ -408,6 +408,137 @@ assert_fails "does not match pattern" \
 	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
 	"${accel_args[@]}" --set ociAccelerator.registries='{https://ghcr.io}'
 
+# Docker runners always share a writable Docker client configuration for the
+# Pod's lifetime; standard runners have none.
+docker_config_mount=$'- name: docker-config\n              mountPath: /etc/buildkite-agent/docker'
+docker_config_env=$'- name: DOCKER_CONFIG\n              value: /etc/buildkite-agent/docker'
+assert_contains "${dind_runner}" "${docker_config_env}"
+assert_contains "$(awk '/^        - name: agent$/,/^        - name: deletion-cost$/' <<<"${dind_runner}")" "${docker_config_mount}"
+supervisor_container=$(awk '/^        - name: supervisor$/,/^        - name: deletion-cost$/' <<<"${ephemeral_dind_runner}")
+assert_contains "${supervisor_container}" "${docker_config_env}"
+assert_contains "${supervisor_container}" "${docker_config_mount}"
+assert_contains "$(awk '/^        - name: dockerd$/,/^      containers:$/' <<<"${ephemeral_dind_runner}")" "${docker_config_mount}"
+assert_contains "${ephemeral}" '--volume "$DOCKER_CONFIG:$DOCKER_CONFIG"'
+for runner in "${dind_runner}" "${ephemeral_dind_runner}"; do
+	assert_contains "${runner}" $'- name: docker-config\n          emptyDir:\n            sizeLimit: 16Mi'
+	for unexpected in "imagePullSecrets:" "registry-credentials"; do
+		if [[ "${runner}" == *"${unexpected}"* ]]; then
+			echo "Runners without registry credentials rendered ${unexpected}" >&2
+			exit 1
+		fi
+	done
+done
+if [[ "$(document "${direct}" Deployment test-linux)" == *"docker-config"* || "${direct}" == *"DOCKER_CONFIG"* ]]; then
+	echo "Standard runners rendered a Docker client configuration" >&2
+	exit 1
+fi
+
+# Registry credentials become one dockerconfigjson Secret, used to pull every
+# Pod's images and copied into Docker runners' client configuration.
+credential_args=(
+	--set-string agentToken.value="${TOKEN}"
+	--set-string 'registryCredentials.auths[0].registry=https://index.docker.io/v1/'
+	--set-string 'registryCredentials.auths[0].username=hub-user'
+	--set-string 'registryCredentials.auths[0].password=hub-token'
+	--set-string 'registryCredentials.auths[1].registry=ghcr.io'
+	--set-string 'registryCredentials.auths[1].username=gh-user'
+	--set-string 'registryCredentials.auths[1].password=gh-token'
+)
+credentials=$("${HELM}" template test "${CHART_DIR}" --namespace buildkite-runners "${KEDA_API_VERSIONS[@]}" \
+	"${credential_args[@]}" --set ociAccelerator.enabled=true \
+	--set-string queues.std.queue=std --set queues.std.maxReplicas=1 \
+	--set-string queues.per.queue=per --set-string queues.per.runtime=dind --set queues.per.maxReplicas=1 \
+	--set-string queues.eph.queue=eph --set-string queues.eph.runtime=sysbox --set queues.eph.ephemeralAgent=true \
+	--set queues.eph.maxReplicas=1)
+credentials_secret=$(document "${credentials}" Secret test-buildkite-operator-registry-credentials)
+assert_contains "${credentials_secret}" "type: kubernetes.io/dockerconfigjson"
+dockerconfigjson=$(sed -n 's/^  \.dockerconfigjson: //p' <<<"${credentials_secret}" | base64 --decode)
+expected_config='{"auths":{"ghcr.io":{"auth":"'"$(printf 'gh-user:gh-token' | base64)"'","password":"gh-token","username":"gh-user"},"https://index.docker.io/v1/":{"auth":"'"$(printf 'hub-user:hub-token' | base64)"'","password":"hub-token","username":"hub-user"}}}'
+[[ "${dockerconfigjson}" == "${expected_config}" ]] || {
+	echo "Unexpected .dockerconfigjson: ${dockerconfigjson}" >&2
+	exit 1
+}
+pull_secret=$'imagePullSecrets:\n        - name: "test-buildkite-operator-registry-credentials"'
+for deployment in test-std test-per test-eph test-buildkite-operator-oci-accelerator; do
+	assert_contains "$(document "${credentials}" Deployment "${deployment}")" "${pull_secret}"
+	assert_contains "$(document "${credentials}" Deployment "${deployment}")" "checksum/registry-credentials:"
+done
+# Hooks run before the release's Secret exists on install and after it is
+# deleted on uninstall, so they pull with a copy that exists only while they run.
+hook_secret=$(document "${credentials}" Secret test-buildkite-operator-registry-credentials-hook)
+assert_contains "${hook_secret}" "helm.sh/hook: pre-install,pre-upgrade,post-delete"
+assert_contains "${hook_secret}" 'helm.sh/hook-weight: "-20"'
+assert_contains "${hook_secret}" "helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded,hook-failed"
+assert_contains "${hook_secret}" "type: kubernetes.io/dockerconfigjson"
+[[ "$(sed -n 's/^  \.dockerconfigjson: //p' <<<"${hook_secret}" | base64 --decode)" == "${expected_config}" ]] || {
+	echo "Hook registry credentials Secret differs from the release's" >&2
+	exit 1
+}
+if [[ "${credentials_secret}" == *"helm.sh/hook"* ]]; then
+	echo "The release's registry credentials Secret was rendered as a hook" >&2
+	exit 1
+fi
+for job in create delete; do
+	assert_contains "$(document "${credentials}" Job "test-buildkite-operator-oci-accelerator-ca-${job}")" \
+		$'imagePullSecrets:\n        - name: "test-buildkite-operator-registry-credentials-hook"'
+done
+# Without hook Jobs, there is no hook copy.
+for no_hooks in \
+	"$(render "${credential_args[@]}" --set-string queues.linux.runtime=dind)" \
+	"$(render "${credential_args[@]}" --set-string queues.linux.runtime=dind --set ociAccelerator.enabled=true \
+		--set-string ociAccelerator.ca.existingSecret.name=oci-ca)"; do
+	if [[ "${no_hooks}" == *"registry-credentials-hook"* ]]; then
+		echo "Hook registry credentials Secret rendered without hook Jobs" >&2
+		exit 1
+	fi
+done
+credentials_std=$(document "${credentials}" Deployment test-std)
+if [[ "${credentials_std}" == *"docker-config"* || "${credentials_std}" == *"- name: registry-credentials"* ]]; then
+	echo "Standard runners received Docker client credentials" >&2
+	exit 1
+fi
+copy_command='command: ["cp", "/registry-credentials/config.json", "/etc/buildkite-agent/docker/config.json"]'
+for deployment in test-per test-eph; do
+	credentials_runner=$(document "${credentials}" Deployment "${deployment}")
+	assert_contains "${credentials_runner}" $'initContainers:\n        # Copied rather than mounted so jobs can still docker login and keep\n        # buildx state alongside the credentials.\n        - name: docker-config'
+	assert_contains "${credentials_runner}" "${copy_command}"
+	assert_contains "${credentials_runner}" $'secretName: "test-buildkite-operator-registry-credentials"\n            items:\n              - key: .dockerconfigjson\n                path: config.json'
+done
+rotated_credentials=$(render "${credential_args[@]}" --set-string 'registryCredentials.auths[1].password=rotated')
+if [[ $(grep 'checksum/registry-credentials:' <<<"${credentials_std}") == $(grep 'checksum/registry-credentials:' <<<"${rotated_credentials}") ]]; then
+	echo "Registry credential rotation did not change the Pod template" >&2
+	exit 1
+fi
+existing_credentials=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=kata \
+	--set-string registryCredentials.existingSecret.name=hub-pull)
+assert_contains "${existing_credentials}" $'imagePullSecrets:\n        - name: "hub-pull"'
+assert_contains "${existing_credentials}" $'secretName: "hub-pull"\n            items:\n              - key: .dockerconfigjson'
+assert_contains "${existing_credentials}" "${copy_command}"
+if [[ "${existing_credentials}" == *"checksum/registry-credentials:"* || "${existing_credentials}" == *"kubernetes.io/dockerconfigjson"* ]]; then
+	echo "Existing registry credentials Secret mode rendered a Secret or checksum" >&2
+	exit 1
+fi
+# An existing Secret is created before install, so hooks use it directly.
+existing_credentials_hooks=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
+	--set ociAccelerator.enabled=true --set-string registryCredentials.existingSecret.name=hub-pull)
+assert_contains "$(document "${existing_credentials_hooks}" Job test-buildkite-operator-oci-accelerator-ca-create)" \
+	$'imagePullSecrets:\n        - name: "hub-pull"'
+if [[ "${existing_credentials_hooks}" == *"registry-credentials-hook"* || "${existing_credentials_hooks}" == *"kubernetes.io/dockerconfigjson"* ]]; then
+	echo "Existing registry credentials Secret mode rendered a hook Secret" >&2
+	exit 1
+fi
+assert_fails "set only one of registryCredentials.auths or registryCredentials.existingSecret.name" \
+	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
+	"${credential_args[@]}" --set-string registryCredentials.existingSecret.name=hub-pull
+assert_fails "registryCredentials.auths lists registry ghcr.io more than once" \
+	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
+	"${credential_args[@]}" --set-string 'registryCredentials.auths[0].registry=ghcr.io'
+assert_fails "missing property 'password'" \
+	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
+	--set-string agentToken.value="${TOKEN}" \
+	--set-string 'registryCredentials.auths[0].registry=ghcr.io' \
+	--set-string 'registryCredentials.auths[0].username=gh-user'
+
 # Entry names that YAML would read as numbers or booleans stay strings, as
 # Kubernetes label values must be.
 numeric=$("${HELM}" template test "${CHART_DIR}" \

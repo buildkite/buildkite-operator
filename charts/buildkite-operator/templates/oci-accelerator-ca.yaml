@@ -109,6 +109,9 @@ spec:
       serviceAccountName: {{ $hookName }}
       automountServiceAccountToken: false
       restartPolicy: Never
+      {{- with include "buildkite-operator.hookImagePullSecrets" $ }}
+      {{- . | nindent 6 }}
+      {{- end }}
       # The proxy's user, so the Secret step can read the generated private key.
       securityContext:
         runAsNonRoot: true

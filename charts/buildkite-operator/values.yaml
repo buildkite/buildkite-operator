@@ -36,7 +36,8 @@ defaults:
   #   - dind, kata, sysbox: a supervisor starts each agent as a fresh
   #     container in the Pod's Docker daemon and, between jobs, removes the
   #     job's containers, networks, volumes and the /buildkite workspace.
-  #     The daemon and its image and build caches persist.
+  #     The daemon and its image and build caches persist, as does the Docker
+  #     client configuration (DOCKER_CONFIG, including registry logins).
   # Ephemeral agents keep successive jobs' state apart; they are not a security
   # boundary between jobs. See the README's "Ephemeral agents".
   ephemeralAgent: false
@@ -255,6 +256,31 @@ metricsToken:
   existingSecret:
     name: ""
     key: authorization
+
+# Registry credentials for every Pod the release runs, and for the docker CLI
+# in dind, kata and sysbox runners. The kubelet uses them as imagePullSecrets
+# to pull the chart's own images. Runners with a Docker daemon also copy them
+# into the Docker client configuration (DOCKER_CONFIG) that jobs and ephemeral
+# agents share for the Pod's lifetime, so image pulls, runs and builds in jobs
+# are authenticated; standard runners get only imagePullSecrets. Any job can
+# read them.
+registryCredentials:
+  # The chart creates one kubernetes.io/dockerconfigjson Secret from these.
+  # Use https://index.docker.io/v1/ as the registry for Docker Hub, and an
+  # access token rather than an account password. Values set here are stored
+  # in Helm's release Secret.
+  auths: []
+  #  - registry: https://index.docker.io/v1/
+  #    username: myuser
+  #    password: dckr_pat_...
+  #  - registry: ghcr.io
+  #    username: myorg
+  #    password: ghp_...
+  # Or name an existing kubernetes.io/dockerconfigjson Secret in the release
+  # namespace, such as one from kubectl create secret docker-registry. The
+  # chart never creates or deletes it.
+  existingSecret:
+    name: ""
 
 # KEDA 2.20.0 must be installed separately and configured to watch this release
 # namespace. Disable validation only for offline rendering and linting, where

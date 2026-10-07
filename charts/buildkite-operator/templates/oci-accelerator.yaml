@@ -64,8 +64,15 @@ spec:
       labels:
         {{- include "buildkite-operator.labels" . | nindent 8 }}
         app.kubernetes.io/component: oci-accelerator
+      {{- with include "buildkite-operator.registryCredentialsChecksum" . }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
     spec:
       automountServiceAccountToken: false
+      {{- with include "buildkite-operator.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
       # Longer than the proxy's default 15 second drain.
       terminationGracePeriodSeconds: 40
       securityContext:

@@ -344,7 +344,7 @@ What is reset between jobs:
 | `runtime` | Reset | Persists |
 | --- | --- | --- |
 | `standard` | The agent process and its registration, and the contents of `/buildkite/builds` (checkouts) and `/buildkite/plugins`. | The Pod and its node, and the agent container with the rest of its filesystem: `/tmp`, the home directory, packages or tools a job installed, caches outside `/buildkite`, and any processes a job left running. |
-| `dind`, `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches. |
+| `dind`, `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches, and the Docker client configuration (`DOCKER_CONFIG`, including logins). |
 
 Ephemeral agents keep successive jobs' state apart; they are not a security
 boundary between them. Anything a job can reach that persists, such as files
@@ -446,6 +446,61 @@ runners can reach. The chart adds no node selector for `dind`, so place the
 proxy with `ociAccelerator.nodeSelector` and `tolerations`, for example on
 nodes tainted for `kata` or `sysbox`, or on dedicated system nodes. The hook
 Jobs that generate and delete the CA use the same placement.
+
+### Registry credentials
+
+To pull private images, or to avoid Docker Hub's anonymous rate limits, give
+the release registry credentials. They apply to every Pod and queue entry:
+
+```yaml
+registryCredentials:
+  auths:
+    - registry: https://index.docker.io/v1/
+      username: myuser
+      password: dckr_pat_...   # a Docker Hub access token
+    - registry: ghcr.io
+      username: myorg
+      password: ghp_...
+```
+
+The chart stores them in one `kubernetes.io/dockerconfigjson` Secret,
+`<release>-buildkite-operator-registry-credentials`. Values set this way are
+also kept in Helm's release Secret. To manage the Secret yourself instead,
+create it in the release namespace and set `registryCredentials.existingSecret.name`:
+
+```bash
+kubectl create secret docker-registry registry-credentials \
+  --namespace buildkite-operator-system \
+  --docker-server=https://index.docker.io/v1/ \
+  --docker-username=myuser \
+  --docker-password=dckr_pat_...
+```
+
+The credentials are used in two places:
+
+- The kubelet uses them as `imagePullSecrets` to pull the images of every Pod
+  the release runs: runners, the OCI accelerator, and the CA hook Jobs. Hooks
+  run before the chart-managed Secret is created on install and after it is
+  deleted on uninstall, so the hook Jobs use a copy,
+  `<release>-buildkite-operator-registry-credentials-hook`, that Helm creates
+  just before them and deletes once they finish.
+- `dind`, `kata` and `sysbox` runners copy them into the Docker client
+  configuration that jobs use. Docker daemons don't hold credentials
+  themselves; the `docker` CLI sends them with each pull, run and build.
+  `standard` runners have no Docker daemon, so they only get `imagePullSecrets`.
+
+Every `dind`, `kata` and `sysbox` runner Pod has a writable Docker client
+configuration directory, `/etc/buildkite-agent/docker`, set as `DOCKER_CONFIG`
+for the agent and, with ephemeral agents, for the supervisor and every agent
+container it starts. It lasts as long as the Pod and is shared by all of its
+jobs, persistent or ephemeral, so a job's own `docker login` and buildx state
+carry over to later jobs on that Pod. Credentials are copied in when the Pod
+starts. Any job can read them, so use tokens with only the access the
+queues' jobs need.
+
+Changing chart-managed credentials rolls the runner and proxy Pods. After
+changing an existing Secret, restart those Deployments yourself. Pulls through
+the [OCI accelerator](#image-pull-caching) use the credentials unchanged.
 
 ## Development
 

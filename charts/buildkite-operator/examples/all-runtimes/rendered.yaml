@@ -306,12 +306,16 @@ data:
     
     	agent_name="${POD_NAME}-$(random_suffix)"
     	log "Starting agent $agent_name"
+    	# DOCKER_CONFIG is at the same path in the Docker daemon's container, so
+    	# every agent shares the Pod's registry credentials and logins.
     	docker run --detach --pull never \
     		--name "$agent_container" \
     		--hostname "$POD_NAME" \
     		--publish 8080:8080 \
     		--volume /var/run/docker.sock:/var/run/docker.sock \
     		--volume /buildkite:/buildkite \
+    		--volume "$DOCKER_CONFIG:$DOCKER_CONFIG" \
+    		--env DOCKER_CONFIG \
     		--entrypoint /usr/local/bin/buildkite-agent \
     		--env BUILDKITE_AGENT_CONFIG=/dev/null \
     		--env BUILDKITE_AGENT_TOKEN \
@@ -523,6 +527,8 @@ spec:
               value: /buildkite/sockets
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            - name: DOCKER_CONFIG
+              value: /etc/buildkite-agent/docker
           ports:
             - name: health
               containerPort: 8080
@@ -541,6 +547,8 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            - name: docker-config
+              mountPath: /etc/buildkite-agent/docker
         - name: deletion-cost
           image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
           imagePullPolicy: IfNotPresent
@@ -605,6 +613,11 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi
+        # Docker client configuration for the Pod's lifetime, shared by every
+        # job, so logins and buildx state persist across jobs.
+        - name: docker-config
+          emptyDir:
+            sizeLimit: 16Mi
 
 ---
 # Source: buildkite-operator/templates/runners.yaml
@@ -734,6 +747,8 @@ spec:
               value: /buildkite/sockets
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            - name: DOCKER_CONFIG
+              value: /etc/buildkite-agent/docker
           ports:
             - name: health
               containerPort: 8080
@@ -752,6 +767,8 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            - name: docker-config
+              mountPath: /etc/buildkite-agent/docker
         - name: deletion-cost
           image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
           imagePullPolicy: IfNotPresent
@@ -816,6 +833,11 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi
+        # Docker client configuration for the Pod's lifetime, shared by every
+        # job, so logins and buildx state persist across jobs.
+        - name: docker-config
+          emptyDir:
+            sizeLimit: 16Mi
 
 ---
 # Source: buildkite-operator/templates/runners.yaml
@@ -1004,7 +1026,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
-        checksum/supervisor: 43ef4a1b3e8d34939bbcbfb4859b97da3c0eaff09ba3ad9d4d290cacddd9f297
+        checksum/supervisor: 68a77e216feab8600c7eaca5facaf9e12bc21d0cd745134480b2b52a6f654efa
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost
       automountServiceAccountToken: false
@@ -1060,6 +1082,9 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            # The supervisor bind-mounts this into each agent container.
+            - name: docker-config
+              mountPath: /etc/buildkite-agent/docker
       containers:
         - name: supervisor
           image: "docker:29.7.2-cli@sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"
@@ -1083,6 +1108,8 @@ spec:
               value: "3600"
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            - name: DOCKER_CONFIG
+              value: /etc/buildkite-agent/docker
           ports:
             - name: health
               containerPort: 8080
@@ -1110,6 +1137,8 @@ spec:
             - name: ephemeral-agent-scripts
               mountPath: /opt/ephemeral-agent
               readOnly: true
+            - name: docker-config
+              mountPath: /etc/buildkite-agent/docker
         - name: deletion-cost
           image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
           imagePullPolicy: IfNotPresent
@@ -1177,6 +1206,11 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi
+        # Docker client configuration for the Pod's lifetime, shared by every
+        # job, so logins and buildx state persist across jobs.
+        - name: docker-config
+          emptyDir:
+            sizeLimit: 16Mi
 
 ---
 # Source: buildkite-operator/templates/scaling.yaml
