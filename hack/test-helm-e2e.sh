@@ -338,7 +338,9 @@ fi
 "${HELM_CLUSTER[@]}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --wait --timeout 2m
 
 # The OCI accelerator caches pulls by the Docker daemon in a dind runner Pod,
-# with a CA the chart generates.
+# with a CA the chart generates. Its NetworkPolicy is enabled only after the
+# pulls: on some CI hosts, Kind's policy enforcement drops replies to the
+# proxy's own upstream connections, which the policy does not restrict.
 "${KUBECTL[@]}" create namespace "${ACCEL_NAMESPACE}"
 "${HELM_CLUSTER[@]}" install "${ACCEL_RELEASE}" "${CHART_DIR}" \
 	--namespace "${ACCEL_NAMESPACE}" \
@@ -354,6 +356,7 @@ fi
 	--set-string queues.accel.runtime=dind \
 	--set queues.accel.maxReplicas=1 \
 	--set ociAccelerator.enabled=true \
+	--set ociAccelerator.networkPolicy.enabled=false \
 	--set-string ociAccelerator.cache.size=1Gi \
 	--set ociAccelerator.cache.maxBytes=805306368 \
 	--set-string ociAccelerator.resources.requests.cpu=100m
@@ -411,9 +414,21 @@ if ! grep '"registry":"public.ecr.aws"' <<<"${accelerator_logs}" | grep -q '"cac
 	exit 1
 fi
 
-# Pods other than this release's runners cannot reach the proxy.
-blocked=$("${KUBECTL[@]}" run blocked-probe -n "${ACCEL_NAMESPACE}" --image="${ACCEL_IMAGE}" --restart=Never \
-	--rm -i --quiet --command -- wget -q -T 5 -O /dev/null "http://${ACCEL_NAME}:3128/ca.crt" 2>&1 || true)
+# With the NetworkPolicy, runner Pods still reach the proxy but other Pods
+# cannot. Enforcement can take a few seconds to apply.
+"${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values \
+	--set ociAccelerator.networkPolicy.enabled=true >/dev/null
+[[ "$(proxy_pod)" == "${proxy_before}" ]] || { echo "Enabling the NetworkPolicy replaced the proxy Pod" >&2; exit 1; }
+for _ in $(seq 1 6); do
+	blocked=$("${KUBECTL[@]}" run blocked-probe -n "${ACCEL_NAMESPACE}" --image="${ACCEL_IMAGE}" --restart=Never \
+		--rm -i --quiet --command -- wget -q -T 5 -O /dev/null "http://${ACCEL_NAME}:3128/ca.crt" 2>&1 || true)
+	[[ "${blocked}" == *"timed out"* ]] && break
+	sleep 2
+done
+[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]] || {
+	echo "NetworkPolicy blocked a runner Pod from the OCI accelerator" >&2
+	exit 1
+}
 [[ "${blocked}" == *"timed out"* ]] || {
 	echo "NetworkPolicy did not block a non-runner Pod from the OCI accelerator: ${blocked}" >&2
 	exit 1
