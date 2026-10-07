@@ -1,0 +1,1445 @@
+---
+# Source: buildkite-operator/templates/deletion-cost.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: buildkite-buildkite-operator-deletion-cost
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+automountServiceAccountToken: false
+
+---
+# Source: buildkite-operator/templates/deletion-cost.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkite-buildkite-operator-deletion-cost
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+data:
+  deletion_cost.py: |-
+    """Prefer removing idle agents during scale-in (best effort, not a drain).
+    
+    Busy agents get a pod-deletion-cost, which the ReplicaSet uses to pick scale-in
+    victims, and are marked not safe to evict, which stops Cluster Autoscaler from
+    removing their node.
+    """
+    
+    import http.client
+    import json
+    import os
+    import signal
+    import ssl
+    import sys
+    import time
+    import urllib.parse
+    import urllib.request
+    
+    
+    DELETION_COST = "controller.kubernetes.io/pod-deletion-cost"
+    SAFE_TO_EVICT = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    
+    
+    def agent_busy():
+        with urllib.request.urlopen("http://127.0.0.1:8080/status.json", timeout=2) as response:
+            status = json.loads(response.read(4096))["aggregate_status"]
+        if status == "idle":
+            return False
+        if status == "busy":
+            return True
+        raise ValueError(f"unknown agent status: {status}")
+    
+    
+    def annotations(busy):
+        if busy:
+            return {DELETION_COST: "100", SAFE_TO_EVICT: "false"}
+        # Removing the cost restores Kubernetes' implicit cost of 0. Idle Pods need
+        # an explicit "true": Cluster Autoscaler won't remove a node running Pods
+        # with disk-backed emptyDir volumes by default.
+        return {DELETION_COST: None, SAFE_TO_EVICT: "true"}
+    
+    
+    def patch_annotations(values):
+        namespace = urllib.parse.quote(os.environ["POD_NAMESPACE"], safe="")
+        name = urllib.parse.quote(os.environ["POD_NAME"], safe="")
+        host = os.environ["KUBERNETES_SERVICE_HOST"]
+        port = os.environ["KUBERNETES_SERVICE_PORT_HTTPS"]
+        url = f"https://{host}:{port}/api/v1/namespaces/{namespace}/pods/{name}"
+        with open(TOKEN_PATH, encoding="utf-8") as token:
+            authorization = f"Bearer {token.read().strip()}"
+        body = json.dumps({"metadata": {"annotations": values}}).encode()
+        request = urllib.request.Request(
+            url, data=body, method="PATCH",
+            headers={"Authorization": authorization, "Content-Type": "application/merge-patch+json"},
+        )
+        with urllib.request.urlopen(request, context=ssl.create_default_context(cafile=CA_PATH), timeout=3):
+            pass
+    
+    
+    def run():
+        applied = object()  # Reconcile on startup, including after a sidecar restart.
+        while True:
+            try:
+                busy = agent_busy()
+            # urllib only wraps connection errors in URLError; errors while reading
+            # the response, such as a reset while the agent restarts, surface raw.
+            except (OSError, http.client.HTTPException, ValueError, KeyError) as error:
+                print(f"Agent status unavailable; preferring retention: {error}", flush=True)
+                busy = True
+    
+            if busy != applied:
+                try:
+                    patch_annotations(annotations(busy))
+                except (OSError, http.client.HTTPException) as error:
+                    print(f"Could not update scale-in annotations; retrying: {error}", flush=True)
+                else:
+                    print(f"Marked Pod {'busy' if busy else 'idle'}", flush=True)
+                    applied = busy
+            time.sleep(1)
+    
+    
+    if __name__ == "__main__":
+        # The chart's shell wrapper exits on SIGTERM even before this handler is
+        # installed; this keeps the script responsive when run directly.
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        run()
+    
+
+---
+# Source: buildkite-operator/templates/ephemeral-agent.yaml
+# supervisor.sh runs kata and sysbox ephemeral agents; ephemeral-agent.sh runs
+# standard ones.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkite-buildkite-operator-ephemeral-agent
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+data:
+  ephemeral-agent.sh: |-
+    #!/bin/sh
+    # Runs ephemeral agents for the standard runtime: each agent disconnects after
+    # one job, then this loop clears the workspace and starts a newly registered
+    # agent. The container itself keeps running, so the kubelet's restart backoff
+    # never applies. Only the build and plugin directories are reset; the rest of
+    # the container's filesystem persists across jobs.
+    set -u
+    
+    base_name="${BUILDKITE_AGENT_NAME:?}"
+    build_path="${BUILDKITE_BUILD_PATH:?}"
+    plugins_path="${BUILDKITE_PLUGINS_PATH:?}"
+    stopping=0
+    agent_pid=""
+    
+    log() { printf 'ephemeral-agent: %s\n' "$*"; }
+    
+    # The kubelet signals only PID 1. The agent finishes its current job on the
+    # first SIGTERM but cancels it on a second, so forward exactly one.
+    shutdown() {
+    	if [ "$stopping" -eq 0 ] && [ -n "$agent_pid" ]; then
+    		log "Stopping agent"
+    		kill -TERM "$agent_pid" 2>/dev/null || true
+    	fi
+    	stopping=1
+    }
+    trap shutdown TERM INT
+    
+    # Waits in the background so a signal interrupts the shell's wait builtin.
+    pause() {
+    	sleep "$1" &
+    	wait $! || true
+    }
+    
+    # A fresh name per agent avoids colliding with the previous agent while
+    # Buildkite finishes disconnecting it.
+    random_suffix() {
+    	LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 4
+    }
+    
+    clean_workspace() {
+    	for dir in "$build_path" "$plugins_path"; do
+    		rm -rf "${dir:?}"/* "$dir"/.[!.]* "$dir"/..?* || return 1
+    	done
+    }
+    
+    while [ "$stopping" -eq 0 ]; do
+    	# A failure blocks the next agent so a job never starts on unclean state.
+    	if ! clean_workspace; then
+    		log "Could not clean workspace; retrying"
+    		pause 5
+    		continue
+    	fi
+    
+    	agent_name="${base_name}-$(random_suffix)"
+    	log "Starting agent $agent_name"
+    	BUILDKITE_AGENT_NAME="$agent_name" /usr/local/bin/buildkite-agent start --disconnect-after-job &
+    	agent_pid=$!
+    	# A signal that arrived before agent_pid was set was not forwarded. The new
+    	# agent cannot have a job yet, so a second SIGTERM here would be harmless.
+    	if [ "$stopping" -eq 1 ]; then
+    		kill -TERM "$agent_pid" 2>/dev/null || true
+    	fi
+    
+    	# wait returns early when a signal arrives; keep waiting for the agent.
+    	while :; do
+    		wait "$agent_pid"
+    		status=$?
+    		if [ "$status" -gt 128 ] && kill -0 "$agent_pid" 2>/dev/null; then
+    			continue
+    		fi
+    		break
+    	done
+    	agent_pid=""
+    
+    	if [ "$stopping" -eq 1 ]; then
+    		break
+    	fi
+    	log "Agent exited with status $status"
+    	if [ "$status" -ne 0 ]; then
+    		# Avoid re-registering in a tight loop when the agent cannot start.
+    		pause 5
+    	fi
+    done
+    log "Stopped"
+    
+  supervisor.sh: |-
+    #!/bin/sh
+    # Runs each Buildkite job in a fresh agent container inside the Pod's Docker
+    # daemon. The agent exits after one job; the supervisor clears the job's state
+    # and starts a replacement. The Pod, its node, and the Docker image and build
+    # caches persist across jobs.
+    set -u
+    
+    agent_container="buildkite-agent"
+    stopping=0
+    log_pid=""
+    
+    log() { printf 'supervisor: %s\n' "$*"; }
+    
+    stop_log_follower() {
+    	if [ -n "$log_pid" ]; then
+    		kill "$log_pid" >/dev/null 2>&1 || true
+    		wait "$log_pid" >/dev/null 2>&1 || true
+    		log_pid=""
+    	fi
+    }
+    
+    shutdown() {
+    	trap - TERM INT
+    	stopping=1
+    	log "Stopping agent"
+    	stop_log_follower
+    	if docker info >/dev/null 2>&1; then
+    		# Leave time for the daemon to stop after the agent drains its job.
+    		timeout=$((TERMINATION_GRACE_PERIOD_SECONDS - 10))
+    		if [ "$timeout" -lt 0 ]; then
+    			timeout=0
+    		fi
+    		docker stop --time "$timeout" "$agent_container" >/dev/null 2>&1 || true
+    	fi
+    	exit 0
+    }
+    
+    trap shutdown TERM INT
+    
+    wait_for_docker() {
+    	while ! docker info >/dev/null 2>&1; do
+    		if [ "$stopping" -eq 1 ]; then
+    			return 1
+    		fi
+    		sleep 1
+    	done
+    }
+    
+    agent_running() {
+    	[ "$(docker inspect --format '{{.State.Running}}' "$agent_container" 2>/dev/null)" = "true" ]
+    }
+    
+    # A fresh name per agent avoids colliding with the previous agent while
+    # Buildkite finishes disconnecting it.
+    random_suffix() {
+    	LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 4
+    }
+    
+    # Remove everything the previous job left in the daemon and workspace. The
+    # image and build caches are kept. A failure blocks the next agent so a job
+    # never starts on unclean state.
+    clean_job_state() {
+    	containers=$(docker ps --all --quiet) || return 1
+    	if [ -n "$containers" ]; then
+    		log "Removing $(printf '%s\n' "$containers" | wc -l | tr -d ' ') container(s)"
+    		# Docker's newline-separated IDs must be separate arguments.
+    		# shellcheck disable=SC2086
+    		docker rm --force --volumes $containers >/dev/null || return 1
+    	fi
+    	docker network prune --force >/dev/null || return 1
+    	docker volume prune --all --force >/dev/null || return 1
+    	# The supervisor cannot write the workspace, so clear the daemon's copy as
+    	# root in a throwaway container.
+    	docker run --rm --pull never --network none --user 0 --entrypoint /bin/sh \
+    		--volume /buildkite:/buildkite "$AGENT_IMAGE" \
+    		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?*' || return 1
+    	log "Cleaned job state"
+    }
+    
+    start_agent() {
+    	if ! docker image inspect "$AGENT_IMAGE" >/dev/null 2>&1; then
+    		log "Pulling $AGENT_IMAGE"
+    		docker pull --quiet "$AGENT_IMAGE" >/dev/null || return 1
+    	fi
+    
+    	clean_job_state || return 1
+    
+    	agent_name="${POD_NAME}-$(random_suffix)"
+    	log "Starting agent $agent_name"
+    	docker run --detach --pull never \
+    		--name "$agent_container" \
+    		--hostname "$POD_NAME" \
+    		--publish 8080:8080 \
+    		--volume /var/run/docker.sock:/var/run/docker.sock \
+    		--volume /buildkite:/buildkite \
+    		--entrypoint /usr/local/bin/buildkite-agent \
+    		--env BUILDKITE_AGENT_CONFIG=/dev/null \
+    		--env BUILDKITE_AGENT_TOKEN \
+    		--env "BUILDKITE_AGENT_NAME=$agent_name" \
+    		--env "BUILDKITE_AGENT_TAGS=$AGENT_TAGS" \
+    		--env BUILDKITE_AGENT_HEALTH_CHECK_ADDR=0.0.0.0:8080 \
+    		--env BUILDKITE_BUILD_PATH=/buildkite/builds \
+    		--env BUILDKITE_PLUGINS_PATH=/buildkite/plugins \
+    		--env BUILDKITE_SOCKETS_PATH=/buildkite/sockets \
+    		--env DOCKER_HOST=unix:///var/run/docker.sock \
+    		"$AGENT_IMAGE" start --disconnect-after-job >/dev/null
+    }
+    
+    follow_agent_logs() {
+    	if [ "$1" = "adopted" ]; then
+    		docker logs --tail 0 --follow "$agent_container" &
+    	else
+    		docker logs --follow "$agent_container" &
+    	fi
+    	log_pid=$!
+    }
+    
+    while [ "$stopping" -eq 0 ]; do
+    	wait_for_docker || break
+    
+    	if agent_running; then
+    		log "Adopting running agent"
+    		follow_agent_logs adopted
+    	elif start_agent; then
+    		follow_agent_logs new
+    	else
+    		log "Could not start agent; retrying"
+    		sleep 5
+    		continue
+    	fi
+    
+    	# Wait in the background so SIGTERM interrupts the shell's wait builtin.
+    	docker wait "$agent_container" >/dev/null 2>&1 &
+    	wait $! || true
+    	stop_log_follower
+    
+    	if [ "$stopping" -eq 1 ]; then
+    		break
+    	fi
+    	status=$(docker inspect --format '{{.State.ExitCode}}' "$agent_container" 2>/dev/null || echo unknown)
+    	log "Agent exited with status $status"
+    	if [ "$status" != "0" ]; then
+    		# Avoid re-registering in a tight loop when the agent cannot start.
+    		sleep 5
+    	fi
+    done
+    
+
+---
+# Source: buildkite-operator/templates/deletion-cost.yaml
+# Deployment Pods have generated names, so this Role cannot be limited to each
+# Pod patching only itself. Install the chart in a namespace dedicated to runners.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: buildkite-buildkite-operator-deletion-cost
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+
+---
+# Source: buildkite-operator/templates/deletion-cost.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: buildkite-buildkite-operator-deletion-cost
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: buildkite-buildkite-operator-deletion-cost
+subjects:
+  - kind: ServiceAccount
+    name: buildkite-buildkite-operator-deletion-cost
+    namespace: buildkite
+
+---
+# Source: buildkite-operator/templates/runners.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkite-docker
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    app.kubernetes.io/component: runner
+    buildkite.com/runner-pool: "docker"
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkite-operator
+      app.kubernetes.io/instance: buildkite
+      app.kubernetes.io/component: runner
+      buildkite.com/runner-pool: "docker"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-operator
+        app.kubernetes.io/instance: buildkite
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: buildkite-operator-0.8.1
+        app.kubernetes.io/component: runner
+        buildkite.com/runner-pool: "docker"
+      annotations:
+        # Treat agents as busy until the sidecar observes that they are idle.
+        controller.kubernetes.io/pod-deletion-cost: "100"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
+    spec:
+      serviceAccountName: buildkite-buildkite-operator-deletion-cost
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 3600
+      initContainers:
+        - name: dockerd
+          image: "docker:29.7.2-dind"
+          imagePullPolicy: IfNotPresent
+          restartPolicy: Always
+          args:
+            - dockerd
+            - --host=unix:///var/run/docker.sock
+          env:
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
+          # Pod's user namespace. Kata's is privileged, but only inside the VM.
+          # Dind's is privileged on the node itself, with host-level access.
+          securityContext:
+            privileged: true
+          startupProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 90
+          readinessProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "4"
+              ephemeral-storage: 50Gi
+              memory: 8Gi
+            requests:
+              cpu: "2"
+              ephemeral-storage: 15Gi
+              memory: 4Gi
+          volumeMounts:
+            - name: docker-data
+              mountPath: /var/lib/docker
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /buildkite
+      containers:
+        - name: agent
+          image: "buildkite/agent:4"
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/buildkite-agent"]
+          args: ["start"]
+          env:
+            - name: BUILDKITE_AGENT_CONFIG
+              value: /dev/null
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: "buildkite-agent-token"
+                  key: "token"
+            - name: BUILDKITE_AGENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BUILDKITE_AGENT_TAGS
+              value: "queue=docker,runtime=dind"
+            - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
+              value: 0.0.0.0:8080
+            - name: BUILDKITE_BUILD_PATH
+              value: /buildkite/builds
+            # The agent cannot check out plugins without a plugins path.
+            - name: BUILDKITE_PLUGINS_PATH
+              value: /buildkite/plugins
+            - name: BUILDKITE_SOCKETS_PATH
+              value: /buildkite/sockets
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          ports:
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+          resources:
+            {}
+          volumeMounts:
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /buildkite
+        - name: deletion-cost
+          image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
+          imagePullPolicy: IfNotPresent
+          # As PID 1, Python ignores SIGTERM until its handler is installed, so a
+          # Pod removed during startup would wait out the full grace period.
+          command:
+            - /bin/sh
+            - -c
+            - trap 'exit 0' TERM; python3 -u /opt/deletion-cost/deletion_cost.py & wait $!
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: deletion-cost-code
+              mountPath: /opt/deletion-cost
+              readOnly: true
+            - name: deletion-cost-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: deletion-cost-code
+          configMap:
+            name: buildkite-buildkite-operator-deletion-cost
+        - name: deletion-cost-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: docker-data
+          emptyDir:
+            sizeLimit: 40Gi
+        - name: docker-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: workspace
+          emptyDir:
+            sizeLimit: 10Gi
+
+---
+# Source: buildkite-operator/templates/runners.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkite-docker-builds
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    app.kubernetes.io/component: runner
+    buildkite.com/runner-pool: "docker-builds"
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkite-operator
+      app.kubernetes.io/instance: buildkite
+      app.kubernetes.io/component: runner
+      buildkite.com/runner-pool: "docker-builds"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-operator
+        app.kubernetes.io/instance: buildkite
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: buildkite-operator-0.8.1
+        app.kubernetes.io/component: runner
+        buildkite.com/runner-pool: "docker-builds"
+      annotations:
+        # Treat agents as busy until the sidecar observes that they are idle.
+        controller.kubernetes.io/pod-deletion-cost: "100"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
+    spec:
+      serviceAccountName: buildkite-buildkite-operator-deletion-cost
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 3600
+      runtimeClassName: sysbox-runc
+      hostUsers: false
+      nodeSelector:
+        experiments.buildkite.com/runtime: sysbox
+      tolerations:
+        - key: experiments.buildkite.com/runtime
+          operator: Equal
+          value: sysbox
+          effect: NoSchedule
+      initContainers:
+        - name: dockerd
+          image: "docker:29.7.2-dind"
+          imagePullPolicy: IfNotPresent
+          restartPolicy: Always
+          args:
+            - dockerd
+            - --host=unix:///var/run/docker.sock
+            - --storage-driver=overlay2
+          env:
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
+          # Pod's user namespace. Kata's is privileged, but only inside the VM.
+          # Dind's is privileged on the node itself, with host-level access.
+          securityContext:
+            privileged: false
+          startupProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 90
+          readinessProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "4"
+              ephemeral-storage: 50Gi
+              memory: 8Gi
+            requests:
+              cpu: "2"
+              ephemeral-storage: 15Gi
+              memory: 4Gi
+          volumeMounts:
+            - name: docker-data
+              mountPath: /var/lib/docker
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /buildkite
+      containers:
+        - name: agent
+          image: "buildkite/agent:4"
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/buildkite-agent"]
+          args: ["start"]
+          env:
+            - name: BUILDKITE_AGENT_CONFIG
+              value: /dev/null
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: "buildkite-agent-token"
+                  key: "token"
+            - name: BUILDKITE_AGENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BUILDKITE_AGENT_TAGS
+              value: "queue=docker-builds,runtime=sysbox"
+            - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
+              value: 0.0.0.0:8080
+            - name: BUILDKITE_BUILD_PATH
+              value: /buildkite/builds
+            # The agent cannot check out plugins without a plugins path.
+            - name: BUILDKITE_PLUGINS_PATH
+              value: /buildkite/plugins
+            - name: BUILDKITE_SOCKETS_PATH
+              value: /buildkite/sockets
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          ports:
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+          resources:
+            {}
+          volumeMounts:
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /buildkite
+        - name: deletion-cost
+          image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
+          imagePullPolicy: IfNotPresent
+          # As PID 1, Python ignores SIGTERM until its handler is installed, so a
+          # Pod removed during startup would wait out the full grace period.
+          command:
+            - /bin/sh
+            - -c
+            - trap 'exit 0' TERM; python3 -u /opt/deletion-cost/deletion_cost.py & wait $!
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: deletion-cost-code
+              mountPath: /opt/deletion-cost
+              readOnly: true
+            - name: deletion-cost-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: deletion-cost-code
+          configMap:
+            name: buildkite-buildkite-operator-deletion-cost
+        - name: deletion-cost-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: docker-data
+          emptyDir:
+            sizeLimit: 40Gi
+        - name: docker-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: workspace
+          emptyDir:
+            sizeLimit: 10Gi
+
+---
+# Source: buildkite-operator/templates/runners.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkite-linux
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    app.kubernetes.io/component: runner
+    buildkite.com/runner-pool: "linux"
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkite-operator
+      app.kubernetes.io/instance: buildkite
+      app.kubernetes.io/component: runner
+      buildkite.com/runner-pool: "linux"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-operator
+        app.kubernetes.io/instance: buildkite
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: buildkite-operator-0.8.1
+        app.kubernetes.io/component: runner
+        buildkite.com/runner-pool: "linux"
+      annotations:
+        # Treat agents as busy until the sidecar observes that they are idle.
+        controller.kubernetes.io/pod-deletion-cost: "100"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
+        checksum/ephemeral-agent: 5cfe4144e63263c6d7f0ddeb8bd60441ae6a1b3470fd1210072e2769fca6cfd6
+    spec:
+      serviceAccountName: buildkite-buildkite-operator-deletion-cost
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 3600
+      containers:
+        - name: agent
+          image: "buildkite/agent:4"
+          imagePullPolicy: Always
+          # Restarts the agent after each job without restarting the container.
+          command: ["/bin/sh", "/opt/ephemeral-agent/ephemeral-agent.sh"]
+          env:
+            - name: BUILDKITE_AGENT_CONFIG
+              value: /dev/null
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: "buildkite-agent-token"
+                  key: "token"
+            - name: BUILDKITE_AGENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BUILDKITE_AGENT_TAGS
+              value: "queue=linux,runtime=standard"
+            - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
+              value: 0.0.0.0:8080
+            - name: BUILDKITE_BUILD_PATH
+              value: /buildkite/builds
+            # The agent cannot check out plugins without a plugins path.
+            - name: BUILDKITE_PLUGINS_PATH
+              value: /buildkite/plugins
+          ports:
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+          resources:
+            {}
+          volumeMounts:
+            - name: ephemeral-agent-scripts
+              mountPath: /opt/ephemeral-agent
+              readOnly: true
+        - name: deletion-cost
+          image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
+          imagePullPolicy: IfNotPresent
+          # As PID 1, Python ignores SIGTERM until its handler is installed, so a
+          # Pod removed during startup would wait out the full grace period.
+          command:
+            - /bin/sh
+            - -c
+            - trap 'exit 0' TERM; python3 -u /opt/deletion-cost/deletion_cost.py & wait $!
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: deletion-cost-code
+              mountPath: /opt/deletion-cost
+              readOnly: true
+            - name: deletion-cost-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: deletion-cost-code
+          configMap:
+            name: buildkite-buildkite-operator-deletion-cost
+        - name: deletion-cost-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: ephemeral-agent-scripts
+          configMap:
+            name: buildkite-buildkite-operator-ephemeral-agent
+
+---
+# Source: buildkite-operator/templates/runners.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkite-untrusted
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    app.kubernetes.io/component: runner
+    buildkite.com/runner-pool: "untrusted"
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkite-operator
+      app.kubernetes.io/instance: buildkite
+      app.kubernetes.io/component: runner
+      buildkite.com/runner-pool: "untrusted"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-operator
+        app.kubernetes.io/instance: buildkite
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: buildkite-operator-0.8.1
+        app.kubernetes.io/component: runner
+        buildkite.com/runner-pool: "untrusted"
+      annotations:
+        # Treat agents as busy until the sidecar observes that they are idle.
+        controller.kubernetes.io/pod-deletion-cost: "100"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
+        checksum/supervisor: 43ef4a1b3e8d34939bbcbfb4859b97da3c0eaff09ba3ad9d4d290cacddd9f297
+    spec:
+      serviceAccountName: buildkite-buildkite-operator-deletion-cost
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 3600
+      runtimeClassName: kata-qemu-runtime-rs
+      nodeSelector:
+        experiments.buildkite.com/runtime: kata
+      tolerations:
+        - key: experiments.buildkite.com/runtime
+          operator: Equal
+          value: kata
+          effect: NoSchedule
+      initContainers:
+        - name: dockerd
+          image: "docker:29.7.2-dind"
+          imagePullPolicy: IfNotPresent
+          restartPolicy: Always
+          args:
+            - dockerd
+            - --host=unix:///var/run/docker.sock
+          env:
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
+          # Pod's user namespace. Kata's is privileged, but only inside the VM.
+          # Dind's is privileged on the node itself, with host-level access.
+          securityContext:
+            privileged: true
+          startupProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 90
+          readinessProbe:
+            exec:
+              command: [docker, info]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "4"
+              ephemeral-storage: 50Gi
+              memory: 8Gi
+            requests:
+              cpu: "2"
+              ephemeral-storage: 15Gi
+              memory: 4Gi
+          volumeMounts:
+            - name: docker-data
+              mountPath: /var/lib/docker
+            - name: docker-run
+              mountPath: /var/run
+            - name: workspace
+              mountPath: /buildkite
+      containers:
+        - name: supervisor
+          image: "docker:29.7.2-cli@sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "/opt/ephemeral-agent/supervisor.sh"]
+          env:
+            - name: AGENT_IMAGE
+              value: "buildkite/agent:4"
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: "buildkite-agent-token"
+                  key: "token"
+            - name: AGENT_TAGS
+              value: "queue=untrusted,runtime=kata"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TERMINATION_GRACE_PERIOD_SECONDS
+              value: "3600"
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+          ports:
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: docker-run
+              mountPath: /var/run
+            - name: ephemeral-agent-scripts
+              mountPath: /opt/ephemeral-agent
+              readOnly: true
+        - name: deletion-cost
+          image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
+          imagePullPolicy: IfNotPresent
+          # As PID 1, Python ignores SIGTERM until its handler is installed, so a
+          # Pod removed during startup would wait out the full grace period.
+          command:
+            - /bin/sh
+            - -c
+            - trap 'exit 0' TERM; python3 -u /opt/deletion-cost/deletion_cost.py & wait $!
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: deletion-cost-code
+              mountPath: /opt/deletion-cost
+              readOnly: true
+            - name: deletion-cost-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: deletion-cost-code
+          configMap:
+            name: buildkite-buildkite-operator-deletion-cost
+        - name: deletion-cost-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: ephemeral-agent-scripts
+          configMap:
+            name: buildkite-buildkite-operator-ephemeral-agent
+        - name: docker-data
+          emptyDir:
+            sizeLimit: 40Gi
+        - name: docker-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: workspace
+          emptyDir:
+            sizeLimit: 10Gi
+
+---
+# Source: buildkite-operator/templates/scaling.yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: buildkite-docker
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    buildkite.com/runner-pool: "docker"
+spec:
+  scaleTargetRef:
+    name: buildkite-docker
+  pollingInterval: 10
+  cooldownPeriod: 60
+  minReplicaCount: 1
+  maxReplicaCount: 4
+  advanced:
+    scalingModifiers:
+      formula: scheduled + running
+      target: "1"
+      activationTarget: "0"
+      metricType: AverageValue
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 5
+              periodSeconds: 15
+  triggers:
+    - type: metrics-api
+      name: scheduled
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.docker.scheduled"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+    - type: metrics-api
+      name: running
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.docker.running"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+
+---
+# Source: buildkite-operator/templates/scaling.yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: buildkite-docker-builds
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    buildkite.com/runner-pool: "docker-builds"
+spec:
+  scaleTargetRef:
+    name: buildkite-docker-builds
+  pollingInterval: 10
+  cooldownPeriod: 60
+  minReplicaCount: 0
+  maxReplicaCount: 4
+  advanced:
+    scalingModifiers:
+      formula: scheduled + running
+      target: "1"
+      activationTarget: "0"
+      metricType: AverageValue
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 5
+              periodSeconds: 15
+  triggers:
+    - type: metrics-api
+      name: scheduled
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.docker-builds.scheduled"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+    - type: metrics-api
+      name: running
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.docker-builds.running"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+
+---
+# Source: buildkite-operator/templates/scaling.yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: buildkite-linux
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    buildkite.com/runner-pool: "linux"
+spec:
+  scaleTargetRef:
+    name: buildkite-linux
+  pollingInterval: 10
+  cooldownPeriod: 60
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  advanced:
+    scalingModifiers:
+      formula: scheduled + running
+      target: "1"
+      activationTarget: "0"
+      metricType: AverageValue
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 5
+              periodSeconds: 15
+  triggers:
+    - type: metrics-api
+      name: scheduled
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.linux.scheduled"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+    - type: metrics-api
+      name: running
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.linux.running"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+
+---
+# Source: buildkite-operator/templates/scaling.yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: buildkite-untrusted
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    buildkite.com/runner-pool: "untrusted"
+spec:
+  scaleTargetRef:
+    name: buildkite-untrusted
+  pollingInterval: 10
+  cooldownPeriod: 60
+  minReplicaCount: 1
+  maxReplicaCount: 6
+  advanced:
+    scalingModifiers:
+      formula: scheduled + running
+      target: "1"
+      activationTarget: "0"
+      metricType: AverageValue
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 5
+              periodSeconds: 15
+  triggers:
+    - type: metrics-api
+      name: scheduled
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.untrusted.scheduled"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+    - type: metrics-api
+      name: running
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.untrusted.running"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+
+---
+# Source: buildkite-operator/templates/scaling.yaml
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: buildkite-buildkite-operator-metrics
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+spec:
+  secretTargetRef:
+    - parameter: apiKey
+      name: buildkite-metrics-token
+      key: authorization

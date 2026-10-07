@@ -65,6 +65,7 @@ describing the toolchain rather than branding the work.
 - `config/webhook/manifests.yaml` - from `make manifests`
 - `**/zz_generated.*.go` - from `make generate`
 - `PROJECT` - from `kubebuilder [OPTIONS]`
+- `charts/buildkite-operator/examples/*/rendered.yaml` - from `make helm-examples`
 
 ### Never Remove Scaffold Markers
 Do NOT delete `// +kubebuilder:scaffold:*` comments. CLI injects code at these markers.
@@ -86,6 +87,35 @@ Ensure you run them against a dedicated [Kind](https://kind.sigs.k8s.io/) cluste
 make manifests  # Regenerate CRDs/RBAC from markers
 make generate   # Regenerate DeepCopy methods
 ```
+
+**After editing anything under `charts/buildkite-operator/`** (templates, values,
+schema, `files/`, `Chart.yaml` or an example's `values.yaml`), before committing:
+```
+make helm-examples  # Regenerate charts/buildkite-operator/examples/*/rendered.yaml
+make test-helm      # Validate the chart
+```
+Review the diff in each `rendered.yaml` and commit it with the chart change.
+Never edit `rendered.yaml` by hand. CI fails when the rendered examples are out
+of date, and the pre-commit hook (`make install-hooks`) stops such commits.
+
+The examples are the smallest set of values files whose rendered output covers
+every significant branch in the chart: each runtime, persistent and ephemeral
+agents, chart-managed and existing token Secrets, and several queues sharing
+one release. Significant branching is a value that adds, removes or reshapes
+resources, containers, volumes or scheduling; values that only change a scalar
+in place, such as replica counts or image tags, don't count. When a change
+adds or removes significant branching, re-evaluate the examples:
+
+- **Added branch:** make sure some example renders it. Extend an existing
+  example's `values.yaml` where that stays readable. Otherwise add a new
+  `examples/<name>/values.yaml` with a header comment saying what it shows.
+- **Removed branch:** delete the values that exercised it, and update the
+  affected examples' header comments.
+- **Redundancy:** if an example, or a queue within one, no longer renders
+  anything the others don't, merge or delete it. Deleting a `values.yaml` makes
+  `make helm-examples` delete its `rendered.yaml`; remove the empty directory.
+
+Then run `make helm-examples`.
 
 **After editing `*.go` files:**
 ```

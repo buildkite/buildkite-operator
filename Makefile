@@ -154,6 +154,26 @@ test-helm: ## Validate the standalone Helm chart.
 	python3 hack/test_deletion_cost.py
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-chart.sh
 
+.PHONY: helm-examples
+helm-examples: ## Render each examples/<name>/values.yaml of the standalone chart into rendered.yaml.
+	@set -eu; \
+		for values in $(HELM_CHART_DIR)/examples/*/values.yaml; do \
+			dir="$$(dirname "$$values")"; \
+			$(HELM) template buildkite $(HELM_CHART_DIR) \
+				--namespace buildkite \
+				--api-versions keda.sh/v1alpha1/ScaledObject \
+				--api-versions keda.sh/v1alpha1/TriggerAuthentication \
+				--values "$$values" >"$$dir/rendered.yaml.tmp"; \
+			mv "$$dir/rendered.yaml.tmp" "$$dir/rendered.yaml"; \
+		done; \
+		for rendered in $(HELM_CHART_DIR)/examples/*/rendered.yaml; do \
+			[ -f "$$(dirname "$$rendered")/values.yaml" ] || rm "$$rendered"; \
+		done
+
+.PHONY: install-hooks
+install-hooks: ## Use the repository's Git hooks in .githooks.
+	git config core.hooksPath .githooks
+
 .PHONY: test-supervisor
 test-supervisor: ## Run the ephemeral-agent supervisor against a real Docker daemon.
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-supervisor.sh

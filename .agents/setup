@@ -30,3 +30,6 @@ time "$mise_bin" exec -- go mod download
 
 printf '%s\n' 'Installing repository build and test tools'
 time "$mise_bin" exec -- make kustomize controller-gen setup-envtest golangci-lint
+
+printf '%s\n' 'Enabling repository Git hooks'
+"$mise_bin" exec -- make install-hooks

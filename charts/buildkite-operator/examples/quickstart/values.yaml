@@ -1,0 +1,10 @@
+# One standard queue with persistent agents and a chart-managed token Secret.
+# Run `make helm-examples` after changing this file or the chart to update
+# rendered.yaml.
+agentToken:
+  value: example-agent-token
+
+queues:
+  linux:
+    queue: linux
+    maxReplicas: 4
