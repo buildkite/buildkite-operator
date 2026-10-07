@@ -7,6 +7,14 @@ examples=charts/buildkite-operator/examples
 
 git diff --cached --quiet -- charts/buildkite-operator && exit 0
 
+# The examples are rendered from the working tree, so it must match what is
+# being committed.
+if ! git diff --quiet -- charts/buildkite-operator ":!${examples}" ||
+	[[ -n "$(git ls-files --others --exclude-standard -- charts/buildkite-operator ":!${examples}")" ]]; then
+	echo "Stage or stash unstaged chart changes so the examples match the commit." >&2
+	exit 1
+fi
+
 make --no-print-directory helm-examples
 if ! git diff --quiet -- "${examples}" ||
 	[[ -n "$(git ls-files --others --exclude-standard -- "${examples}")" ]]; then
