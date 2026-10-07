@@ -1,0 +1,220 @@
+{{- $accelerator := .Values.ociAccelerator }}
+{{- if include "buildkite-operator.ociAcceleratorUsed" . }}
+{{- $registries := dict }}
+{{- range $registry := $accelerator.registries }}
+{{- $_ := set $registries (lower $registry | trimSuffix ":443") true }}
+{{- end }}
+{{- range $host := $accelerator.noProxy }}
+{{- if hasKey $registries (lower $host | trimSuffix ":443") }}
+{{- fail (printf "ociAccelerator.noProxy must not include %s, which is in ociAccelerator.registries" $host) }}
+{{- end }}
+{{- end }}
+{{- $managed := list "OCI_ACCELERATOR_REGISTRIES" "OCI_ACCELERATOR_LISTEN" "OCI_ACCELERATOR_METRICS_LISTEN" "OCI_ACCELERATOR_METRICS_ALLOW_REMOTE" "OCI_ACCELERATOR_CA_DIR" "OCI_ACCELERATOR_CACHE_DIR" "OCI_ACCELERATOR_CACHE_MAX_BYTES" }}
+{{- range $name := keys $accelerator.extraEnv | sortAlpha }}
+{{- if has $name $managed }}
+{{- fail (printf "ociAccelerator.extraEnv.%s is managed by the chart" $name) }}
+{{- end }}
+{{- end }}
+{{- $name := include "buildkite-operator.ociAcceleratorName" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: oci-accelerator
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: oci-accelerator
+  ports:
+    - name: proxy
+      port: 3128
+      targetPort: proxy
+      protocol: TCP
+---
+# Each proxy Pod caches in its own emptyDir, so more replicas would only split
+# the cache. A rollout starts the replacement before stopping the old Pod, so
+# pulls keep working; the new Pod starts with an empty cache.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: oci-accelerator
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: oci-accelerator
+  template:
+    metadata:
+      labels:
+        {{- include "buildkite-operator.labels" . | nindent 8 }}
+        app.kubernetes.io/component: oci-accelerator
+    spec:
+      automountServiceAccountToken: false
+      # Longer than the proxy's default 15 second drain.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with $accelerator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $accelerator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # The proxy requires private, non-symlink state directories owned by
+        # its user, which Secret and volume mounts do not provide directly.
+        - name: prepare-state
+          image: "{{ $accelerator.image.repository }}:{{ $accelerator.image.tag }}@{{ $accelerator.image.digest }}"
+          imagePullPolicy: {{ $accelerator.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              umask 077
+              mkdir -p /run/oci-accelerator/private /var/cache/oci-accelerator/private
+              chmod 0700 /run/oci-accelerator/private /var/cache/oci-accelerator/private
+              rm -rf /run/oci-accelerator/private/ca
+              mkdir /run/oci-accelerator/private/ca
+              cp /ca-source/ca.crt /ca-source/ca.key /run/oci-accelerator/private/ca/
+              chmod 0644 /run/oci-accelerator/private/ca/ca.crt
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $accelerator.resources | nindent 12 }}
+          volumeMounts:
+            - name: ca-source
+              mountPath: /ca-source
+              readOnly: true
+            - name: state
+              mountPath: /run/oci-accelerator
+            - name: cache
+              mountPath: /var/cache/oci-accelerator
+      containers:
+        - name: oci-accelerator
+          image: "{{ $accelerator.image.repository }}:{{ $accelerator.image.tag }}@{{ $accelerator.image.digest }}"
+          imagePullPolicy: {{ $accelerator.image.pullPolicy }}
+          env:
+            - name: OCI_ACCELERATOR_REGISTRIES
+              value: {{ join "," $accelerator.registries | quote }}
+            - name: OCI_ACCELERATOR_LISTEN
+              value: 0.0.0.0:3128
+            - name: OCI_ACCELERATOR_METRICS_LISTEN
+              value: 127.0.0.1:9090
+            - name: OCI_ACCELERATOR_CA_DIR
+              value: /run/oci-accelerator/private/ca
+            - name: OCI_ACCELERATOR_CACHE_DIR
+              value: /var/cache/oci-accelerator/private/cache
+            - name: OCI_ACCELERATOR_CACHE_MAX_BYTES
+              value: {{ int64 $accelerator.cache.maxBytes | toString | quote }}
+            {{- range $key := keys $accelerator.extraEnv | sortAlpha }}
+            - name: {{ $key }}
+              value: {{ get $accelerator.extraEnv $key | quote }}
+            {{- end }}
+          ports:
+            - name: proxy
+              containerPort: 3128
+          # Probes use the loopback metrics listener, so it is never exposed.
+          startupProbe:
+            exec:
+              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 90
+          readinessProbe:
+            exec:
+              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/livez]
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # Requesting the cache's size keeps the Pod off nodes without the disk
+          # for it, where it would be evicted once the cache filled.
+          resources:
+            {{- $requests := mergeOverwrite (dict "ephemeral-storage" $accelerator.cache.size) (deepCopy ($accelerator.resources.requests | default dict)) }}
+            {{- toYaml (merge (dict "requests" $requests) (deepCopy $accelerator.resources)) | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /run/oci-accelerator
+            - name: cache
+              mountPath: /var/cache/oci-accelerator
+      volumes:
+        - name: ca-source
+          secret:
+            secretName: {{ include "buildkite-operator.ociAcceleratorCASecretName" . | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ $accelerator.ca.existingSecret.certificateKey | quote }}
+                path: ca.crt
+              - key: {{ $accelerator.ca.existingSecret.privateKeyKey | quote }}
+                path: ca.key
+        - name: state
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: cache
+          emptyDir:
+            sizeLimit: {{ $accelerator.cache.size }}
+{{- if $accelerator.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: oci-accelerator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: oci-accelerator
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: runner
+      ports:
+        - port: proxy
+          protocol: TCP
+{{- end }}
+{{- end }}

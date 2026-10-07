@@ -75,6 +75,46 @@ over .Values.defaults, with the entry taking precedence.
 {{- printf "%s-ephemeral-agent" (include "buildkite-operator.fullname" . | trunc 47 | trimSuffix "-") }}
 {{- end }}
 
+{{- define "buildkite-operator.ociAcceleratorName" -}}
+{{- printf "%s-oci-accelerator" (include "buildkite-operator.fullname" . | trunc 36 | trimSuffix "-") }}
+{{- end }}
+
+{{/*
+Returns "true" when a queue entry's Docker daemon pulls through the OCI
+accelerator. Called with (dict "root" $ "settings" <entry settings>).
+*/}}
+{{- define "buildkite-operator.usesOciAccelerator" -}}
+{{- if and .root.Values.ociAccelerator.enabled (has .settings.runtime (list "dind" "kata" "sysbox")) .settings.docker.ociAccelerator -}}
+true
+{{- end }}
+{{- end }}
+
+{{/*
+Returns "true" when any queue entry pulls through the OCI accelerator, so the
+release installs it.
+*/}}
+{{- define "buildkite-operator.ociAcceleratorUsed" -}}
+{{- $root := . }}
+{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- if include "buildkite-operator.usesOciAccelerator" (dict "root" $root "settings" $entry.settings) }}
+{{- print "true" }}
+{{- break }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "buildkite-operator.ociAcceleratorCASecretName" -}}
+{{- .Values.ociAccelerator.ca.existingSecret.name | default (printf "%s-ca" (include "buildkite-operator.ociAcceleratorName" .)) }}
+{{- end }}
+
+{{- define "buildkite-operator.ociAcceleratorCAHookName" -}}
+{{- printf "%s-ca-hook" (include "buildkite-operator.ociAcceleratorName" .) }}
+{{- end }}
+
+{{- define "buildkite-operator.ociAcceleratorProxyURL" -}}
+{{- printf "http://%s.%s.svc:3128" (include "buildkite-operator.ociAcceleratorName" .) .Release.Namespace }}
+{{- end }}
+
 {{- define "buildkite-operator.agentTokenSecretRef" -}}
 {{- if .Values.agentToken.existingSecret.name -}}
 name: {{ .Values.agentToken.existingSecret.name | quote }}

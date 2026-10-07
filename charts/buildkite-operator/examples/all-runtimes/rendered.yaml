@@ -117,8 +117,8 @@ data:
 
 ---
 # Source: buildkite-operator/templates/ephemeral-agent.yaml
-# supervisor.sh runs kata and sysbox ephemeral agents; ephemeral-agent.sh runs
-# standard ones.
+# supervisor.sh runs dind, kata and sysbox ephemeral agents; ephemeral-agent.sh
+# runs standard ones.
 apiVersion: v1
 kind: ConfigMap
 metadata:

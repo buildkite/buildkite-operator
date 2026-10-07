@@ -286,6 +286,128 @@ assert_contains "${sysbox_scaling}" $'scaleDown:\n          stabilizationWindowS
 assert_contains "${sysbox_scaling}" 'valueLocation: "jobs.queues.build.scheduled"'
 assert_contains "${multi}" "name: test-buildkite-operator-ephemeral-agent"
 
+# The OCI accelerator serves Docker-backed entries that have not opted out.
+accel_args=(
+	--set-string agentToken.value="${TOKEN}"
+	--set ociAccelerator.enabled=true
+	--set-string ociAccelerator.ca.existingSecret.name=oci-ca
+)
+if [[ "${kata}" == *"oci-accelerator"* ]]; then
+	echo "OCI accelerator rendered while disabled" >&2
+	exit 1
+fi
+accel=$(render "${accel_args[@]}" --set-string queues.linux.runtime=sysbox \
+	--set ociAccelerator.noProxy='{registry.internal:5000}' \
+	--set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_CACHE_MAX_FILLS=32)
+for kind in Service NetworkPolicy; do
+	[[ $(count_kind "${accel}" "${kind}") -eq 1 ]] || { echo "Expected one OCI accelerator ${kind}" >&2; exit 1; }
+done
+[[ $(count_kind "${accel}" Deployment) -eq 2 ]] || { echo "Expected a runner and an OCI accelerator Deployment" >&2; exit 1; }
+if [[ "${accel}" == *"kind: StatefulSet"* || "${accel}" == *"PersistentVolumeClaim"* || "${accel}" == *"volumeClaimTemplates"* ]]; then
+	echo "OCI accelerator rendered persistent storage" >&2
+	exit 1
+fi
+accel_runner=$(document "${accel}" Deployment test-linux)
+assert_contains "${accel_runner}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
+assert_contains "${accel_runner}" "- --no-proxy=registry.internal:5000"
+assert_contains "${accel_runner}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/oci-accelerator'
+assert_contains "${accel_runner}" $'secretName: "oci-ca"\n            items:\n              - key: "ca.crt"\n                path: ca.crt'
+if [[ "${accel_runner}" == *'"ca.key"'* ]]; then
+	echo "Runner Pods mounted the OCI accelerator private key" >&2
+	exit 1
+fi
+accel_proxy=$(document "${accel}" Deployment test-buildkite-operator-oci-accelerator)
+assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.2.0@sha256:7eb5e9019057d099b2000e6880a3fec9ae00fa0b32db7eb4af504cf5e44520f7"'
+assert_contains "${accel_proxy}" 'value: "registry-1.docker.io,ghcr.io,public.ecr.aws"'
+assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CACHE_MAX_FILLS\n              value: "32"'
+assert_contains "${accel_proxy}" $'- name: cache\n          emptyDir:\n            sizeLimit: 20Gi'
+assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CACHE_MAX_BYTES\n              value: "19327352832"'
+assert_contains "${accel_proxy}" $'maxSurge: 1\n      maxUnavailable: 0'
+assert_contains "${accel_proxy}" $'requests:\n              cpu: 500m\n              ephemeral-storage: 20Gi\n              memory: 512Mi'
+# A request set in resources is kept, and limits are untouched.
+accel_storage=$(document "$(render "${accel_args[@]}" --set-string queues.linux.runtime=kata \
+	--set-string ociAccelerator.cache.size=8Gi --set ociAccelerator.cache.maxBytes=7516192768 \
+	--set-string ociAccelerator.resources.requests.ephemeral-storage=12Gi)" Deployment test-buildkite-operator-oci-accelerator)
+assert_contains "${accel_storage}" "sizeLimit: 8Gi"
+assert_contains "${accel_storage}" "ephemeral-storage: 12Gi"
+assert_contains "${accel_storage}" $'limits:\n              memory: 2Gi'
+assert_contains "${accel_proxy}" $'path: ca.key\n'
+assert_contains "$(document "${accel}" NetworkPolicy test-buildkite-operator-oci-accelerator)" "app.kubernetes.io/component: runner"
+accel_dind=$(document "$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind)" Deployment test-linux)
+assert_contains "${accel_dind}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
+assert_contains "${accel_dind}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/oci-accelerator'
+if [[ "${accel_dind}" == *'"ca.key"'* ]]; then
+	echo "dind runner Pods mounted the OCI accelerator private key" >&2
+	exit 1
+fi
+no_policy=$(render "${accel_args[@]}" --set-string queues.linux.runtime=kata --set ociAccelerator.networkPolicy.enabled=false)
+[[ $(count_kind "${no_policy}" NetworkPolicy) -eq 0 ]] || { echo "NetworkPolicy rendered while disabled" >&2; exit 1; }
+# Entries without a Docker daemon or that opt out pull directly, and with no
+# entry using it the accelerator is not installed.
+accel_opt_out=$("${HELM}" template test "${CHART_DIR}" "${KEDA_API_VERSIONS[@]}" "${accel_args[@]}" \
+	--set-string queues.std.queue=std --set queues.std.maxReplicas=1 \
+	--set-string queues.kata.queue=kata --set-string queues.kata.runtime=kata --set queues.kata.maxReplicas=1 \
+	--set queues.kata.docker.ociAccelerator=false)
+if [[ "${accel_opt_out}" == *"oci-accelerator"* || "${accel_opt_out}" == *"https-proxy"* ]]; then
+	echo "OCI accelerator rendered with no entry using it" >&2
+	exit 1
+fi
+[[ $(count_kind "${accel}" Job) -eq 0 ]] || { echo "CA hook Jobs rendered with an existing CA Secret" >&2; exit 1; }
+if [[ "${accel}" == *"oci-accelerator-ca\""* ]]; then
+	echo "Generated CA Secret referenced with an existing CA Secret" >&2
+	exit 1
+fi
+# The proxy loads the CA only from the Secret, so it never generates its own:
+# an existing CA directory stops it from initializing one.
+assert_contains "${accel_proxy}" "cp /ca-source/ca.crt /ca-source/ca.key /run/oci-accelerator/private/ca/"
+assert_contains "${accel_proxy}" $'- name: ca-source\n          secret:\n            secretName: "oci-ca"'
+assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CA_DIR\n              value: /run/oci-accelerator/private/ca'
+
+# Without an existing Secret, hook Jobs generate the CA with init-ca before
+# install and upgrade, and delete its Secret after uninstall.
+generated=$(render --set-string agentToken.value="${TOKEN}" --set ociAccelerator.enabled=true \
+	--set-string queues.linux.runtime=dind)
+generated_secret="test-buildkite-operator-oci-accelerator-ca"
+assert_contains "$(document "${generated}" Deployment test-buildkite-operator-oci-accelerator)" "secretName: \"${generated_secret}\""
+assert_contains "$(document "${generated}" Deployment test-linux)" "secretName: \"${generated_secret}\""
+[[ $(count_kind "${generated}" Job) -eq 2 ]] || { echo "Expected two CA hook Jobs" >&2; exit 1; }
+ca_create=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-create)
+assert_contains "${ca_create}" "helm.sh/hook: pre-install,pre-upgrade"
+assert_contains "${ca_create}" "oci-accelerator init-ca --dir /work/state/ca"
+assert_contains "${ca_create}" 'image: "buildkite/oci-accelerator:v0.2.0@sha256:7eb5e9019057d099b2000e6880a3fec9ae00fa0b32db7eb4af504cf5e44520f7"'
+assert_contains "${ca_create}" $'SECRET_NAME\n              value: "'"${generated_secret}"'"'
+ca_delete=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-delete)
+assert_contains "${ca_delete}" "helm.sh/hook: post-delete"
+assert_contains "${ca_delete}" '"/opt/oci-accelerator-ca/oci_accelerator_ca.py", "delete"'
+if [[ "${ca_delete}" == *"init-ca"* ]]; then
+	echo "CA delete Job generated a CA" >&2
+	exit 1
+fi
+ca_role=$(document "${generated}" Role test-buildkite-operator-oci-accelerator-ca-hook)
+assert_contains "${ca_role}" "helm.sh/hook: pre-install,pre-upgrade,post-delete"
+assert_contains "${ca_role}" $'resourceNames: ["'"${generated_secret}"$'"]\n    verbs: ["get", "delete"]'
+for kind in ServiceAccount RoleBinding ConfigMap; do
+	assert_contains "$(document "${generated}" "${kind}" test-buildkite-operator-oci-accelerator-ca-hook)" \
+		"helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded"
+done
+if [[ $(count_kind "${generated}" Secret) -ne 1 || "$(document "${generated}" Secret "${generated_secret}")" != "" ]]; then
+	echo "The chart rendered the CA Secret itself" >&2
+	exit 1
+fi
+if [[ "${accel_opt_out}" == *"ca-create"* ]]; then
+	echo "CA hook Jobs rendered with no entry using the accelerator" >&2
+	exit 1
+fi
+assert_fails "ociAccelerator.noProxy must not include ghcr.io:443" \
+	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 --set-string queues.linux.runtime=kata \
+	"${accel_args[@]}" --set ociAccelerator.noProxy='{ghcr.io:443}'
+assert_fails "ociAccelerator.extraEnv.OCI_ACCELERATOR_LISTEN is managed by the chart" \
+	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 --set-string queues.linux.runtime=kata \
+	"${accel_args[@]}" --set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_LISTEN=0.0.0.0:1
+assert_fails "does not match pattern" \
+	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
+	"${accel_args[@]}" --set ociAccelerator.registries='{https://ghcr.io}'
+
 # Entry names that YAML would read as numbers or booleans stay strings, as
 # Kubernetes label values must be.
 numeric=$("${HELM}" template test "${CHART_DIR}" \
@@ -344,6 +466,12 @@ assert_contains "${runtime_notes}" "kata needs RuntimeClass kata-qemu-runtime-rs
 assert_contains "${runtime_notes}" "sysbox needs RuntimeClass sysbox-runc and nodes labelled and tainted experiments.buildkite.com/runtime=sysbox"
 assert_contains "${runtime_notes}" '"RuntimeClass not found"'
 assert_contains "${runtime_notes}" "build-sysbox: queue build, sysbox, ephemeral agents, 1-4 runners"
+accel_notes=$(notes -f "${values_dir}/base.yaml" --set ociAccelerator.enabled=true \
+	--set-string ociAccelerator.ca.existingSecret.name=oci-ca --set queues.build-sysbox.docker.ociAccelerator=false)
+assert_contains "${accel_notes}" "Docker daemons for linux-kata pull through the OCI accelerator"
+assert_contains "${accel_notes}" "kubectl logs deployment/test-buildkite-operator-oci-accelerator"
+unused_accel_notes=$(notes --set ociAccelerator.enabled=true --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)
+assert_contains "${unused_accel_notes}" "no dind, kata or sysbox queue entry uses it"
 standard_notes=$(notes --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)
 assert_contains "${standard_notes}" "linux: queue linux, standard, persistent agents, 1-1 runners"
 if [[ "${standard_notes}" == *"RuntimeClass"* || "${standard_notes}" == *"privileged"* ]]; then

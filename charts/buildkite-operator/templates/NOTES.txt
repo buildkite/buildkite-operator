@@ -37,6 +37,30 @@ If runner Pods don't start, check the ReplicaSet events for "RuntimeClass not fo
 
 WARNING: dind needs nothing installed, but its privileged Docker daemon has host-level access to its node. It is not isolation: only run trusted jobs on dind queues.
 {{- end }}
+{{- if .Values.ociAccelerator.enabled }}
+{{- $accelerated := list }}
+{{- range $entry := $entries }}
+{{- if include "buildkite-operator.usesOciAccelerator" (dict "root" $ "settings" $entry.settings) }}
+{{- $accelerated = append $accelerated $entry.name }}
+{{- end }}
+{{- end }}
+{{- if $accelerated }}
+
+Docker daemons for {{ join ", " $accelerated }} pull through the OCI accelerator, caching {{ join ", " .Values.ociAccelerator.registries }}:
+
+  kubectl logs deployment/{{ include "buildkite-operator.ociAcceleratorName" . }} -c oci-accelerator -n {{ .Release.Namespace }}
+{{- if .Values.ociAccelerator.ca.existingSecret.name }}
+
+Pods read the CA Secret {{ .Values.ociAccelerator.ca.existingSecret.name }} only at startup. After replacing it, restart the proxy Deployment and those queues' Deployments.
+{{- else }}
+
+The chart generated the proxy's CA in Secret {{ include "buildkite-operator.ociAcceleratorCASecretName" . }}, which is deleted on uninstall. To rotate it, delete the Secret and run helm upgrade, then restart the proxy Deployment and those queues' Deployments.
+{{- end }}
+{{- else }}
+
+ociAccelerator.enabled is true, but no dind, kata or sysbox queue entry uses it, so it was not installed.
+{{- end }}
+{{- end }}
 {{- else }}
 No queues are configured, so no runners were installed. Add entries under queues.
 {{- end }}

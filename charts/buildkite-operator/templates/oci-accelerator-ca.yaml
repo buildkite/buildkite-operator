@@ -1,0 +1,215 @@
+{{- /*
+Without ca.existingSecret.name, hook Jobs generate the proxy's CA with
+oci-accelerator init-ca before install or upgrade, storing it in a Secret only
+if none exists, and delete that Secret after uninstall. Helm's own certificate
+functions cannot produce the CA profile the proxy requires. The Secret is not a
+release resource, so Helm never renders or stores the private key.
+*/}}
+{{- if and (include "buildkite-operator.ociAcceleratorUsed" .) (not .Values.ociAccelerator.ca.existingSecret.name) }}
+{{- $accelerator := .Values.ociAccelerator }}
+{{- $hookName := include "buildkite-operator.ociAcceleratorCAHookName" . }}
+{{- $secretName := include "buildkite-operator.ociAcceleratorCASecretName" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,post-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+automountServiceAccountToken: false
+---
+# Kubernetes cannot limit create to one Secret name. These objects exist only
+# while the hooks run.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,post-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $secretName | quote }}]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,post-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $hookName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $hookName }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,post-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  oci_accelerator_ca.py: |-
+{{ .Files.Get "files/oci_accelerator_ca.py" | indent 4 }}
+{{- range $action := list "create" "delete" }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-ca-%s" (include "buildkite-operator.ociAcceleratorName" $) $action }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: {{ ternary "pre-install,pre-upgrade" "post-delete" (eq $action "create") }}
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "buildkite-operator.name" $ }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: oci-accelerator-ca
+    spec:
+      serviceAccountName: {{ $hookName }}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      # The proxy's user, so the Secret step can read the generated private key.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # The Pod briefly holds the CA private key, so it runs where the proxy does.
+      {{- with $accelerator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $accelerator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if eq $action "create" }}
+      initContainers:
+        # init-ca requires an owner-controlled parent directory, which an
+        # emptyDir mount is not.
+        - name: init-ca
+          image: "{{ $accelerator.image.repository }}:{{ $accelerator.image.tag }}@{{ $accelerator.image.digest }}"
+          imagePullPolicy: {{ $accelerator.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - mkdir -m 0700 /work/state && oci-accelerator init-ca --dir /work/state/ca
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $.Values.deletionCost.resources | nindent 12 }}
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      {{- end }}
+      containers:
+        # Reuses the chart's pinned Python image to call the Kubernetes API.
+        - name: {{ $action }}-secret
+          image: "{{ $.Values.deletionCost.image.repository }}:{{ $.Values.deletionCost.image.tag }}@{{ $.Values.deletionCost.image.digest }}"
+          imagePullPolicy: {{ $.Values.deletionCost.image.pullPolicy }}
+          command: ["python3", "-u", "/opt/oci-accelerator-ca/oci_accelerator_ca.py", {{ $action | quote }}]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SECRET_NAME
+              value: {{ $secretName | quote }}
+            {{- if eq $action "create" }}
+            - name: CERTIFICATE_KEY
+              value: {{ $accelerator.ca.existingSecret.certificateKey | quote }}
+            - name: PRIVATE_KEY_KEY
+              value: {{ $accelerator.ca.existingSecret.privateKeyKey | quote }}
+            - name: CA_DIR
+              value: /work/state/ca
+            - name: SECRET_LABELS
+              value: {{ dict "app.kubernetes.io/name" (include "buildkite-operator.name" $) "app.kubernetes.io/instance" $.Release.Name "app.kubernetes.io/component" "oci-accelerator-ca" | toJson | quote }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $.Values.deletionCost.resources | nindent 12 }}
+          volumeMounts:
+            - name: code
+              mountPath: /opt/oci-accelerator-ca
+              readOnly: true
+            - name: api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- if eq $action "create" }}
+            - name: work
+              mountPath: /work
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: code
+          configMap:
+            name: {{ $hookName }}
+        - name: api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        {{- if eq $action "create" }}
+        - name: work
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- end }}
+{{- end }}
+{{- end }}

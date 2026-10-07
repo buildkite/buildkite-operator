@@ -82,6 +82,9 @@ defaults:
     storage:
       data: 40Gi
       workspace: 10Gi
+    # Pull images through the release's OCI accelerator when
+    # ociAccelerator.enabled is true. Set false on an entry to pull directly.
+    ociAccelerator: true
 
 # One entry per Buildkite queue, keyed by a short name used in resource names
 # (<release>-<name>). Each entry becomes a runner pool: a Deployment of runner
@@ -158,7 +161,8 @@ supervisor:
 # Always-on scale-in preference: a sidecar marks busy or unknown agents with
 # pod-deletion-cost 100 and removes the annotation from idle agents. It needs
 # permission to patch Pods in the release namespace. The digest pins the
-# multi-platform image index for the tag.
+# multi-platform image index for the tag. The image and resources are also used
+# by the hook Jobs that manage a generated OCI accelerator CA.
 deletionCost:
   image:
     repository: python
@@ -172,6 +176,69 @@ deletionCost:
     limits:
       cpu: 100m
       memory: 64Mi
+
+# Caching HTTPS proxy for image pulls by the dind, kata and sysbox Docker
+# daemons (https://github.com/buildkite/oci-accelerator). One instance per release
+# caches registry content on its node's disk and serves every queue entry with
+# docker.ociAccelerator enabled. Each daemon sends all of its HTTPS traffic
+# through the proxy, so pulls fail while the proxy is unavailable.
+ociAccelerator:
+  enabled: false
+  # Registries whose digest-addressed manifests and blobs are cached, as host
+  # or host:port. Use registry-1.docker.io for Docker Hub. Traffic to other
+  # hosts passes through the proxy uncached.
+  registries:
+    - registry-1.docker.io
+    - ghcr.io
+    - public.ecr.aws
+  # Hosts the Docker daemons reach directly instead of through the proxy, such
+  # as private registries the proxy cannot reach. Must not include registries.
+  noProxy: []
+  # Root CA the proxy signs registry certificates with. Runner Docker daemons
+  # are given only the certificate. With no existingSecret.name, a hook Job
+  # generates the CA with "oci-accelerator init-ca" into a
+  # <release>-...-oci-accelerator-ca Secret if it does not exist, and deletes
+  # that Secret on uninstall. To provide your own, set existingSecret.name to a
+  # Secret in the release namespace holding both files (see the README); the
+  # chart never creates or deletes it.
+  ca:
+    existingSecret:
+      name: ""
+      certificateKey: ca.crt
+      privateKeyKey: ca.key
+  # The cache is an emptyDir on the proxy's node, so it outlives runner Pods
+  # but starts empty whenever the proxy Pod is replaced, such as on upgrades
+  # that change it or when its node is removed.
+  cache:
+    # The emptyDir's size limit. The proxy also requests this much
+    # ephemeral-storage unless resources.requests sets it, so it needs a node
+    # with this much free disk alongside the runners there.
+    size: 20Gi
+    # Bytes the cache may use, including 4 KiB metadata per entry. Keep it
+    # below size to leave room for filesystem overhead.
+    maxBytes: 19327352832
+  # Additional OCI_ACCELERATOR_* settings, such as
+  # OCI_ACCELERATOR_CACHE_MAX_FILLS: "32". Settings the chart manages
+  # (registries, listeners, state directories and maxBytes) cannot be set here.
+  extraEnv: {}
+  # Admit proxy connections only from this release's runner Pods. Requires a
+  # network plugin that enforces NetworkPolicy.
+  networkPolicy:
+    enabled: true
+  nodeSelector: {}
+  tolerations: []
+  # The digest pins the multi-platform image index for the tag.
+  image:
+    repository: buildkite/oci-accelerator
+    tag: v0.2.0
+    digest: sha256:7eb5e9019057d099b2000e6880a3fec9ae00fa0b32db7eb4af504cf5e44520f7
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
 
 agentToken:
   value: ""
