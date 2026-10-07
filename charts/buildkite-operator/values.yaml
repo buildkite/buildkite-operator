@@ -230,8 +230,8 @@ ociAccelerator:
   # The digest pins the multi-platform image index for the tag.
   image:
     repository: buildkite/oci-accelerator
-    tag: v0.2.0
-    digest: sha256:7eb5e9019057d099b2000e6880a3fec9ae00fa0b32db7eb4af504cf5e44520f7
+    tag: v0.2.1
+    digest: sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf
     pullPolicy: IfNotPresent
   resources:
     requests:

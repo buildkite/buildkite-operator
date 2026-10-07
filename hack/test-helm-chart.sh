@@ -317,7 +317,7 @@ if [[ "${accel_runner}" == *'"ca.key"'* ]]; then
 	exit 1
 fi
 accel_proxy=$(document "${accel}" Deployment test-buildkite-operator-oci-accelerator)
-assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.2.0@sha256:7eb5e9019057d099b2000e6880a3fec9ae00fa0b32db7eb4af504cf5e44520f7"'
+assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.2.1@sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf"'
 assert_contains "${accel_proxy}" 'value: "registry-1.docker.io,ghcr.io,public.ecr.aws"'
 assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CACHE_MAX_FILLS\n              value: "32"'
 assert_contains "${accel_proxy}" $'- name: cache\n          emptyDir:\n            sizeLimit: 20Gi'
@@ -374,7 +374,7 @@ assert_contains "$(document "${generated}" Deployment test-linux)" "secretName: 
 ca_create=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-create)
 assert_contains "${ca_create}" "helm.sh/hook: pre-install,pre-upgrade"
 assert_contains "${ca_create}" "oci-accelerator init-ca --dir /work/state/ca"
-assert_contains "${ca_create}" 'image: "buildkite/oci-accelerator:v0.2.0@sha256:7eb5e9019057d099b2000e6880a3fec9ae00fa0b32db7eb4af504cf5e44520f7"'
+assert_contains "${ca_create}" 'image: "buildkite/oci-accelerator:v0.2.1@sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf"'
 assert_contains "${ca_create}" $'SECRET_NAME\n              value: "'"${generated_secret}"'"'
 ca_delete=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-delete)
 assert_contains "${ca_delete}" "helm.sh/hook: post-delete"

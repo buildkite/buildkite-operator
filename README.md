@@ -390,7 +390,7 @@ create it once and store it in a Secret in the release namespace. This runs
 
 ```bash
 mkdir -m 0700 oci-accelerator-ca
-docker run --rm --entrypoint /bin/sh buildkite/oci-accelerator:v0.2.0 -ec \
+docker run --rm --entrypoint /bin/sh buildkite/oci-accelerator:v0.2.1 -ec \
   'mkdir -m 0700 /tmp/state; oci-accelerator init-ca --dir /tmp/state/ca >&2; tar -C /tmp/state/ca -cf - ca.crt ca.key' |
   tar -C oci-accelerator-ca -xf -
 kubectl create secret generic oci-accelerator-ca \
