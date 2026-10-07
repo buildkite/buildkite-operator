@@ -366,8 +366,8 @@ make install-hooks    # use the Git hooks in .githooks
 Each directory under `charts/buildkite-operator/examples` pairs a
 `values.yaml` with the `rendered.yaml` that `helm template` produces from it,
 so chart changes show up as manifest diffs in review. The pre-commit hook
-installed by `make install-hooks` updates them when a commit changes the chart,
-and stops the commit so you can review and stage them.
+installed by `make install-hooks` renders the staged chart and stops the commit
+if the staged examples don't match. Unstaged changes are ignored.
 
 CI runs the checks, and also fails if the rendered examples are out of date.
 The end-to-end check deletes its isolated Kind cluster when it finishes, which

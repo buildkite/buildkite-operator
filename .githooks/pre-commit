@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
-# Refuses commits that change the standalone chart without updating its
-# rendered examples. Enable with `make install-hooks`. CI runs the same check.
+# Refuses commits whose staged chart examples don't match the staged chart.
+# Only the index is checked, so unstaged changes neither cause nor hide a
+# mismatch. Enable with `make install-hooks`. CI runs the same check.
 set -euo pipefail
 
-examples=charts/buildkite-operator/examples
+chart=charts/buildkite-operator
 
-git diff --cached --quiet -- charts/buildkite-operator && exit 0
+git diff --cached --quiet -- "${chart}" && exit 0
 
-# The examples are rendered from the working tree, so it must match what is
-# being committed.
-if ! git diff --quiet -- charts/buildkite-operator ":!${examples}" ||
-	[[ -n "$(git ls-files --others --exclude-standard -- charts/buildkite-operator ":!${examples}")" ]]; then
-	echo "Stage or stash unstaged chart changes so the examples match the commit." >&2
-	exit 1
-fi
+staged=$(mktemp -d)
+trap 'rm -rf "${staged}"' EXIT
+git ls-files -z -- "${chart}" | git checkout-index -z --stdin --prefix="${staged}/"
+cp -R "${staged}/${chart}/examples" "${staged}/examples-before"
 
-make --no-print-directory helm-examples
-if ! git diff --quiet -- "${examples}" ||
-	[[ -n "$(git ls-files --others --exclude-standard -- "${examples}")" ]]; then
-	echo "The chart's rendered examples were out of date and have been updated." >&2
-	echo "Review and stage them, then commit again: git add ${examples}" >&2
+make --no-print-directory helm-examples HELM_CHART_DIR="${staged}/${chart}"
+if ! changed=$(diff -rq "${staged}/examples-before" "${staged}/${chart}/examples"); then
+	echo "The staged chart examples don't match the staged chart:" >&2
+	awk '/^Files / { print $2 } /^Only in / { sub(/:$/, "", $3); print $3 "/" $4 }' <<<"${changed}" |
+		sed "s|^${staged}/examples-before|${chart}/examples|; s|^${staged}/||; s|^|  |" >&2
+	echo "Run make helm-examples, then stage the result: git add ${chart}/examples" >&2
 	exit 1
 fi
