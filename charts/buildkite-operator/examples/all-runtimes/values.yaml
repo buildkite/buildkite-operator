@@ -1,0 +1,34 @@
+# The README's queue examples in one release: every runtime, persistent and
+# ephemeral agents, scale to zero, and tokens from existing Secrets. Run
+# `make helm-examples` after changing this file or the chart to update
+# rendered.yaml.
+agentToken:
+  existingSecret:
+    name: buildkite-agent-token
+
+metricsToken:
+  existingSecret:
+    name: buildkite-metrics-token
+
+queues:
+  linux:
+    queue: linux
+    ephemeralAgent: true
+    maxReplicas: 10
+
+  docker-builds:
+    queue: docker-builds
+    runtime: sysbox
+    minReplicas: 0
+    maxReplicas: 4
+
+  docker:
+    queue: docker
+    runtime: dind
+    maxReplicas: 4
+
+  untrusted:
+    queue: untrusted
+    runtime: kata
+    ephemeralAgent: true
+    maxReplicas: 6

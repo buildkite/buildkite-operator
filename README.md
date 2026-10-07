@@ -355,14 +355,23 @@ cache, remains available to later jobs.
 
 ```bash
 make test-helm        # lint and render the standalone chart
+make helm-examples    # update the chart's rendered examples
 make test-supervisor  # run the ephemeral-agent supervisor against Docker
 make test-helm-e2e    # install and uninstall the chart in isolated Kind
 make lint             # golangci-lint
 make test             # Go tests and generated-file checks
+make install-hooks    # use the Git hooks in .githooks
 ```
 
-CI runs all five checks. The end-to-end check deletes its isolated Kind cluster
-when it finishes, which may clear the current kubeconfig context.
+Each directory under `charts/buildkite-operator/examples` pairs a
+`values.yaml` with the `rendered.yaml` that `helm template` produces from it,
+so chart changes show up as manifest diffs in review. The pre-commit hook
+installed by `make install-hooks` updates them when a commit changes the chart,
+and stops the commit so you can review and stage them.
+
+CI runs the checks, and also fails if the rendered examples are out of date.
+The end-to-end check deletes its isolated Kind cluster when it finishes, which
+may clear the current kubeconfig context.
 
 ## License
 

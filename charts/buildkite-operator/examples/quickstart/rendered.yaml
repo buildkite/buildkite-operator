@@ -1,0 +1,394 @@
+---
+# Source: buildkite-operator/templates/deletion-cost.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: buildkite-buildkite-operator-deletion-cost
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+automountServiceAccountToken: false
+
+---
+# Source: buildkite-operator/templates/agent-token-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: buildkite-buildkite-operator-agent-token
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+type: Opaque
+stringData:
+  token: "example-agent-token"
+  authorization: "Token example-agent-token"
+
+---
+# Source: buildkite-operator/templates/deletion-cost.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkite-buildkite-operator-deletion-cost
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+data:
+  deletion_cost.py: |-
+    """Prefer removing idle agents during scale-in (best effort, not a drain).
+    
+    Busy agents get a pod-deletion-cost, which the ReplicaSet uses to pick scale-in
+    victims, and are marked not safe to evict, which stops Cluster Autoscaler from
+    removing their node.
+    """
+    
+    import http.client
+    import json
+    import os
+    import signal
+    import ssl
+    import sys
+    import time
+    import urllib.parse
+    import urllib.request
+    
+    
+    DELETION_COST = "controller.kubernetes.io/pod-deletion-cost"
+    SAFE_TO_EVICT = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    
+    
+    def agent_busy():
+        with urllib.request.urlopen("http://127.0.0.1:8080/status.json", timeout=2) as response:
+            status = json.loads(response.read(4096))["aggregate_status"]
+        if status == "idle":
+            return False
+        if status == "busy":
+            return True
+        raise ValueError(f"unknown agent status: {status}")
+    
+    
+    def annotations(busy):
+        if busy:
+            return {DELETION_COST: "100", SAFE_TO_EVICT: "false"}
+        # Removing the cost restores Kubernetes' implicit cost of 0. Idle Pods need
+        # an explicit "true": Cluster Autoscaler won't remove a node running Pods
+        # with disk-backed emptyDir volumes by default.
+        return {DELETION_COST: None, SAFE_TO_EVICT: "true"}
+    
+    
+    def patch_annotations(values):
+        namespace = urllib.parse.quote(os.environ["POD_NAMESPACE"], safe="")
+        name = urllib.parse.quote(os.environ["POD_NAME"], safe="")
+        host = os.environ["KUBERNETES_SERVICE_HOST"]
+        port = os.environ["KUBERNETES_SERVICE_PORT_HTTPS"]
+        url = f"https://{host}:{port}/api/v1/namespaces/{namespace}/pods/{name}"
+        with open(TOKEN_PATH, encoding="utf-8") as token:
+            authorization = f"Bearer {token.read().strip()}"
+        body = json.dumps({"metadata": {"annotations": values}}).encode()
+        request = urllib.request.Request(
+            url, data=body, method="PATCH",
+            headers={"Authorization": authorization, "Content-Type": "application/merge-patch+json"},
+        )
+        with urllib.request.urlopen(request, context=ssl.create_default_context(cafile=CA_PATH), timeout=3):
+            pass
+    
+    
+    def run():
+        applied = object()  # Reconcile on startup, including after a sidecar restart.
+        while True:
+            try:
+                busy = agent_busy()
+            # urllib only wraps connection errors in URLError; errors while reading
+            # the response, such as a reset while the agent restarts, surface raw.
+            except (OSError, http.client.HTTPException, ValueError, KeyError) as error:
+                print(f"Agent status unavailable; preferring retention: {error}", flush=True)
+                busy = True
+    
+            if busy != applied:
+                try:
+                    patch_annotations(annotations(busy))
+                except (OSError, http.client.HTTPException) as error:
+                    print(f"Could not update scale-in annotations; retrying: {error}", flush=True)
+                else:
+                    print(f"Marked Pod {'busy' if busy else 'idle'}", flush=True)
+                    applied = busy
+            time.sleep(1)
+    
+    
+    if __name__ == "__main__":
+        # The chart's shell wrapper exits on SIGTERM even before this handler is
+        # installed; this keeps the script responsive when run directly.
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        run()
+    
+
+---
+# Source: buildkite-operator/templates/deletion-cost.yaml
+# Deployment Pods have generated names, so this Role cannot be limited to each
+# Pod patching only itself. Install the chart in a namespace dedicated to runners.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: buildkite-buildkite-operator-deletion-cost
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+
+---
+# Source: buildkite-operator/templates/deletion-cost.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: buildkite-buildkite-operator-deletion-cost
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: buildkite-buildkite-operator-deletion-cost
+subjects:
+  - kind: ServiceAccount
+    name: buildkite-buildkite-operator-deletion-cost
+    namespace: buildkite
+
+---
+# Source: buildkite-operator/templates/runners.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkite-linux
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    app.kubernetes.io/component: runner
+    buildkite.com/runner-pool: "linux"
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkite-operator
+      app.kubernetes.io/instance: buildkite
+      app.kubernetes.io/component: runner
+      buildkite.com/runner-pool: "linux"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-operator
+        app.kubernetes.io/instance: buildkite
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: buildkite-operator-0.8.1
+        app.kubernetes.io/component: runner
+        buildkite.com/runner-pool: "linux"
+      annotations:
+        # Roll agents when the chart-managed token changes; they read it at startup.
+        checksum/agent-token: 4a0b7efcc66677c05d97ed1c128f7dcdf1b172c4c377feb96f353849f3d79fd5
+        # Treat agents as busy until the sidecar observes that they are idle.
+        controller.kubernetes.io/pod-deletion-cost: "100"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
+    spec:
+      serviceAccountName: buildkite-buildkite-operator-deletion-cost
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 3600
+      containers:
+        - name: agent
+          image: "buildkite/agent:4"
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/buildkite-agent"]
+          args: ["start"]
+          env:
+            - name: BUILDKITE_AGENT_CONFIG
+              value: /dev/null
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: buildkite-buildkite-operator-agent-token
+                  key: token
+            - name: BUILDKITE_AGENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BUILDKITE_AGENT_TAGS
+              value: "queue=linux,runtime=standard"
+            - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
+              value: 0.0.0.0:8080
+            - name: BUILDKITE_BUILD_PATH
+              value: /buildkite/builds
+            # The agent cannot check out plugins without a plugins path.
+            - name: BUILDKITE_PLUGINS_PATH
+              value: /buildkite/plugins
+          ports:
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /agent/1
+              port: health
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+          resources:
+            {}
+        - name: deletion-cost
+          image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
+          imagePullPolicy: IfNotPresent
+          # As PID 1, Python ignores SIGTERM until its handler is installed, so a
+          # Pod removed during startup would wait out the full grace period.
+          command:
+            - /bin/sh
+            - -c
+            - trap 'exit 0' TERM; python3 -u /opt/deletion-cost/deletion_cost.py & wait $!
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: deletion-cost-code
+              mountPath: /opt/deletion-cost
+              readOnly: true
+            - name: deletion-cost-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: deletion-cost-code
+          configMap:
+            name: buildkite-buildkite-operator-deletion-cost
+        - name: deletion-cost-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+
+---
+# Source: buildkite-operator/templates/scaling.yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: buildkite-linux
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+    buildkite.com/runner-pool: "linux"
+spec:
+  scaleTargetRef:
+    name: buildkite-linux
+  pollingInterval: 10
+  cooldownPeriod: 60
+  minReplicaCount: 1
+  maxReplicaCount: 4
+  advanced:
+    scalingModifiers:
+      formula: scheduled + running
+      target: "1"
+      activationTarget: "0"
+      metricType: AverageValue
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 5
+              periodSeconds: 15
+  triggers:
+    - type: metrics-api
+      name: scheduled
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.linux.scheduled"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+    - type: metrics-api
+      name: running
+      metadata:
+        url: https://agent.buildkite.com/v3/metrics
+        valueLocation: "jobs.queues.linux.running"
+        targetValue: "1"
+        authMode: apiKey
+        keyParamName: Authorization
+      authenticationRef:
+        name: buildkite-buildkite-operator-metrics
+
+---
+# Source: buildkite-operator/templates/scaling.yaml
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: buildkite-buildkite-operator-metrics
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.8.1
+spec:
+  secretTargetRef:
+    - parameter: apiKey
+      name: buildkite-buildkite-operator-agent-token
+      key: authorization

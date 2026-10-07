@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Refuses commits that change the standalone chart without updating its
+# rendered examples. Enable with `make install-hooks`. CI runs the same check.
+set -euo pipefail
+
+examples=charts/buildkite-operator/examples
+
+git diff --cached --quiet -- charts/buildkite-operator && exit 0
+
+make --no-print-directory helm-examples
+if ! git diff --quiet -- "${examples}" ||
+	[[ -n "$(git ls-files --others --exclude-standard -- "${examples}")" ]]; then
+	echo "The chart's rendered examples were out of date and have been updated." >&2
+	echo "Review and stage them, then commit again: git add ${examples}" >&2
+	exit 1
+fi
