@@ -683,7 +683,7 @@ spec:
             # classic image store, so the daemon trusts the CA for every host
             # instead. Only the proxy holds the CA's private key.
             - name: SSL_CERT_DIR
-              value: /etc/ssl/certs:/etc/oci-accelerator
+              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs
           # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
           # Pod's user namespace. Kata's is privileged, but only inside the VM.
           # Dind's is privileged on the node itself, with host-level access.
@@ -717,7 +717,7 @@ spec:
             - name: workspace
               mountPath: /buildkite
             - name: oci-accelerator-ca
-              mountPath: /etc/oci-accelerator
+              mountPath: /etc/ssl/oci-accelerator-certs
               readOnly: true
       containers:
         - name: agent
@@ -919,7 +919,7 @@ spec:
             # classic image store, so the daemon trusts the CA for every host
             # instead. Only the proxy holds the CA's private key.
             - name: SSL_CERT_DIR
-              value: /etc/ssl/certs:/etc/oci-accelerator
+              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs
           # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
           # Pod's user namespace. Kata's is privileged, but only inside the VM.
           # Dind's is privileged on the node itself, with host-level access.
@@ -953,7 +953,7 @@ spec:
             - name: workspace
               mountPath: /buildkite
             - name: oci-accelerator-ca
-              mountPath: /etc/oci-accelerator
+              mountPath: /etc/ssl/oci-accelerator-certs
               readOnly: true
       containers:
         - name: agent

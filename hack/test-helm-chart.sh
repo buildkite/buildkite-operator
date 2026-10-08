@@ -310,7 +310,7 @@ fi
 accel_runner=$(document "${accel}" Deployment test-linux)
 assert_contains "${accel_runner}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
 assert_contains "${accel_runner}" "- --no-proxy=registry.internal:5000"
-assert_contains "${accel_runner}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/oci-accelerator'
+assert_contains "${accel_runner}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
 assert_contains "${accel_runner}" $'secretName: "oci-ca"\n            items:\n              - key: "ca.crt"\n                path: ca.crt'
 if [[ "${accel_runner}" == *'"ca.key"'* ]]; then
 	echo "Runner Pods mounted the OCI accelerator private key" >&2
@@ -335,7 +335,7 @@ assert_contains "${accel_proxy}" $'path: ca.key\n'
 assert_contains "$(document "${accel}" NetworkPolicy test-buildkite-operator-oci-accelerator)" "app.kubernetes.io/component: runner"
 accel_dind=$(document "$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind)" Deployment test-linux)
 assert_contains "${accel_dind}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
-assert_contains "${accel_dind}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/oci-accelerator'
+assert_contains "${accel_dind}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
 if [[ "${accel_dind}" == *'"ca.key"'* ]]; then
 	echo "dind runner Pods mounted the OCI accelerator private key" >&2
 	exit 1
