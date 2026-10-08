@@ -36,7 +36,8 @@ defaults:
   #   - dind, kata, sysbox: a supervisor starts each agent as a fresh
   #     container in the Pod's Docker daemon and, between jobs, removes the
   #     job's containers, networks, volumes and the /buildkite workspace.
-  #     The daemon and its image and build caches persist.
+  #     The daemon and its image and build caches persist, as does the Docker
+  #     client configuration (DOCKER_CONFIG, including registry logins).
   # Ephemeral agents keep successive jobs' state apart; they are not a security
   # boundary between jobs. See the README's "Ephemeral agents".
   ephemeralAgent: false
@@ -82,6 +83,9 @@ defaults:
     storage:
       data: 40Gi
       workspace: 10Gi
+    # Pull images through the release's OCI accelerator when
+    # ociAccelerator.enabled is true. Set false on an entry to pull directly.
+    ociAccelerator: true
 
 # One entry per Buildkite queue, keyed by a short name used in resource names
 # (<release>-<name>). Each entry becomes a runner pool: a Deployment of runner
@@ -158,7 +162,8 @@ supervisor:
 # Always-on scale-in preference: a sidecar marks busy or unknown agents with
 # pod-deletion-cost 100 and removes the annotation from idle agents. It needs
 # permission to patch Pods in the release namespace. The digest pins the
-# multi-platform image index for the tag.
+# multi-platform image index for the tag. The image and resources are also used
+# by the hook Jobs that manage a generated OCI accelerator CA.
 deletionCost:
   image:
     repository: python
@@ -172,6 +177,69 @@ deletionCost:
     limits:
       cpu: 100m
       memory: 64Mi
+
+# Caching HTTPS proxy for image pulls by the dind, kata and sysbox Docker
+# daemons (https://github.com/buildkite/oci-accelerator). One instance per release
+# caches registry content on its node's disk and serves every queue entry with
+# docker.ociAccelerator enabled. Each daemon sends all of its HTTPS traffic
+# through the proxy, so pulls fail while the proxy is unavailable.
+ociAccelerator:
+  enabled: false
+  # Registries whose digest-addressed manifests and blobs are cached, as host
+  # or host:port. Use registry-1.docker.io for Docker Hub. Traffic to other
+  # hosts passes through the proxy uncached.
+  registries:
+    - registry-1.docker.io
+    - ghcr.io
+    - public.ecr.aws
+  # Hosts the Docker daemons reach directly instead of through the proxy, such
+  # as private registries the proxy cannot reach. Must not include registries.
+  noProxy: []
+  # Root CA the proxy signs registry certificates with. Runner Docker daemons
+  # are given only the certificate. With no existingSecret.name, a hook Job
+  # generates the CA with "oci-accelerator init-ca" into a
+  # <release>-...-oci-accelerator-ca Secret if it does not exist, and deletes
+  # that Secret on uninstall. To provide your own, set existingSecret.name to a
+  # Secret in the release namespace holding both files (see the README); the
+  # chart never creates or deletes it.
+  ca:
+    existingSecret:
+      name: ""
+      certificateKey: ca.crt
+      privateKeyKey: ca.key
+  # The cache is an emptyDir on the proxy's node, so it outlives runner Pods
+  # but starts empty whenever the proxy Pod is replaced, such as on upgrades
+  # that change it or when its node is removed.
+  cache:
+    # The emptyDir's size limit. The proxy also requests this much
+    # ephemeral-storage unless resources.requests sets it, so it needs a node
+    # with this much free disk alongside the runners there.
+    size: 20Gi
+    # Bytes the cache may use, including 4 KiB metadata per entry. Keep it
+    # below size to leave room for filesystem overhead.
+    maxBytes: 19327352832
+  # Additional OCI_ACCELERATOR_* settings, such as
+  # OCI_ACCELERATOR_CACHE_MAX_FILLS: "32". Settings the chart manages
+  # (registries, listeners, state directories and maxBytes) cannot be set here.
+  extraEnv: {}
+  # Admit proxy connections only from this release's runner Pods. Requires a
+  # network plugin that enforces NetworkPolicy.
+  networkPolicy:
+    enabled: true
+  nodeSelector: {}
+  tolerations: []
+  # The digest pins the multi-platform image index for the tag.
+  image:
+    repository: buildkite/oci-accelerator
+    tag: v0.2.1
+    digest: sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
 
 agentToken:
   value: ""
@@ -188,6 +256,31 @@ metricsToken:
   existingSecret:
     name: ""
     key: authorization
+
+# Registry credentials for every Pod the release runs, and for the docker CLI
+# in dind, kata and sysbox runners. The kubelet uses them as imagePullSecrets
+# to pull the chart's own images. Runners with a Docker daemon also copy them
+# into the Docker client configuration (DOCKER_CONFIG) that jobs and ephemeral
+# agents share for the Pod's lifetime, so image pulls, runs and builds in jobs
+# are authenticated; standard runners get only imagePullSecrets. Any job can
+# read them.
+registryCredentials:
+  # The chart creates one kubernetes.io/dockerconfigjson Secret from these.
+  # Use https://index.docker.io/v1/ as the registry for Docker Hub, and an
+  # access token rather than an account password. Values set here are stored
+  # in Helm's release Secret.
+  auths: []
+  #  - registry: https://index.docker.io/v1/
+  #    username: myuser
+  #    password: dckr_pat_...
+  #  - registry: ghcr.io
+  #    username: myorg
+  #    password: ghp_...
+  # Or name an existing kubernetes.io/dockerconfigjson Secret in the release
+  # namespace, such as one from kubectl create secret docker-registry. The
+  # chart never creates or deletes it.
+  existingSecret:
+    name: ""
 
 # KEDA 2.20.0 must be installed separately and configured to watch this release
 # namespace. Disable validation only for offline rendering and linting, where

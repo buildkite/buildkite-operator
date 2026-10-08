@@ -1,4 +1,35 @@
 ---
+# Source: buildkite-operator/templates/oci-accelerator.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.9.0
+    app.kubernetes.io/component: oci-accelerator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: buildkite-operator
+      app.kubernetes.io/instance: buildkite
+      app.kubernetes.io/component: oci-accelerator
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: buildkite-operator
+              app.kubernetes.io/instance: buildkite
+              app.kubernetes.io/component: runner
+      ports:
+        - port: proxy
+          protocol: TCP
+
+---
 # Source: buildkite-operator/templates/deletion-cost.yaml
 apiVersion: v1
 kind: ServiceAccount
@@ -9,7 +40,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
 automountServiceAccountToken: false
 
 ---
@@ -23,7 +54,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
 data:
   deletion_cost.py: |-
     """Prefer removing idle agents during scale-in (best effort, not a drain).
@@ -117,8 +148,8 @@ data:
 
 ---
 # Source: buildkite-operator/templates/ephemeral-agent.yaml
-# supervisor.sh runs kata and sysbox ephemeral agents; ephemeral-agent.sh runs
-# standard ones.
+# supervisor.sh runs dind, kata and sysbox ephemeral agents; ephemeral-agent.sh
+# runs standard ones.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -128,7 +159,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
 data:
   ephemeral-agent.sh: |-
     #!/bin/sh
@@ -306,12 +337,16 @@ data:
     
     	agent_name="${POD_NAME}-$(random_suffix)"
     	log "Starting agent $agent_name"
+    	# DOCKER_CONFIG is at the same path in the Docker daemon's container, so
+    	# every agent shares the Pod's registry credentials and logins.
     	docker run --detach --pull never \
     		--name "$agent_container" \
     		--hostname "$POD_NAME" \
     		--publish 8080:8080 \
     		--volume /var/run/docker.sock:/var/run/docker.sock \
     		--volume /buildkite:/buildkite \
+    		--volume "$DOCKER_CONFIG:$DOCKER_CONFIG" \
+    		--env DOCKER_CONFIG \
     		--entrypoint /usr/local/bin/buildkite-agent \
     		--env BUILDKITE_AGENT_CONFIG=/dev/null \
     		--env BUILDKITE_AGENT_TOKEN \
@@ -378,7 +413,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -395,7 +430,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -404,6 +439,189 @@ subjects:
   - kind: ServiceAccount
     name: buildkite-buildkite-operator-deletion-cost
     namespace: buildkite
+
+---
+# Source: buildkite-operator/templates/oci-accelerator.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.9.0
+    app.kubernetes.io/component: oci-accelerator
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/component: oci-accelerator
+  ports:
+    - name: proxy
+      port: 3128
+      targetPort: proxy
+      protocol: TCP
+
+---
+# Source: buildkite-operator/templates/oci-accelerator.yaml
+# Each proxy Pod caches in its own emptyDir, so more replicas would only split
+# the cache. A rollout starts the replacement before stopping the old Pod, so
+# pulls keep working; the new Pod starts with an empty cache.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.9.0
+    app.kubernetes.io/component: oci-accelerator
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkite-operator
+      app.kubernetes.io/instance: buildkite
+      app.kubernetes.io/component: oci-accelerator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-operator
+        app.kubernetes.io/instance: buildkite
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: buildkite-operator-0.9.0
+        app.kubernetes.io/component: oci-accelerator
+    spec:
+      automountServiceAccountToken: false
+      # Longer than the proxy's default 15 second drain.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # The proxy requires private, non-symlink state directories owned by
+        # its user, which Secret and volume mounts do not provide directly.
+        - name: prepare-state
+          image: "buildkite/oci-accelerator:v0.2.1@sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              umask 077
+              mkdir -p /run/oci-accelerator/private /var/cache/oci-accelerator/private
+              chmod 0700 /run/oci-accelerator/private /var/cache/oci-accelerator/private
+              rm -rf /run/oci-accelerator/private/ca
+              mkdir /run/oci-accelerator/private/ca
+              cp /ca-source/ca.crt /ca-source/ca.key /run/oci-accelerator/private/ca/
+              chmod 0644 /run/oci-accelerator/private/ca/ca.crt
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 2Gi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: ca-source
+              mountPath: /ca-source
+              readOnly: true
+            - name: state
+              mountPath: /run/oci-accelerator
+            - name: cache
+              mountPath: /var/cache/oci-accelerator
+      containers:
+        - name: oci-accelerator
+          image: "buildkite/oci-accelerator:v0.2.1@sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OCI_ACCELERATOR_REGISTRIES
+              value: "registry-1.docker.io,ghcr.io,public.ecr.aws"
+            - name: OCI_ACCELERATOR_LISTEN
+              value: 0.0.0.0:3128
+            - name: OCI_ACCELERATOR_METRICS_LISTEN
+              value: 127.0.0.1:9090
+            - name: OCI_ACCELERATOR_CA_DIR
+              value: /run/oci-accelerator/private/ca
+            - name: OCI_ACCELERATOR_CACHE_DIR
+              value: /var/cache/oci-accelerator/private/cache
+            - name: OCI_ACCELERATOR_CACHE_MAX_BYTES
+              value: "19327352832"
+          ports:
+            - name: proxy
+              containerPort: 3128
+          # Probes use the loopback metrics listener, so it is never exposed.
+          startupProbe:
+            exec:
+              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 90
+          readinessProbe:
+            exec:
+              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/livez]
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # Requesting the cache's size keeps the Pod off nodes without the disk
+          # for it, where it would be evicted once the cache filled.
+          resources:
+            limits:
+              memory: 2Gi
+            requests:
+              cpu: 500m
+              ephemeral-storage: 20Gi
+              memory: 512Mi
+          volumeMounts:
+            - name: state
+              mountPath: /run/oci-accelerator
+            - name: cache
+              mountPath: /var/cache/oci-accelerator
+      volumes:
+        - name: ca-source
+          secret:
+            secretName: "buildkite-buildkite-operator-oci-accelerator-ca"
+            defaultMode: 0440
+            items:
+              - key: "ca.crt"
+                path: ca.crt
+              - key: "ca.key"
+                path: ca.key
+        - name: state
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: cache
+          emptyDir:
+            sizeLimit: 20Gi
 
 ---
 # Source: buildkite-operator/templates/runners.yaml
@@ -416,7 +634,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "docker"
 spec:
@@ -437,7 +655,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-0.8.1
+        helm.sh/chart: buildkite-operator-0.9.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "docker"
       annotations:
@@ -457,9 +675,15 @@ spec:
           args:
             - dockerd
             - --host=unix:///var/run/docker.sock
+            - --https-proxy=http://buildkite-buildkite-operator-oci-accelerator.buildkite.svc:3128
           env:
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            # Docker Engine does not read certs.d for Docker Hub with the
+            # classic image store, so the daemon trusts the CA for every host
+            # instead. Only the proxy holds the CA's private key.
+            - name: SSL_CERT_DIR
+              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs
           # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
           # Pod's user namespace. Kata's is privileged, but only inside the VM.
           # Dind's is privileged on the node itself, with host-level access.
@@ -492,6 +716,9 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            - name: oci-accelerator-ca
+              mountPath: /etc/ssl/oci-accelerator-certs
+              readOnly: true
       containers:
         - name: agent
           image: "buildkite/agent:4"
@@ -523,6 +750,8 @@ spec:
               value: /buildkite/sockets
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            - name: DOCKER_CONFIG
+              value: /etc/buildkite-agent/docker
           ports:
             - name: health
               containerPort: 8080
@@ -541,6 +770,8 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            - name: docker-config
+              mountPath: /etc/buildkite-agent/docker
         - name: deletion-cost
           image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
           imagePullPolicy: IfNotPresent
@@ -605,6 +836,18 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi
+        # Docker client configuration for the Pod's lifetime, shared by every
+        # job, so logins and buildx state persist across jobs.
+        - name: docker-config
+          emptyDir:
+            sizeLimit: 16Mi
+        # Only the public certificate; the private key stays with the proxy.
+        - name: oci-accelerator-ca
+          secret:
+            secretName: "buildkite-buildkite-operator-oci-accelerator-ca"
+            items:
+              - key: "ca.crt"
+                path: ca.crt
 
 ---
 # Source: buildkite-operator/templates/runners.yaml
@@ -617,7 +860,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "docker-builds"
 spec:
@@ -638,7 +881,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-0.8.1
+        helm.sh/chart: buildkite-operator-0.9.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "docker-builds"
       annotations:
@@ -668,9 +911,15 @@ spec:
             - dockerd
             - --host=unix:///var/run/docker.sock
             - --storage-driver=overlay2
+            - --https-proxy=http://buildkite-buildkite-operator-oci-accelerator.buildkite.svc:3128
           env:
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            # Docker Engine does not read certs.d for Docker Hub with the
+            # classic image store, so the daemon trusts the CA for every host
+            # instead. Only the proxy holds the CA's private key.
+            - name: SSL_CERT_DIR
+              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs
           # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
           # Pod's user namespace. Kata's is privileged, but only inside the VM.
           # Dind's is privileged on the node itself, with host-level access.
@@ -703,6 +952,9 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            - name: oci-accelerator-ca
+              mountPath: /etc/ssl/oci-accelerator-certs
+              readOnly: true
       containers:
         - name: agent
           image: "buildkite/agent:4"
@@ -734,6 +986,8 @@ spec:
               value: /buildkite/sockets
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            - name: DOCKER_CONFIG
+              value: /etc/buildkite-agent/docker
           ports:
             - name: health
               containerPort: 8080
@@ -752,6 +1006,8 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            - name: docker-config
+              mountPath: /etc/buildkite-agent/docker
         - name: deletion-cost
           image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
           imagePullPolicy: IfNotPresent
@@ -816,6 +1072,18 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi
+        # Docker client configuration for the Pod's lifetime, shared by every
+        # job, so logins and buildx state persist across jobs.
+        - name: docker-config
+          emptyDir:
+            sizeLimit: 16Mi
+        # Only the public certificate; the private key stays with the proxy.
+        - name: oci-accelerator-ca
+          secret:
+            secretName: "buildkite-buildkite-operator-oci-accelerator-ca"
+            items:
+              - key: "ca.crt"
+                path: ca.crt
 
 ---
 # Source: buildkite-operator/templates/runners.yaml
@@ -828,7 +1096,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "linux"
 spec:
@@ -849,7 +1117,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-0.8.1
+        helm.sh/chart: buildkite-operator-0.9.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "linux"
       annotations:
@@ -975,7 +1243,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "untrusted"
 spec:
@@ -996,7 +1264,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-0.8.1
+        helm.sh/chart: buildkite-operator-0.9.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "untrusted"
       annotations:
@@ -1004,7 +1272,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
-        checksum/supervisor: 43ef4a1b3e8d34939bbcbfb4859b97da3c0eaff09ba3ad9d4d290cacddd9f297
+        checksum/supervisor: 68a77e216feab8600c7eaca5facaf9e12bc21d0cd745134480b2b52a6f654efa
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost
       automountServiceAccountToken: false
@@ -1060,6 +1328,9 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
+            # The supervisor bind-mounts this into each agent container.
+            - name: docker-config
+              mountPath: /etc/buildkite-agent/docker
       containers:
         - name: supervisor
           image: "docker:29.7.2-cli@sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"
@@ -1083,6 +1354,8 @@ spec:
               value: "3600"
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            - name: DOCKER_CONFIG
+              value: /etc/buildkite-agent/docker
           ports:
             - name: health
               containerPort: 8080
@@ -1110,6 +1383,8 @@ spec:
             - name: ephemeral-agent-scripts
               mountPath: /opt/ephemeral-agent
               readOnly: true
+            - name: docker-config
+              mountPath: /etc/buildkite-agent/docker
         - name: deletion-cost
           image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
           imagePullPolicy: IfNotPresent
@@ -1177,6 +1452,11 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi
+        # Docker client configuration for the Pod's lifetime, shared by every
+        # job, so logins and buildx state persist across jobs.
+        - name: docker-config
+          emptyDir:
+            sizeLimit: 16Mi
 
 ---
 # Source: buildkite-operator/templates/scaling.yaml
@@ -1189,7 +1469,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
     buildkite.com/runner-pool: "docker"
 spec:
   scaleTargetRef:
@@ -1251,7 +1531,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
     buildkite.com/runner-pool: "docker-builds"
 spec:
   scaleTargetRef:
@@ -1313,7 +1593,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
     buildkite.com/runner-pool: "linux"
 spec:
   scaleTargetRef:
@@ -1375,7 +1655,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
     buildkite.com/runner-pool: "untrusted"
 spec:
   scaleTargetRef:
@@ -1437,9 +1717,412 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.8.1
+    helm.sh/chart: buildkite-operator-0.9.0
 spec:
   secretTargetRef:
     - parameter: apiKey
       name: buildkite-metrics-token
       key: authorization
+---
+# Source: buildkite-operator/templates/oci-accelerator-ca.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator-ca-hook
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.9.0
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,post-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+automountServiceAccountToken: false
+
+---
+# Source: buildkite-operator/templates/oci-accelerator-ca.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator-ca-hook
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.9.0
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,post-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  oci_accelerator_ca.py: |-
+    """Create or delete the OCI accelerator CA Secret that the chart generates.
+    
+    create stores the CA that oci-accelerator init-ca wrote to CA_DIR, unless the
+    Secret already exists: the CA is generated once and never replaced. delete
+    removes the Secret when the release is uninstalled.
+    """
+    
+    import base64
+    import json
+    import os
+    import ssl
+    import sys
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    
+    
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    
+    
+    def request(method, path, body=None):
+        host = os.environ["KUBERNETES_SERVICE_HOST"]
+        port = os.environ["KUBERNETES_SERVICE_PORT_HTTPS"]
+        with open(TOKEN_PATH, encoding="utf-8") as token:
+            authorization = f"Bearer {token.read().strip()}"
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            f"https://{host}:{port}{path}", data=data, method=method,
+            headers={"Authorization": authorization, "Content-Type": "application/json"},
+        )
+        context = ssl.create_default_context(cafile=CA_PATH)
+        try:
+            with urllib.request.urlopen(req, context=context, timeout=10) as response:
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as error:
+            return error.code, {}
+    
+    
+    def secrets_path(name=""):
+        namespace = urllib.parse.quote(os.environ["POD_NAMESPACE"], safe="")
+        path = f"/api/v1/namespaces/{namespace}/secrets"
+        return f"{path}/{urllib.parse.quote(name, safe='')}" if name else path
+    
+    
+    def create(name, cert_key, private_key_key):
+        status, secret = request("GET", secrets_path(name))
+        if status == 200:
+            missing = [key for key in (cert_key, private_key_key) if key not in secret.get("data", {})]
+            if missing:
+                sys.exit(f"Secret {name} exists but has no {' or '.join(missing)}; delete it to generate a new CA")
+            print(f"Using existing Secret {name}", flush=True)
+            return
+        if status != 404:
+            sys.exit(f"Could not read Secret {name}: HTTP {status}")
+    
+        ca_dir = os.environ["CA_DIR"]
+        data = {}
+        for key, filename in ((cert_key, "ca.crt"), (private_key_key, "ca.key")):
+            with open(os.path.join(ca_dir, filename), "rb") as f:
+                data[key] = base64.b64encode(f.read()).decode()
+        body = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": name, "labels": json.loads(os.environ["SECRET_LABELS"])},
+            "type": "Opaque",
+            "data": data,
+        }
+        status, _ = request("POST", secrets_path(), body)
+        if status == 201:
+            print(f"Created Secret {name}", flush=True)
+        elif status == 409:
+            print(f"Using Secret {name} created concurrently", flush=True)
+        else:
+            sys.exit(f"Could not create Secret {name}: HTTP {status}")
+    
+    
+    def delete(name):
+        status, _ = request("DELETE", secrets_path(name))
+        if status in (200, 202):
+            print(f"Deleted Secret {name}", flush=True)
+        elif status == 404:
+            print(f"Secret {name} was already deleted", flush=True)
+        else:
+            sys.exit(f"Could not delete Secret {name}: HTTP {status}")
+    
+    
+    if __name__ == "__main__":
+        secret_name = os.environ["SECRET_NAME"]
+        if sys.argv[1:] == ["create"]:
+            create(secret_name, os.environ["CERTIFICATE_KEY"], os.environ["PRIVATE_KEY_KEY"])
+        elif sys.argv[1:] == ["delete"]:
+            delete(secret_name)
+        else:
+            sys.exit("usage: oci_accelerator_ca.py create|delete")
+    
+
+---
+# Source: buildkite-operator/templates/oci-accelerator-ca.yaml
+# Kubernetes cannot limit create to one Secret name. These objects exist only
+# while the hooks run.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator-ca-hook
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.9.0
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,post-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["buildkite-buildkite-operator-oci-accelerator-ca"]
+    verbs: ["get", "delete"]
+
+---
+# Source: buildkite-operator/templates/oci-accelerator-ca.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator-ca-hook
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.9.0
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,post-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: buildkite-buildkite-operator-oci-accelerator-ca-hook
+subjects:
+  - kind: ServiceAccount
+    name: buildkite-buildkite-operator-oci-accelerator-ca-hook
+    namespace: buildkite
+
+---
+# Source: buildkite-operator/templates/oci-accelerator-ca.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator-ca-create
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.9.0
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-operator
+        app.kubernetes.io/instance: buildkite
+        app.kubernetes.io/component: oci-accelerator-ca
+    spec:
+      serviceAccountName: buildkite-buildkite-operator-oci-accelerator-ca-hook
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      # The proxy's user, so the Secret step can read the generated private key.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # The Pod briefly holds the CA private key, so it runs where the proxy does.
+      initContainers:
+        # init-ca requires an owner-controlled parent directory, which an
+        # emptyDir mount is not.
+        - name: init-ca
+          image: "buildkite/oci-accelerator:v0.2.1@sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - mkdir -m 0700 /work/state && oci-accelerator init-ca --dir /work/state/ca
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      containers:
+        # Reuses the chart's pinned Python image to call the Kubernetes API.
+        - name: create-secret
+          image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "-u", "/opt/oci-accelerator-ca/oci_accelerator_ca.py", "create"]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SECRET_NAME
+              value: "buildkite-buildkite-operator-oci-accelerator-ca"
+            - name: CERTIFICATE_KEY
+              value: "ca.crt"
+            - name: PRIVATE_KEY_KEY
+              value: "ca.key"
+            - name: CA_DIR
+              value: /work/state/ca
+            - name: SECRET_LABELS
+              value: "{\"app.kubernetes.io/component\":\"oci-accelerator-ca\",\"app.kubernetes.io/instance\":\"buildkite\",\"app.kubernetes.io/name\":\"buildkite-operator\"}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: code
+              mountPath: /opt/oci-accelerator-ca
+              readOnly: true
+            - name: api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            - name: work
+              mountPath: /work
+              readOnly: true
+      volumes:
+        - name: code
+          configMap:
+            name: buildkite-buildkite-operator-oci-accelerator-ca-hook
+        - name: api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: work
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+
+---
+# Source: buildkite-operator/templates/oci-accelerator-ca.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator-ca-delete
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.9.0
+    app.kubernetes.io/component: oci-accelerator-ca
+  annotations:
+    helm.sh/hook: post-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-operator
+        app.kubernetes.io/instance: buildkite
+        app.kubernetes.io/component: oci-accelerator-ca
+    spec:
+      serviceAccountName: buildkite-buildkite-operator-oci-accelerator-ca-hook
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      # The proxy's user, so the Secret step can read the generated private key.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # The Pod briefly holds the CA private key, so it runs where the proxy does.
+      containers:
+        # Reuses the chart's pinned Python image to call the Kubernetes API.
+        - name: delete-secret
+          image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "-u", "/opt/oci-accelerator-ca/oci_accelerator_ca.py", "delete"]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SECRET_NAME
+              value: "buildkite-buildkite-operator-oci-accelerator-ca"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: code
+              mountPath: /opt/oci-accelerator-ca
+              readOnly: true
+            - name: api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: code
+          configMap:
+            name: buildkite-buildkite-operator-oci-accelerator-ca-hook
+        - name: api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+

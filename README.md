@@ -112,7 +112,7 @@ separate release.
 | `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales an entry with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
 | `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
 | `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `dind`, `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. With `standard` and `ephemeralAgent`, the image also needs `/bin/sh`. |
-| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `dind`, `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. |
+| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `dind`, `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. `docker.ociAccelerator` (default `true`) pulls through the [OCI accelerator](#image-pull-caching) when it is enabled. |
 
 ### Examples
 
@@ -344,12 +344,163 @@ What is reset between jobs:
 | `runtime` | Reset | Persists |
 | --- | --- | --- |
 | `standard` | The agent process and its registration, and the contents of `/buildkite/builds` (checkouts) and `/buildkite/plugins`. | The Pod and its node, and the agent container with the rest of its filesystem: `/tmp`, the home directory, packages or tools a job installed, caches outside `/buildkite`, and any processes a job left running. |
-| `dind`, `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches. |
+| `dind`, `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches, and the Docker client configuration (`DOCKER_CONFIG`, including logins). |
 
 Ephemeral agents keep successive jobs' state apart; they are not a security
 boundary between them. Anything a job can reach that persists, such as files
 outside the workspace in a `standard` container or the Pod's Docker image
 cache, remains available to later jobs.
+
+### Image pull caching
+
+The `dind`, `kata` and `sysbox` Docker daemons can pull images through an
+[OCI accelerator](https://github.com/buildkite/oci-accelerator), an HTTPS
+proxy that caches registry content on its node's disk. Repeat pulls of
+layers and digest-addressed manifests across all runners, and after runners
+are replaced, come from the cache. Image names and `docker login` don't change.
+Tags and pushes go to the upstream registry, and the registry must approve
+access before the proxy serves cached content.
+
+Enable the accelerator:
+
+```yaml
+ociAccelerator:
+  enabled: true
+  registries: [registry-1.docker.io, ghcr.io, public.ecr.aws]
+```
+
+Every `dind`, `kata` and `sysbox` entry then uses it. Set `docker.ociAccelerator: false`
+on an entry to pull directly.
+
+The proxy signs registry certificates with its own root CA, which it loads from
+a Secret in the release namespace; it never generates one itself. By default
+the chart generates the CA. Before install and every upgrade, a hook Job runs
+the accelerator's `init-ca` and stores the result in the Secret
+`<release>-buildkite-operator-oci-accelerator-ca`, unless that Secret already
+exists, so the CA is created once and then kept. A second hook Job deletes the
+Secret after `helm uninstall`; `helm uninstall --no-hooks` leaves it behind.
+The hook Jobs run with a short-lived ServiceAccount that may create Secrets
+and read or delete only that one, and Helm itself never renders or stores the
+private key. To rotate the CA, delete the Secret, run `helm upgrade`, then
+restart the proxy Deployment and the runner Deployments.
+
+To manage the CA yourself instead, for example to keep it across reinstalls,
+create it once and store it in a Secret in the release namespace. This runs
+`init-ca` in a throwaway container and copies the files out:
+
+```bash
+mkdir -m 0700 oci-accelerator-ca
+docker run --rm --entrypoint /bin/sh buildkite/oci-accelerator:v0.2.1 -ec \
+  'mkdir -m 0700 /tmp/state; oci-accelerator init-ca --dir /tmp/state/ca >&2; tar -C /tmp/state/ca -cf - ca.crt ca.key' |
+  tar -C oci-accelerator-ca -xf -
+kubectl create secret generic oci-accelerator-ca \
+  --namespace buildkite-operator-system \
+  --from-file=oci-accelerator-ca/ca.crt \
+  --from-file=oci-accelerator-ca/ca.key
+```
+
+Keep a secure backup of `ca.key`. Anyone with it can impersonate registries
+to the runners' Docker daemons. Then set `ociAccelerator.ca.existingSecret.name:
+oci-accelerator-ca`. The chart never creates, changes or deletes a Secret you
+name; until it exists, the proxy and runner Pods don't start.
+
+The chart installs:
+
+- A single-replica Deployment running the proxy, and a Service that the Docker
+  daemons use as their HTTPS proxy.
+- A NetworkPolicy admitting only this release's runner Pods
+  (`networkPolicy.enabled`). Enforcement requires a network plugin that
+  supports NetworkPolicy.
+
+Each daemon sends all of its HTTPS traffic through the proxy. Only
+`registries` are cached; other hosts are tunnelled through it unchanged. List
+hosts the proxy cannot reach, such as in-cluster registries, in `noProxy`.
+Pulls fail while the proxy is unavailable. Upgrades start the new proxy before
+stopping the old one, but pulls fail if its node is lost until a replacement
+starts. Job containers don't inherit the daemon's proxy settings.
+
+The cache is an `emptyDir` on the proxy's node, limited to `cache.size`
+(default 20Gi), so it needs no StorageClass. It outlives runner Pods but starts
+empty whenever the proxy Pod is replaced: on upgrades that change it, on
+restarts, and when its node is removed. The proxy requests `cache.size` of
+`ephemeral-storage`, unless `resources.requests` sets it, so it is only
+scheduled on a node with that much disk free. Runner Pods with a Docker daemon
+request disk too, so size it to fit beside them, or place the proxy with
+`nodeSelector` and `tolerations`. Keep `cache.maxBytes` below `cache.size`.
+
+The daemons trust the CA for every host, not only `registries`. Docker Engine
+does not read `/etc/docker/certs.d` for Docker Hub with the classic image
+store used by `sysbox`, so per-registry trust is not possible. Runner Pods are
+given only the certificate; the private key is mounted only in the proxy and,
+briefly, the hook Job that generates it.
+Pods read the Secret at startup, so after replacing the CA restart the
+proxy Deployment and the runner Deployments. Other `OCI_ACCELERATOR_*` settings can
+be passed through `ociAccelerator.extraEnv`; see the accelerator's
+[deployment guide](https://github.com/buildkite/oci-accelerator/blob/main/docs/deployment.md#configuration).
+
+The proxy's node holds the CA private key that every accelerated daemon
+trusts, including those of `kata` and `sysbox` queues running untrusted jobs.
+A `dind` job can escape to its node and read the Secrets mounted in other Pods
+there, so a release with `dind` queues should keep the proxy off nodes `dind`
+runners can reach. The chart adds no node selector for `dind`, so place the
+proxy with `ociAccelerator.nodeSelector` and `tolerations`, for example on
+nodes tainted for `kata` or `sysbox`, or on dedicated system nodes. The hook
+Jobs that generate and delete the CA use the same placement.
+
+### Registry credentials
+
+To pull private images, or to avoid Docker Hub's anonymous rate limits, give
+the release registry credentials. They apply to every Pod and queue entry:
+
+```yaml
+registryCredentials:
+  auths:
+    - registry: https://index.docker.io/v1/
+      username: myuser
+      password: dckr_pat_...   # a Docker Hub access token
+    - registry: ghcr.io
+      username: myorg
+      password: ghp_...
+```
+
+The chart stores them in one `kubernetes.io/dockerconfigjson` Secret,
+`<release>-buildkite-operator-registry-credentials`. Values set this way are
+also kept in Helm's release Secret. To manage the Secret yourself instead,
+create it in the release namespace and set `registryCredentials.existingSecret.name`:
+
+```bash
+kubectl create secret docker-registry registry-credentials \
+  --namespace buildkite-operator-system \
+  --docker-server=https://index.docker.io/v1/ \
+  --docker-username=myuser \
+  --docker-password=dckr_pat_...
+```
+
+The credentials are used in two places:
+
+- The kubelet uses them as `imagePullSecrets` to pull the images of every Pod
+  the release runs: runners, the OCI accelerator, and the CA hook Jobs. Hooks
+  run before the chart-managed Secret is created on install and after it is
+  deleted on uninstall, so the hook Jobs use a copy,
+  `<release>-buildkite-operator-registry-credentials-hook`, that Helm creates
+  just before them and deletes once they finish.
+- `dind`, `kata` and `sysbox` runners copy them into the Docker client
+  configuration that jobs use. Docker daemons don't hold credentials
+  themselves; the `docker` CLI sends them with each pull, run and build.
+  `standard` runners have no Docker daemon, so they only get `imagePullSecrets`.
+
+Every `dind`, `kata` and `sysbox` runner Pod has a writable Docker client
+configuration directory, `/etc/buildkite-agent/docker`, set as `DOCKER_CONFIG`
+for the agent and, with ephemeral agents, for the supervisor and every agent
+container it starts. It lasts as long as the Pod and is shared by all of its
+jobs, persistent or ephemeral, so a job's own `docker login` and buildx state
+carry over to later jobs on that Pod. Credentials are copied in when the Pod
+starts. Any job can read them, so use tokens with only the access the
+queues' jobs need.
+
+Changing chart-managed credentials rolls the runner and proxy Pods. After
+changing an existing Secret, restart those Deployments yourself. Pulls through
+the [OCI accelerator](#image-pull-caching) use the credentials unchanged.
 
 ## Development
 

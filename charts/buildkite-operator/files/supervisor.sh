@@ -87,12 +87,16 @@ start_agent() {
 
 	agent_name="${POD_NAME}-$(random_suffix)"
 	log "Starting agent $agent_name"
+	# DOCKER_CONFIG is at the same path in the Docker daemon's container, so
+	# every agent shares the Pod's registry credentials and logins.
 	docker run --detach --pull never \
 		--name "$agent_container" \
 		--hostname "$POD_NAME" \
 		--publish 8080:8080 \
 		--volume /var/run/docker.sock:/var/run/docker.sock \
 		--volume /buildkite:/buildkite \
+		--volume "$DOCKER_CONFIG:$DOCKER_CONFIG" \
+		--env DOCKER_CONFIG \
 		--entrypoint /usr/local/bin/buildkite-agent \
 		--env BUILDKITE_AGENT_CONFIG=/dev/null \
 		--env BUILDKITE_AGENT_TOKEN \

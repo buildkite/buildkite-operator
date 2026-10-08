@@ -23,6 +23,16 @@ DIND_RUNNERS="${RELEASE}-e2e-dind"
 SECOND_NAMESPACE="buildkite-runners-two"
 SECOND_RELEASE="buildkite-runners-two"
 SECOND_RUNNERS="${SECOND_RELEASE}-e2e-secondary"
+ACCEL_NAMESPACE="buildkite-runners-accel"
+ACCEL_RELEASE="accel"
+ACCEL_NAME="${ACCEL_RELEASE}-buildkite-operator-oci-accelerator"
+ACCEL_CA_SECRET="${ACCEL_NAME}-ca"
+ACCEL_IMAGE=$("${HELM}" show values "${CHART_DIR}" | awk '
+	/^ociAccelerator:/ { section = 1; next }
+	section && /^[^ #]/ { section = 0 }
+	section && $1 == "repository:" { repository = $2 }
+	section && $1 == "digest:" { digest = $2 }
+	END { print repository "@" digest }')
 KEDA_NAMESPACE="keda"
 KEDA_RELEASE="keda"
 
@@ -57,6 +67,8 @@ runner_pods() {
 cleanup() {
 	"${HELM_CLUSTER[@]}" uninstall "${RELEASE}" --namespace "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${HELM_CLUSTER[@]}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+	"${HELM_CLUSTER[@]}" uninstall "${ACCEL_RELEASE}" --namespace "${ACCEL_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+	"${KUBECTL[@]}" delete namespace "${ACCEL_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${HELM_CLUSTER[@]}" uninstall "${KEDA_RELEASE}" --namespace "${KEDA_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${KUBECTL[@]}" delete namespace "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${KUBECTL[@]}" delete namespace "${SECOND_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
@@ -324,3 +336,119 @@ fi
 "${KUBECTL[@]}" get scaledobject/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=30s
 "${HELM_CLUSTER[@]}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --wait --timeout 2m
+
+# The OCI accelerator caches pulls by the Docker daemon in a dind runner Pod,
+# with a CA the chart generates. Its NetworkPolicy is enabled only after the
+# pulls: on some CI hosts, Kind's policy enforcement drops replies to the
+# proxy's own upstream connections, which the policy does not restrict.
+"${KUBECTL[@]}" create namespace "${ACCEL_NAMESPACE}"
+"${HELM_CLUSTER[@]}" install "${ACCEL_RELEASE}" "${CHART_DIR}" \
+	--namespace "${ACCEL_NAMESPACE}" \
+	--set-string defaults.image.repository=registry.k8s.io/pause \
+	--set-string defaults.image.tag=3.10 \
+	--set-string defaults.image.pullPolicy=IfNotPresent \
+	--set defaults.terminationGracePeriodSeconds=5 \
+	--set-string defaults.docker.resources.requests.cpu=100m \
+	--set-string defaults.docker.resources.requests.memory=256Mi \
+	--set-string defaults.docker.resources.requests.ephemeral-storage=1Gi \
+	--set-string agentToken.value=not-a-real-agent-token \
+	--set-string queues.accel.queue=accel \
+	--set-string queues.accel.runtime=dind \
+	--set queues.accel.maxReplicas=1 \
+	--set ociAccelerator.enabled=true \
+	--set ociAccelerator.networkPolicy.enabled=false \
+	--set-string ociAccelerator.cache.size=1Gi \
+	--set ociAccelerator.cache.maxBytes=805306368 \
+	--set-string ociAccelerator.resources.requests.cpu=100m
+ca_secret_cert() {
+	"${KUBECTL[@]}" get secret "${ACCEL_CA_SECRET}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.data.ca\.crt}' | base64 -d
+}
+generated_ca=$(ca_secret_cert)
+[[ "${generated_ca}" == "-----BEGIN CERTIFICATE-----"* ]] || { echo "The chart did not generate a CA Secret" >&2; exit 1; }
+[[ -z "$("${KUBECTL[@]}" get jobs,roles,serviceaccounts -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=oci-accelerator-ca -o name)" ]] || {
+	echo "CA hook resources remained after install" >&2
+	exit 1
+}
+"${KUBECTL[@]}" rollout status deployment/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
+
+dockerd_pod=""
+for _ in $(seq 1 180); do
+	dockerd_pod=$("${KUBECTL[@]}" get pods -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=runner \
+		-o jsonpath='{range .items[?(@.status.initContainerStatuses[0].ready==true)]}{.metadata.name}{end}')
+	[[ -n "${dockerd_pod}" ]] && break
+	sleep 1
+done
+if [[ -z "${dockerd_pod}" ]]; then
+	echo "Runner Docker daemon did not start" >&2
+	"${KUBECTL[@]}" describe pods -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=runner >&2 || true
+	exit 1
+fi
+dockerd() { "${KUBECTL[@]}" exec -n "${ACCEL_NAMESPACE}" "${dockerd_pod}" -c dockerd -- "$@"; }
+
+# Runner Pods reach the proxy, which serves the CA from the Secret.
+served_ca=$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")
+[[ "${served_ca}" == "${generated_ca}" ]] || {
+	echo "Proxy did not serve the CA from its Secret" >&2
+	exit 1
+}
+
+# Upgrades keep the generated CA, and one that leaves the proxy unchanged keeps
+# its Pod and so its cache.
+proxy_pod() {
+	"${KUBECTL[@]}" get pods -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=oci-accelerator -o name
+}
+proxy_before=$(proxy_pod)
+"${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values
+[[ "$(ca_secret_cert)" == "${generated_ca}" ]] || { echo "helm upgrade replaced the generated CA" >&2; exit 1; }
+[[ "$(proxy_pod)" == "${proxy_before}" ]] || { echo "helm upgrade replaced the unchanged proxy Pod" >&2; exit 1; }
+
+# A second pull of a removed image is served from the cache.
+image=public.ecr.aws/docker/library/alpine:3.20
+dockerd docker pull -q "${image}"
+dockerd docker image rm "${image}" >/dev/null
+dockerd docker pull -q "${image}"
+accelerator_logs=$("${KUBECTL[@]}" logs deployment/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -c oci-accelerator)
+if ! grep '"registry":"public.ecr.aws"' <<<"${accelerator_logs}" | grep -q '"cache":"hit"'; then
+	echo "Second pull was not served from the OCI accelerator cache" >&2
+	echo "${accelerator_logs}" >&2
+	exit 1
+fi
+
+# With the NetworkPolicy, runner Pods still reach the proxy but other Pods
+# cannot. Enforcement can take a few seconds to apply.
+"${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values \
+	--set ociAccelerator.networkPolicy.enabled=true >/dev/null
+[[ "$(proxy_pod)" == "${proxy_before}" ]] || { echo "Enabling the NetworkPolicy replaced the proxy Pod" >&2; exit 1; }
+for _ in $(seq 1 6); do
+	blocked=$("${KUBECTL[@]}" run blocked-probe -n "${ACCEL_NAMESPACE}" --image="${ACCEL_IMAGE}" --restart=Never \
+		--rm -i --quiet --command -- wget -q -T 5 -O /dev/null "http://${ACCEL_NAME}:3128/ca.crt" 2>&1 || true)
+	[[ "${blocked}" == *"timed out"* ]] && break
+	sleep 2
+done
+[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]] || {
+	echo "NetworkPolicy blocked a runner Pod from the OCI accelerator" >&2
+	exit 1
+}
+[[ "${blocked}" == *"timed out"* ]] || {
+	echo "NetworkPolicy did not block a non-runner Pod from the OCI accelerator: ${blocked}" >&2
+	exit 1
+}
+
+"${HELM_CLUSTER[@]}" uninstall "${ACCEL_RELEASE}" --namespace "${ACCEL_NAMESPACE}" --wait --timeout 2m
+for _ in $(seq 1 60); do
+	proxy=$(proxy_pod)
+	[[ -z "${proxy}" ]] && break
+	sleep 1
+done
+[[ -z "${proxy}" ]] || {
+	echo "OCI accelerator Pod remained after uninstall" >&2
+	exit 1
+}
+[[ -z "$("${KUBECTL[@]}" get secret "${ACCEL_CA_SECRET}" -n "${ACCEL_NAMESPACE}" -o name --ignore-not-found)" ]] || {
+	echo "Generated CA Secret remained after uninstall" >&2
+	exit 1
+}
+[[ -z "$("${KUBECTL[@]}" get jobs,roles,serviceaccounts -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=oci-accelerator-ca -o name)" ]] || {
+	echo "CA hook resources remained after uninstall" >&2
+	exit 1
+}

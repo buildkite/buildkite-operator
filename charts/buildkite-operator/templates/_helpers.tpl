@@ -75,6 +75,46 @@ over .Values.defaults, with the entry taking precedence.
 {{- printf "%s-ephemeral-agent" (include "buildkite-operator.fullname" . | trunc 47 | trimSuffix "-") }}
 {{- end }}
 
+{{- define "buildkite-operator.ociAcceleratorName" -}}
+{{- printf "%s-oci-accelerator" (include "buildkite-operator.fullname" . | trunc 36 | trimSuffix "-") }}
+{{- end }}
+
+{{/*
+Returns "true" when a queue entry's Docker daemon pulls through the OCI
+accelerator. Called with (dict "root" $ "settings" <entry settings>).
+*/}}
+{{- define "buildkite-operator.usesOciAccelerator" -}}
+{{- if and .root.Values.ociAccelerator.enabled (has .settings.runtime (list "dind" "kata" "sysbox")) .settings.docker.ociAccelerator -}}
+true
+{{- end }}
+{{- end }}
+
+{{/*
+Returns "true" when any queue entry pulls through the OCI accelerator, so the
+release installs it.
+*/}}
+{{- define "buildkite-operator.ociAcceleratorUsed" -}}
+{{- $root := . }}
+{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- if include "buildkite-operator.usesOciAccelerator" (dict "root" $root "settings" $entry.settings) }}
+{{- print "true" }}
+{{- break }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "buildkite-operator.ociAcceleratorCASecretName" -}}
+{{- .Values.ociAccelerator.ca.existingSecret.name | default (printf "%s-ca" (include "buildkite-operator.ociAcceleratorName" .)) }}
+{{- end }}
+
+{{- define "buildkite-operator.ociAcceleratorCAHookName" -}}
+{{- printf "%s-ca-hook" (include "buildkite-operator.ociAcceleratorName" .) }}
+{{- end }}
+
+{{- define "buildkite-operator.ociAcceleratorProxyURL" -}}
+{{- printf "http://%s.%s.svc:3128" (include "buildkite-operator.ociAcceleratorName" .) .Release.Namespace }}
+{{- end }}
+
 {{- define "buildkite-operator.agentTokenSecretRef" -}}
 {{- if .Values.agentToken.existingSecret.name -}}
 name: {{ .Values.agentToken.existingSecret.name | quote }}
@@ -83,6 +123,79 @@ key: {{ .Values.agentToken.existingSecret.key | quote }}
 name: {{ include "buildkite-operator.agentTokenSecretName" . }}
 key: token
 {{- end }}
+{{- end }}
+
+{{- define "buildkite-operator.registryCredentialsEnabled" -}}
+{{- if or .Values.registryCredentials.auths .Values.registryCredentials.existingSecret.name -}}
+true
+{{- end }}
+{{- end }}
+
+{{- define "buildkite-operator.registryCredentialsSecretName" -}}
+{{- .Values.registryCredentials.existingSecret.name | default (printf "%s-registry-credentials" (include "buildkite-operator.fullname" . | trunc 42 | trimSuffix "-")) }}
+{{- end }}
+
+{{/*
+The .dockerconfigjson content of the chart-managed registry credentials Secret.
+*/}}
+{{- define "buildkite-operator.registryCredentialsConfig" -}}
+{{- if and .Values.registryCredentials.auths .Values.registryCredentials.existingSecret.name }}
+{{- fail "set only one of registryCredentials.auths or registryCredentials.existingSecret.name" }}
+{{- end }}
+{{- $auths := dict }}
+{{- range $credential := .Values.registryCredentials.auths }}
+{{- if hasKey $auths $credential.registry }}
+{{- fail (printf "registryCredentials.auths lists registry %s more than once" $credential.registry) }}
+{{- end }}
+{{- $_ := set $auths $credential.registry (dict "username" $credential.username "password" $credential.password "auth" (printf "%s:%s" $credential.username $credential.password | b64enc)) }}
+{{- end }}
+{{- dict "auths" $auths | toJson }}
+{{- end }}
+
+{{/*
+imagePullSecrets for a Pod spec, or nothing without registry credentials.
+*/}}
+{{- define "buildkite-operator.imagePullSecrets" -}}
+{{- if include "buildkite-operator.registryCredentialsEnabled" . -}}
+imagePullSecrets:
+  - name: {{ include "buildkite-operator.registryCredentialsSecretName" . | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "buildkite-operator.registryCredentialsHookSecretName" -}}
+{{- printf "%s-registry-credentials-hook" (include "buildkite-operator.fullname" . | trunc 37 | trimSuffix "-") }}
+{{- end }}
+
+{{/*
+imagePullSecrets for hook Pods. Hooks run before the release's own resources
+exist, so with chart-managed credentials they use a hook copy of the Secret.
+*/}}
+{{- define "buildkite-operator.hookImagePullSecrets" -}}
+{{- if .Values.registryCredentials.existingSecret.name -}}
+imagePullSecrets:
+  - name: {{ .Values.registryCredentials.existingSecret.name | quote }}
+{{- else if .Values.registryCredentials.auths -}}
+imagePullSecrets:
+  - name: {{ include "buildkite-operator.registryCredentialsHookSecretName" . | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
+Pod template annotation that rolls Pods when chart-managed registry credentials
+change.
+*/}}
+{{- define "buildkite-operator.registryCredentialsChecksum" -}}
+{{- if .Values.registryCredentials.auths -}}
+checksum/registry-credentials: {{ include "buildkite-operator.registryCredentialsConfig" . | sha256sum }}
+{{- end }}
+{{- end }}
+
+{{/*
+Docker client configuration directory shared by the containers of a Docker
+runner Pod that run the docker CLI.
+*/}}
+{{- define "buildkite-operator.dockerConfigPath" -}}
+/etc/buildkite-agent/docker
 {{- end }}
 
 {{- define "buildkite-operator.metricsTokenSecretName" -}}

@@ -1,8 +1,8 @@
 {{- $ephemeralAgent := false }}
 {{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}{{ if $entry.settings.ephemeralAgent }}{{ $ephemeralAgent = true }}{{ end }}{{ end }}
 {{- if $ephemeralAgent }}
-# supervisor.sh runs kata and sysbox ephemeral agents; ephemeral-agent.sh runs
-# standard ones.
+# supervisor.sh runs dind, kata and sysbox ephemeral agents; ephemeral-agent.sh
+# runs standard ones.
 apiVersion: v1
 kind: ConfigMap
 metadata:
