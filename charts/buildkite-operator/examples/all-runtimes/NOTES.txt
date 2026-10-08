@@ -1,0 +1,22 @@
+Buildkite runners are installed in buildkite. KEDA scales each queue from Buildkite queue metrics:
+
+  docker: queue docker, dind, persistent agents, 1-4 runners (Deployment buildkite-docker)
+  docker-builds: queue docker-builds, sysbox, persistent agents, 0-4 runners (Deployment buildkite-docker-builds)
+  linux: queue linux, standard, ephemeral agents, 1-10 runners (Deployment buildkite-linux)
+  untrusted: queue untrusted, kata, ephemeral agents, 1-6 runners (Deployment buildkite-untrusted)
+
+  kubectl get deployment,scaledobject -l app.kubernetes.io/instance=buildkite -n buildkite
+  kubectl get pods -l app.kubernetes.io/component=runner -L buildkite.com/runner-pool -n buildkite
+
+This chart does not install container runtimes: kata needs RuntimeClass kata-qemu-runtime-rs and nodes labelled and tainted experiments.buildkite.com/runtime=kata; sysbox needs RuntimeClass sysbox-runc and nodes labelled and tainted experiments.buildkite.com/runtime=sysbox.
+If runner Pods don't start, check the ReplicaSet events for "RuntimeClass not found" and the Pods for FailedScheduling.
+
+dind and kata runner Pods include a privileged Docker daemon, so the namespace must allow privileged Pods (Pod Security Admission level "privileged"). If runner Pods don't appear, check the ReplicaSet events for "violates PodSecurity".
+
+WARNING: dind needs nothing installed, but its privileged Docker daemon has host-level access to its node. It is not isolation: only run trusted jobs on dind queues.
+
+Docker daemons for docker, docker-builds pull through the OCI accelerator, caching registry-1.docker.io, ghcr.io, public.ecr.aws:
+
+  kubectl logs deployment/buildkite-buildkite-operator-oci-accelerator -c oci-accelerator -n buildkite
+
+The chart generated the proxy's CA in Secret buildkite-buildkite-operator-oci-accelerator-ca, which is deleted on uninstall. To rotate it, delete the Secret and run helm upgrade, then restart the proxy Deployment and those queues' Deployments.

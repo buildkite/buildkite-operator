@@ -155,7 +155,7 @@ test-helm: ## Validate the standalone Helm chart.
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-chart.sh
 
 .PHONY: helm-examples
-helm-examples: ## Render each examples/<name>/values.yaml of the standalone chart into rendered.yaml.
+helm-examples: ## Render each examples/<name>/values.yaml of the standalone chart into rendered.yaml and NOTES.txt.
 	@set -eu; \
 		for values in $(HELM_CHART_DIR)/examples/*/values.yaml; do \
 			dir="$$(dirname "$$values")"; \
@@ -165,9 +165,15 @@ helm-examples: ## Render each examples/<name>/values.yaml of the standalone char
 				--api-versions keda.sh/v1alpha1/TriggerAuthentication \
 				--values "$$values" >"$$dir/rendered.yaml.tmp"; \
 			mv "$$dir/rendered.yaml.tmp" "$$dir/rendered.yaml"; \
+			$(HELM) install buildkite $(HELM_CHART_DIR) --dry-run=client \
+				--namespace buildkite \
+				--set keda.validateInstallation=false \
+				--values "$$values" >"$$dir/NOTES.txt.tmp"; \
+			sed '1,/^NOTES:$$/d' "$$dir/NOTES.txt.tmp" >"$$dir/NOTES.txt"; \
+			rm "$$dir/NOTES.txt.tmp"; \
 		done; \
-		for rendered in $(HELM_CHART_DIR)/examples/*/rendered.yaml; do \
-			[ -f "$$(dirname "$$rendered")/values.yaml" ] || rm "$$rendered"; \
+		for rendered in $(HELM_CHART_DIR)/examples/*/rendered.yaml $(HELM_CHART_DIR)/examples/*/NOTES.txt; do \
+			[ ! -f "$$rendered" ] || [ -f "$$(dirname "$$rendered")/values.yaml" ] || rm "$$rendered"; \
 		done
 
 .PHONY: install-hooks

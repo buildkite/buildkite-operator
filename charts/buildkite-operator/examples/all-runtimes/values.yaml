@@ -2,7 +2,7 @@
 # ephemeral agents, scale to zero, tokens from existing Secrets, and image
 # pull caching through the OCI accelerator, which one entry opts out of. Run
 # `make helm-examples` after changing this file or the chart to update
-# rendered.yaml.
+# rendered.yaml and NOTES.txt.
 agentToken:
   existingSecret:
     name: buildkite-agent-token
