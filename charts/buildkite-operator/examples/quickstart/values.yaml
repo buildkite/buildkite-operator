@@ -1,6 +1,6 @@
 # One standard queue with persistent agents and a chart-managed token Secret.
 # Run `make helm-examples` after changing this file or the chart to update
-# rendered.yaml.
+# rendered.yaml and NOTES.txt.
 agentToken:
   value: example-agent-token
 

@@ -515,8 +515,9 @@ make install-hooks    # use the Git hooks in .githooks
 ```
 
 Each directory under `charts/buildkite-operator/examples` pairs a
-`values.yaml` with the `rendered.yaml` that `helm template` produces from it,
-so chart changes show up as manifest diffs in review. The pre-commit hook
+`values.yaml` with the `rendered.yaml` that `helm template` produces from it
+and the `NOTES.txt` that `helm install` prints for it, so chart changes show up
+as manifest and install-notes diffs in review. The pre-commit hook
 installed by `make install-hooks` renders the staged chart and stops the commit
 if the staged examples don't match. Unstaged changes are ignored.
 

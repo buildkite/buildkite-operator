@@ -1,0 +1,6 @@
+Buildkite runners are installed in buildkite. KEDA scales each queue from Buildkite queue metrics:
+
+  linux: queue linux, standard, persistent agents, 1-4 runners (Deployment buildkite-linux)
+
+  kubectl get deployment,scaledobject -l app.kubernetes.io/instance=buildkite -n buildkite
+  kubectl get pods -l app.kubernetes.io/component=runner -L buildkite.com/runner-pool -n buildkite
