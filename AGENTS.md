@@ -117,6 +117,14 @@ adds or removes significant branching, re-evaluate the examples:
 
 Then run `make helm-examples`.
 
+Each pull request that changes the released chart should bump `version` in
+`Chart.yaml` once, following [SemVer](https://semver.org) as applied to a 0.x
+chart: a minor bump (`0.8.1` → `0.9.0`) for new features or changes users must
+act on, and a patch bump (`0.8.0` → `0.8.1`) for fixes. Skip the bump for changes
+that don't affect what users install, such as tests, examples or docs.
+Regenerate the examples afterwards, since their `helm.sh/chart` labels include
+the version.
+
 **After editing `*.go` files:**
 ```
 make lint-fix   # Auto-fix code style
