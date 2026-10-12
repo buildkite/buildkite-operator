@@ -68,12 +68,16 @@ cleanup() {
 	"${HELM_CLUSTER[@]}" uninstall "${RELEASE}" --namespace "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${HELM_CLUSTER[@]}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${HELM_CLUSTER[@]}" uninstall "${ACCEL_RELEASE}" --namespace "${ACCEL_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+	if [[ "${IMAGE_CACHE_BACKEND:-oci-accelerator}" == spegel ]]; then
+		"${HELM_CLUSTER[@]}" uninstall spegel --namespace "${ACCEL_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+		[[ -z "${spegel_puller_image:-}" ]] || docker image rm "${spegel_puller_image}" >/dev/null 2>&1 || true
+	fi
 	"${KUBECTL[@]}" delete namespace "${ACCEL_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${HELM_CLUSTER[@]}" uninstall "${KEDA_RELEASE}" --namespace "${KEDA_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${KUBECTL[@]}" delete namespace "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${KUBECTL[@]}" delete namespace "${SECOND_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${KUBECTL[@]}" delete namespace "${KEDA_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
-	rm -rf "${agent_dir:-}" "${agent_logs:-}"
+	rm -rf "${agent_dir:-}" "${agent_logs:-}" "${spegel_dir:-}"
 }
 trap cleanup EXIT
 
@@ -336,6 +340,11 @@ fi
 "${KUBECTL[@]}" get scaledobject/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=30s
 "${HELM_CLUSTER[@]}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --wait --timeout 2m
+
+if [[ "${IMAGE_CACHE_BACKEND:-oci-accelerator}" == spegel ]]; then
+	source hack/test-spegel-cache.sh
+	exit 0
+fi
 
 # The OCI accelerator caches pulls by the Docker daemon in a dind runner Pod,
 # with a CA the chart generates. Its NetworkPolicy is enabled only after the

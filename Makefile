@@ -191,9 +191,14 @@ test-helm-e2e: kind ## Install and uninstall the standalone chart in a fresh, is
 		kubeconfig="$$(mktemp)"; \
 		cleanup() { $(KIND) delete cluster --name "$$cluster" --kubeconfig "$$kubeconfig"; rm -f "$$kubeconfig"; }; \
 		trap cleanup EXIT INT TERM; \
-		$(KIND) create cluster --name "$$cluster" --kubeconfig "$$kubeconfig"; \
+		$(KIND) create cluster --name "$$cluster" --kubeconfig "$$kubeconfig" $(if $(KIND_CONFIG),--config "$(KIND_CONFIG)",); \
 		KUBECONFIG="$$kubeconfig" KUBE_CONTEXT="kind-$$cluster" KIND_CLUSTER="$$cluster" \
-			HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-e2e.sh
+			KIND=$(KIND) HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-e2e.sh
+
+.PHONY: test-spegel
+test-spegel: ## Run the existing Helm e2e suite with Spegel replacing the accelerator section.
+	go test -race ./hack/spegel-puller
+	IMAGE_CACHE_BACKEND=spegel $(MAKE) test-helm-e2e KIND_CONFIG=hack/spegel-kind.yaml
 
 ##@ Deployment
 

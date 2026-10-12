@@ -509,6 +509,7 @@ make test-helm        # lint and render the standalone chart
 make helm-examples    # update the chart's rendered examples
 make test-supervisor  # run the ephemeral-agent supervisor against Docker
 make test-helm-e2e    # install and uninstall the chart in isolated Kind
+make test-spegel      # test waiting cache fills through Spegel in isolated Kind
 make lint             # golangci-lint
 make test             # Go tests and generated-file checks
 make install-hooks    # use the Git hooks in .githooks
@@ -524,6 +525,45 @@ if the staged examples don't match. Unstaged changes are ignored.
 CI runs the checks, and also fails if the rendered examples are out of date.
 The end-to-end check deletes its isolated Kind cluster when it finishes, which
 may clear the current kubeconfig context.
+
+### Spegel experiment
+
+Run `make test-spegel` with Docker running and Go, Helm, kubectl, and OpenSSL
+available. It builds and loads the Go puller image locally, then runs the
+existing Helm end-to-end suite in an isolated two-node
+Kind cluster, replacing the OCI accelerator-specific section with a Spegel
+0.7.4 experiment. The cluster is deleted on exit.
+
+The test starts with no copy of `public.ecr.aws/docker/library/alpine:3.20`
+on either node and no fill Pod. A dind runner uses the existing accelerator
+test's image and commands:
+
+```bash
+docker pull -q public.ecr.aws/docker/library/alpine:3.20
+docker image rm public.ecr.aws/docker/library/alpine:3.20
+docker pull -q public.ecr.aws/docker/library/alpine:3.20
+```
+
+Docker's native registry mirrors only cover Docker Hub, so this ECR test uses
+a stateless NGINX bridge with a test certificate trusted by the runner. The
+bridge tries Spegel first. A miss on the configured image's manifest calls a
+Go helper that creates a fill Pod on the control-plane node. Kubernetes
+pulls directly from ECR into node containerd, bypassing the bridge. The helper
+waits up to 120 seconds for the Pod to be Ready and Spegel to serve the manifest,
+then NGINX retries the original request. Concurrent misses share that fill.
+The fill Pod stays running until cleanup to retain the image.
+
+Other missing content, authentication requests, and failed fills fall back to
+ECR. Upstream remains available. The test requires one completed automatic fill
+on the first pull, then additional successful Spegel blob responses specifically
+during the second pull without another fill. Upstream success alone does not pass.
+The helper's waiting, concurrency, request filtering, and failure responses are
+also checked with `go test -race ./hack/spegel-puller`.
+
+This is a public Alpine experiment: the helper handles one configured image
+and relies on its `sleep` command. General image support and private credentials
+are not implemented. Runner Docker stores remain separate; the fill Pod supplies
+node content on demand. The experiment does not change chart configuration.
 
 ## License
 
