@@ -70,10 +70,14 @@ clean_job_state() {
 	docker network prune --force >/dev/null || return 1
 	docker volume prune --all --force >/dev/null || return 1
 	# The supervisor cannot write the workspace, so clear the daemon's copy as
-	# root in a throwaway container.
+	# root in a throwaway container. The daemon resolves bind-mount sources in
+	# its own container, so restore a copy of the agent binary there for jobs
+	# that mount it into their containers.
 	docker run --rm --pull never --network none --user 0 --entrypoint /bin/sh \
 		--volume /buildkite:/buildkite "$AGENT_IMAGE" \
-		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?*' || return 1
+		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?* &&
+			mkdir /buildkite/bin &&
+			cp /usr/local/bin/buildkite-agent /buildkite/bin/buildkite-agent' || return 1
 	log "Cleaned job state"
 }
 
@@ -107,6 +111,7 @@ start_agent() {
 		--env BUILDKITE_PLUGINS_PATH=/buildkite/plugins \
 		--env BUILDKITE_SOCKETS_PATH=/buildkite/sockets \
 		--env DOCKER_HOST=unix:///var/run/docker.sock \
+		--env BUILDKITE_AGENT_BINARY_PATH=/buildkite/bin/buildkite-agent \
 		"$AGENT_IMAGE" start --disconnect-after-job >/dev/null
 }
 

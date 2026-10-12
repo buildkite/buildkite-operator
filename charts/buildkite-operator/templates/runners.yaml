@@ -120,6 +120,25 @@ spec:
             - name: docker-config
               mountPath: {{ $dockerConfig }}
         {{- end }}
+        {{- if not $supervised }}
+        # The Docker daemon resolves bind-mount sources in its own container,
+        # which shares only the workspace with the agent, so jobs that mount
+        # the agent binary into their containers need a copy there.
+        - name: agent-binary
+          image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
+          imagePullPolicy: {{ $r.image.pullPolicy }}
+          command: ["/bin/sh", "-c", "mkdir -p /buildkite/bin && cp /usr/local/bin/buildkite-agent /buildkite/bin/buildkite-agent"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $r.resources | nindent 12 }}
+          volumeMounts:
+            - name: workspace
+              mountPath: /buildkite
+        {{- end }}
         - name: dockerd
           image: "{{ $r.docker.image.repository }}:{{ $r.docker.image.tag }}"
           imagePullPolicy: {{ $r.docker.image.pullPolicy }}
@@ -269,6 +288,9 @@ spec:
               value: unix:///var/run/docker.sock
             - name: DOCKER_CONFIG
               value: {{ $dockerConfig }}
+            # Read by the docker and docker-compose plugins' mount-buildkite-agent.
+            - name: BUILDKITE_AGENT_BINARY_PATH
+              value: /buildkite/bin/buildkite-agent
             {{- end }}
           ports:
             - name: health

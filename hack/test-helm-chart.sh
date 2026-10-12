@@ -433,6 +433,20 @@ if [[ "$(document "${direct}" Deployment test-linux)" == *"docker-config"* || "$
 	exit 1
 fi
 
+# Persistent Docker runners copy the agent binary into the workspace, which the
+# Docker daemon shares, so jobs can bind-mount it; the supervisor does the same
+# for ephemeral agents.
+agent_binary_env=$'- name: BUILDKITE_AGENT_BINARY_PATH\n              value: /buildkite/bin/buildkite-agent'
+dind_init=$(awk '/^      initContainers:$/,/^      containers:$/' <<<"${dind_runner}")
+assert_contains "${dind_init}" $'- name: agent-binary\n          image: "buildkite/agent:4"'
+assert_contains "${dind_init}" 'cp /usr/local/bin/buildkite-agent /buildkite/bin/buildkite-agent'
+assert_contains "$(awk '/^        - name: agent$/,/^        - name: deletion-cost$/' <<<"${dind_runner}")" "${agent_binary_env}"
+assert_contains "${ephemeral}" '--env BUILDKITE_AGENT_BINARY_PATH=/buildkite/bin/buildkite-agent'
+if [[ "${ephemeral_dind_runner}" == *"- name: agent-binary"* || "${direct}" == *"BUILDKITE_AGENT_BINARY_PATH"* ]]; then
+	echo "Ephemeral Docker or standard runners rendered the agent binary copy" >&2
+	exit 1
+fi
+
 # Registry credentials become one dockerconfigjson Secret, used to pull every
 # Pod's images and copied into Docker runners' client configuration.
 credential_args=(
