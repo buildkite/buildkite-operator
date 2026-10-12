@@ -294,8 +294,9 @@ The Docker daemon resolves bind-mount sources in its own container, which
 shares only the `/buildkite` workspace with the agent. Jobs can bind-mount
 checkouts and other paths under `/buildkite` into their containers, but not
 files elsewhere in the agent's container. So that the Docker and Docker Compose
-plugins' `mount-buildkite-agent` works, the chart copies the agent binary to
-`/buildkite/bin/buildkite-agent` and sets `BUILDKITE_AGENT_BINARY_PATH` to it.
+plugins' `mount-buildkite-agent` works, each agent copies its binary to
+`/buildkite/bin/buildkite-agent` and puts that directory first on `PATH`,
+where the plugins look for it. The agent image therefore needs `/bin/sh`.
 
 ### Privileged Docker-in-Docker
 

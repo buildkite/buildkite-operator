@@ -66,9 +66,9 @@ docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /ctx && cat >/ctx/agent && chmod 
 [ "$DOCKER_CONFIG" = /etc/buildkite-agent/docker ] && [ -f "$DOCKER_CONFIG/config.json" ] ||
 	{ echo "Docker client configuration missing" >&2; exit 65; }
 # /buildkite is the daemon's, so jobs can bind-mount the binary from there.
-[ "$BUILDKITE_AGENT_BINARY_PATH" = /buildkite/bin/buildkite-agent ] &&
-	cmp -s /usr/local/bin/buildkite-agent "$BUILDKITE_AGENT_BINARY_PATH" && [ -x "$BUILDKITE_AGENT_BINARY_PATH" ] ||
-	{ echo "Agent binary missing from the workspace" >&2; exit 66; }
+[ "$(command -v buildkite-agent)" = /buildkite/bin/buildkite-agent ] &&
+	cmp -s /usr/local/bin/buildkite-agent /buildkite/bin/buildkite-agent ||
+	{ echo "Agent binary not first on PATH from the workspace" >&2; exit 66; }
 touch "$DOCKER_CONFIG/seen-$BUILDKITE_AGENT_NAME"
 mkdir -p /buildkite/builds
 touch "/buildkite/builds/$BUILDKITE_AGENT_NAME"

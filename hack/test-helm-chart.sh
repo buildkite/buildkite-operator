@@ -433,17 +433,20 @@ if [[ "$(document "${direct}" Deployment test-linux)" == *"docker-config"* || "$
 	exit 1
 fi
 
-# Persistent Docker runners copy the agent binary into the workspace, which the
-# Docker daemon shares, so jobs can bind-mount it; the supervisor does the same
-# for ephemeral agents.
-agent_binary_env=$'- name: BUILDKITE_AGENT_BINARY_PATH\n              value: /buildkite/bin/buildkite-agent'
-dind_init=$(awk '/^      initContainers:$/,/^      containers:$/' <<<"${dind_runner}")
-assert_contains "${dind_init}" $'- name: agent-binary\n          image: "buildkite/agent:4"'
-assert_contains "${dind_init}" 'cp /usr/local/bin/buildkite-agent /buildkite/bin/buildkite-agent'
-assert_contains "$(awk '/^        - name: agent$/,/^        - name: deletion-cost$/' <<<"${dind_runner}")" "${agent_binary_env}"
-assert_contains "${ephemeral}" '--env BUILDKITE_AGENT_BINARY_PATH=/buildkite/bin/buildkite-agent'
-if [[ "${ephemeral_dind_runner}" == *"- name: agent-binary"* || "${direct}" == *"BUILDKITE_AGENT_BINARY_PATH"* ]]; then
-	echo "Ephemeral Docker or standard runners rendered the agent binary copy" >&2
+# Docker runners put a copy of the agent binary in the workspace, which the
+# Docker daemon shares, first on PATH, so plugins that mount it into job
+# containers find a path the daemon can see. Standard runners don't.
+agent_binary_copy='mkdir -p /buildkite/bin && cp /usr/local/bin/buildkite-agent /buildkite/bin/ && export PATH="/buildkite/bin:$PATH" && exec /usr/local/bin/buildkite-agent start'
+assert_contains "$(awk '/^        - name: agent$/,/^        - name: deletion-cost$/' <<<"${dind_runner}")" "- ${agent_binary_copy}"
+assert_contains "${ephemeral}" 'export PATH="/buildkite/bin:$PATH" &&'
+if [[ "${direct}" == *"/buildkite/bin"* ]]; then
+	echo "Standard runners rendered the agent binary copy" >&2
+	exit 1
+fi
+# The plugins mount BUILDKITE_AGENT_BINARY_PATH whenever it is set, even when
+# mount-buildkite-agent is off, so the chart must not set it.
+if [[ "${dind_runner}${ephemeral}" == *"BUILDKITE_AGENT_BINARY_PATH"* ]]; then
+	echo "Docker runners set BUILDKITE_AGENT_BINARY_PATH" >&2
 	exit 1
 fi
 

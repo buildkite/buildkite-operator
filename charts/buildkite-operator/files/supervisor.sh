@@ -70,14 +70,10 @@ clean_job_state() {
 	docker network prune --force >/dev/null || return 1
 	docker volume prune --all --force >/dev/null || return 1
 	# The supervisor cannot write the workspace, so clear the daemon's copy as
-	# root in a throwaway container. The daemon resolves bind-mount sources in
-	# its own container, so restore a copy of the agent binary there for jobs
-	# that mount it into their containers.
+	# root in a throwaway container.
 	docker run --rm --pull never --network none --user 0 --entrypoint /bin/sh \
 		--volume /buildkite:/buildkite "$AGENT_IMAGE" \
-		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?* &&
-			mkdir /buildkite/bin &&
-			cp /usr/local/bin/buildkite-agent /buildkite/bin/buildkite-agent' || return 1
+		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?*' || return 1
 	log "Cleaned job state"
 }
 
@@ -92,7 +88,10 @@ start_agent() {
 	agent_name="${POD_NAME}-$(random_suffix)"
 	log "Starting agent $agent_name"
 	# DOCKER_CONFIG is at the same path in the Docker daemon's container, so
-	# every agent shares the Pod's registry credentials and logins.
+	# every agent shares the Pod's registry credentials and logins. The daemon
+	# resolves bind-mount sources in that container, which shares only the
+	# workspace with the agent, so jobs whose plugins mount the agent binary
+	# (mount-buildkite-agent) find a copy there first on PATH.
 	docker run --detach --pull never \
 		--name "$agent_container" \
 		--hostname "$POD_NAME" \
@@ -101,7 +100,7 @@ start_agent() {
 		--volume /buildkite:/buildkite \
 		--volume "$DOCKER_CONFIG:$DOCKER_CONFIG" \
 		--env DOCKER_CONFIG \
-		--entrypoint /usr/local/bin/buildkite-agent \
+		--entrypoint /bin/sh \
 		--env BUILDKITE_AGENT_CONFIG=/dev/null \
 		--env BUILDKITE_AGENT_TOKEN \
 		--env "BUILDKITE_AGENT_NAME=$agent_name" \
@@ -111,8 +110,10 @@ start_agent() {
 		--env BUILDKITE_PLUGINS_PATH=/buildkite/plugins \
 		--env BUILDKITE_SOCKETS_PATH=/buildkite/sockets \
 		--env DOCKER_HOST=unix:///var/run/docker.sock \
-		--env BUILDKITE_AGENT_BINARY_PATH=/buildkite/bin/buildkite-agent \
-		"$AGENT_IMAGE" start --disconnect-after-job >/dev/null
+		"$AGENT_IMAGE" -c 'mkdir -p /buildkite/bin &&
+			cp /usr/local/bin/buildkite-agent /buildkite/bin/ &&
+			export PATH="/buildkite/bin:$PATH" &&
+			exec /usr/local/bin/buildkite-agent start --disconnect-after-job' >/dev/null
 }
 
 follow_agent_logs() {
