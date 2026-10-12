@@ -433,6 +433,23 @@ if [[ "$(document "${direct}" Deployment test-linux)" == *"docker-config"* || "$
 	exit 1
 fi
 
+# Docker runners put a copy of the agent binary in the workspace, which the
+# Docker daemon shares, first on PATH, so plugins that mount it into job
+# containers find a path the daemon can see. Standard runners don't.
+agent_binary_copy='mkdir -p /buildkite/bin && cp /usr/local/bin/buildkite-agent /buildkite/bin/ && export PATH="/buildkite/bin:$PATH" && exec /usr/local/bin/buildkite-agent start'
+assert_contains "$(awk '/^        - name: agent$/,/^        - name: deletion-cost$/' <<<"${dind_runner}")" "- ${agent_binary_copy}"
+assert_contains "${ephemeral}" 'export PATH="/buildkite/bin:$PATH" &&'
+if [[ "${direct}" == *"/buildkite/bin"* ]]; then
+	echo "Standard runners rendered the agent binary copy" >&2
+	exit 1
+fi
+# The plugins mount BUILDKITE_AGENT_BINARY_PATH whenever it is set, even when
+# mount-buildkite-agent is off, so the chart must not set it.
+if [[ "${dind_runner}${ephemeral}" == *"BUILDKITE_AGENT_BINARY_PATH"* ]]; then
+	echo "Docker runners set BUILDKITE_AGENT_BINARY_PATH" >&2
+	exit 1
+fi
+
 # Registry credentials become one dockerconfigjson Secret, used to pull every
 # Pod's images and copied into Docker runners' client configuration.
 credential_args=(

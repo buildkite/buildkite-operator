@@ -88,7 +88,10 @@ start_agent() {
 	agent_name="${POD_NAME}-$(random_suffix)"
 	log "Starting agent $agent_name"
 	# DOCKER_CONFIG is at the same path in the Docker daemon's container, so
-	# every agent shares the Pod's registry credentials and logins.
+	# every agent shares the Pod's registry credentials and logins. The daemon
+	# resolves bind-mount sources in that container, which shares only the
+	# workspace with the agent, so jobs whose plugins mount the agent binary
+	# (mount-buildkite-agent) find a copy there first on PATH.
 	docker run --detach --pull never \
 		--name "$agent_container" \
 		--hostname "$POD_NAME" \
@@ -97,7 +100,7 @@ start_agent() {
 		--volume /buildkite:/buildkite \
 		--volume "$DOCKER_CONFIG:$DOCKER_CONFIG" \
 		--env DOCKER_CONFIG \
-		--entrypoint /usr/local/bin/buildkite-agent \
+		--entrypoint /bin/sh \
 		--env BUILDKITE_AGENT_CONFIG=/dev/null \
 		--env BUILDKITE_AGENT_TOKEN \
 		--env "BUILDKITE_AGENT_NAME=$agent_name" \
@@ -107,7 +110,10 @@ start_agent() {
 		--env BUILDKITE_PLUGINS_PATH=/buildkite/plugins \
 		--env BUILDKITE_SOCKETS_PATH=/buildkite/sockets \
 		--env DOCKER_HOST=unix:///var/run/docker.sock \
-		"$AGENT_IMAGE" start --disconnect-after-job >/dev/null
+		"$AGENT_IMAGE" -c 'mkdir -p /buildkite/bin &&
+			cp /usr/local/bin/buildkite-agent /buildkite/bin/ &&
+			export PATH="/buildkite/bin:$PATH" &&
+			exec /usr/local/bin/buildkite-agent start --disconnect-after-job' >/dev/null
 }
 
 follow_agent_logs() {
