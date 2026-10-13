@@ -75,6 +75,10 @@ over .Values.defaults, with the entry taking precedence.
 {{- printf "%s-ephemeral-agent" (include "buildkite-operator.fullname" . | trunc 47 | trimSuffix "-") }}
 {{- end }}
 
+{{- define "buildkite-operator.stepImageName" -}}
+{{- printf "%s-step-image" (include "buildkite-operator.fullname" . | trunc 52 | trimSuffix "-") }}
+{{- end }}
+
 {{- define "buildkite-operator.ociAcceleratorName" -}}
 {{- printf "%s-oci-accelerator" (include "buildkite-operator.fullname" . | trunc 36 | trimSuffix "-") }}
 {{- end }}

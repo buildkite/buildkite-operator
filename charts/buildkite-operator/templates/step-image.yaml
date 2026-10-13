@@ -1,0 +1,20 @@
+{{- $stepImages := false }}
+{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- if and (has $entry.settings.runtime (list "dind" "kata" "sysbox")) $entry.settings.docker.stepImages }}
+{{- $stepImages = true }}
+{{- end }}
+{{- end }}
+{{- if $stepImages }}
+# The agent's bootstrap-script on dind, kata and sysbox runners, which runs
+# steps that set image: in that image.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "buildkite-operator.stepImageName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+data:
+  step-image.sh: |-
+{{ .Files.Get "files/step-image.sh" | indent 4 }}
+{{- end }}
