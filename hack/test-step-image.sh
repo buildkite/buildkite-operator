@@ -59,7 +59,6 @@ docker run --detach --privileged --name "${ID}-dockerd" \
 	--volume "${ID}-docker-config:${DOCKER_CONFIG_DIR}" \
 	"${DIND_IMAGE}" dockerd --host=unix:///var/run/docker.sock >/dev/null
 wait_for "Docker daemon" inner info
-inner pull --quiet "${STEP_IMAGE}" >/dev/null
 
 # The agent container copies its binary into the workspace, as the chart's
 # agents do, and holds the repository and plugin the jobs check out.
@@ -88,6 +87,12 @@ in_agent sh -ec '
 	printf "#!/bin/sh\ncase \$BUILDKITE_JOB_ID in cancel-*) [ -e /etc/alpine-release ] || { sleep 2; touch /buildkite/pre-exit-\$BUILDKITE_JOB_ID; } ;; esac\n" \
 		>/srv/marker-buildkite-plugin/hooks/pre-exit
 	chmod +x /srv/marker-buildkite-plugin/hooks/pre-exit
+	# With DELAY_DOCKER set to a docker subcommand, the CLI waits before running
+	# it, ignoring SIGTERM as a CLI with a request in flight would.
+	mkdir -p /usr/local/sbin
+	printf "#!/bin/sh\nif [ \"\$1\" = \"\${DELAY_DOCKER:-}\" ]; then trap \"\" TERM; touch /tmp/delayed-\$BUILDKITE_JOB_ID; sleep 1; fi\nexec /usr/bin/docker \"\$@\"\n" \
+		>/usr/local/sbin/docker
+	chmod +x /usr/local/sbin/docker
 	git -C /srv/marker-buildkite-plugin init --quiet --initial-branch main
 	git -C /srv/marker-buildkite-plugin add . && git -C /srv/marker-buildkite-plugin commit --quiet -m plugin'
 
@@ -121,10 +126,12 @@ logs=$(mktemp -d)
 trap 'cleanup; rm -rf "${logs}"' EXIT
 
 # Starts a job in the background, in its own process group as the agent runs
-# it, recording its PID and exit status in the agent container.
+# it, recording its PID and exit status in the agent container. A fourth
+# argument sets an extra variable.
 start_job() {
 	local id="$1" image="$2" command="$3"
 	docker exec --detach "${job_env[@]}" --env "BUILDKITE_JOB_ID=${id}" --env "BUILDKITE_IMAGE=${image}" \
+		--env "${4:-DELAY_DOCKER=}" \
 		--env "BUILDKITE_COMMAND=${command}" "${ID}-agent" bash -c \
 		'set -m; /bin/sh "$1" >"/tmp/$2.log" 2>&1 & echo $! >"/tmp/$2.pid"; wait $!; echo $? >"/tmp/$2.status"' \
 		bash "${SCRIPT_PATH}" "${id}"
@@ -195,5 +202,14 @@ for target in script group; do
 	in_agent test -e "/buildkite/pre-exit-cancel-${target}" ||
 		fail "Cancelled job (${target}) was killed before its pre-exit hook finished" "${logs}/cancel-${target}.log"
 done
+
+# A job cancelled before docker run has started its container doesn't leave
+# it running.
+start_job cancel-starting "${STEP_IMAGE}" 'sleep 600' DELAY_DOCKER=run
+wait_for "cancel-starting docker run" in_agent test -e /tmp/delayed-cancel-starting
+in_agent kill -TERM "-$(in_agent cat /tmp/cancel-starting.pid)"
+status=$(finish_job cancel-starting)
+[[ "${status}" != 0 ]] || fail "Job cancelled while starting exited with status 0" "${logs}/cancel-starting.log"
+[[ -z "$(step_containers cancel-starting)" ]] || fail "Job cancelled while starting left its container behind"
 
 echo "Step images ran plugins, hooks and commands in the image after checking out in the agent, and stopped on cancellation"
