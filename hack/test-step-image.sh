@@ -182,11 +182,18 @@ start_job failing "${STEP_IMAGE}" 'exit 3'
 status=$(finish_job failing)
 [[ "${status}" == 3 ]] || fail "Failing image job exited with status ${status}, not 3" "${logs}/failing.log"
 
+# Cancelled jobs use an image whose stop signal the bootstrap ignores.
+docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /stop-signal && cat >/stop-signal/Dockerfile &&
+	docker build --quiet --tag step-image-test:stop-signal /stop-signal >/dev/null' <<EOF
+FROM ${STEP_IMAGE}
+STOPSIGNAL SIGWINCH
+EOF
+
 # Cancelling stops the container well within the agent's grace period, after
 # its cleanup hooks, both when only the script is signalled and when, as the
 # agent does, its whole process group is.
 for target in script group; do
-	start_job "cancel-${target}" "${STEP_IMAGE}" 'sleep 600'
+	start_job "cancel-${target}" step-image-test:stop-signal 'sleep 600'
 	wait_for "cancel-${target} container" step_container_running "cancel-${target}"
 	pid=$(in_agent cat "/tmp/cancel-${target}.pid")
 	if [[ "${target}" == group ]]; then

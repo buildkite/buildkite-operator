@@ -86,9 +86,10 @@ unset IFS
 
 # The container gets the agent binary's directory, which the bootstrap
 # appends to PATH, and the same Docker daemon and client configuration as the
-# agent. Creating it pulls the image if needed.
+# agent. Its stop signal is the one the bootstrap handles, not the image's.
+# Creating it pulls the image if needed.
 printf '~~~ Running in %s\n' "$BUILDKITE_IMAGE"
-run docker create --rm --init --name "$container" \
+run docker create --rm --init --stop-signal SIGTERM --name "$container" \
 	--label "buildkite.com/job-id=$BUILDKITE_JOB_ID" \
 	--volume /buildkite:/buildkite \
 	--volume /var/run/docker.sock:/var/run/docker.sock \

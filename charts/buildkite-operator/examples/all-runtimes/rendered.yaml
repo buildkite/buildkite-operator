@@ -520,9 +520,10 @@ data:
     
     # The container gets the agent binary's directory, which the bootstrap
     # appends to PATH, and the same Docker daemon and client configuration as the
-    # agent. Creating it pulls the image if needed.
+    # agent. Its stop signal is the one the bootstrap handles, not the image's.
+    # Creating it pulls the image if needed.
     printf '~~~ Running in %s\n' "$BUILDKITE_IMAGE"
-    run docker create --rm --init --name "$container" \
+    run docker create --rm --init --stop-signal SIGTERM --name "$container" \
     	--label "buildkite.com/job-id=$BUILDKITE_JOB_ID" \
     	--volume /buildkite:/buildkite \
     	--volume /var/run/docker.sock:/var/run/docker.sock \
@@ -803,7 +804,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
-        checksum/step-image: ef98590b73e2b4c34dbb04765b8636b569a1c1cd769a318327fbff33f778fc1d
+        checksum/step-image: 89d0b224bb1f418dbac5f257e18b33a2ca7782dc32fb6a8f469d6cf75c6ac5d1
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost
       automountServiceAccountToken: false
@@ -1443,7 +1444,7 @@ spec:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
         checksum/supervisor: 9c3bdad338df840b063247dc9fc76579284529af08bf29a6ea379f1746ec4346
-        checksum/step-image: ef98590b73e2b4c34dbb04765b8636b569a1c1cd769a318327fbff33f778fc1d
+        checksum/step-image: 89d0b224bb1f418dbac5f257e18b33a2ca7782dc32fb6a8f469d6cf75c6ac5d1
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost
       automountServiceAccountToken: false
