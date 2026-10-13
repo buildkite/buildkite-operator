@@ -16,7 +16,7 @@ if [ -z "${BUILDKITE_IMAGE:-}" ]; then
 fi
 
 container="buildkite-step-$BUILDKITE_JOB_ID"
-started=0
+created=0
 cancelled=0
 
 # The agent kills the job's processes BUILDKITE_CANCEL_SIGNAL_TIMEOUT after
@@ -30,22 +30,19 @@ stop_timeout=$((grace > 1 ? grace - 1 : 0))
 # The agent signals the job's whole process group. The bootstrap stops
 # handling signals after the first, so a second would kill it during its
 # cleanup hooks, and each process must be signalled only once. The checkout
-# bootstrap is in the group, so it gets the signal directly. The docker CLI
-# doesn't forward it, so this stops the container instead, which also works
-# when only this script was signalled. Stopping a container that docker run
-# hasn't created or started yet does nothing, so wait briefly for it to start.
+# bootstrap is in the group, so it gets the signal directly. docker start
+# runs in its own session, so it gets no signal to forward, and this stops
+# the container instead, which also works when only this script was
+# signalled. A container that hasn't started yet is removed, so that a
+# pending docker start fails; one that starts just then is killed outright.
 cancel() {
 	cancelled=1
-	if [ "$started" -eq 1 ]; then
-		i=0
-		while [ "$i" -lt 30 ]; do
-			case $(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null) in
-			'' | created) sleep 0.1 ;;
-			*) break ;;
-			esac
-			i=$((i + 1))
-		done
-		docker stop --time "$stop_timeout" "$container" >/dev/null 2>&1 || true
+	if [ "$created" -eq 1 ]; then
+		if [ "$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null)" = created ]; then
+			docker rm --force "$container" >/dev/null 2>&1 || true
+		else
+			docker stop --time "$stop_timeout" "$container" >/dev/null 2>&1 || true
+		fi
 	fi
 }
 trap cancel TERM INT HUP QUIT
@@ -87,19 +84,11 @@ for name in $names; do
 done
 unset IFS
 
-# Pull the image first, so that a job cancelled while it downloads doesn't
-# start a container.
-printf '~~~ Running in %s\n' "$BUILDKITE_IMAGE"
-if ! docker image inspect "$BUILDKITE_IMAGE" >/dev/null 2>&1; then
-	run docker pull "$BUILDKITE_IMAGE"
-	check $?
-fi
-
 # The container gets the agent binary's directory, which the bootstrap
 # appends to PATH, and the same Docker daemon and client configuration as the
-# agent.
-started=1
-run docker run --rm --init --sig-proxy=false --pull never --name "$container" \
+# agent. Creating it pulls the image if needed.
+printf '~~~ Running in %s\n' "$BUILDKITE_IMAGE"
+run docker create --rm --init --name "$container" \
 	--label "buildkite.com/job-id=$BUILDKITE_JOB_ID" \
 	--volume /buildkite:/buildkite \
 	--volume /var/run/docker.sock:/var/run/docker.sock \
@@ -107,4 +96,11 @@ run docker run --rm --init --sig-proxy=false --pull never --name "$container" \
 	"$@" \
 	--env BUILDKITE_BIN_PATH=/buildkite/bin \
 	--entrypoint /buildkite/bin/buildkite-agent \
-	"$BUILDKITE_IMAGE" bootstrap --phases plugin,command
+	"$BUILDKITE_IMAGE" bootstrap --phases plugin,command >/dev/null
+status=$?
+created=1
+if [ "$status" -ne 0 ] || [ "$cancelled" -eq 1 ]; then
+	docker rm --force "$container" >/dev/null 2>&1
+	exit $((status == 0 ? 1 : status))
+fi
+run setsid docker start --attach "$container"

@@ -90,7 +90,7 @@ in_agent sh -ec '
 	# With DELAY_DOCKER set to a docker subcommand, the CLI waits before running
 	# it, ignoring SIGTERM as a CLI with a request in flight would.
 	mkdir -p /usr/local/sbin
-	printf "#!/bin/sh\nif [ \"\$1\" = \"\${DELAY_DOCKER:-}\" ]; then trap \"\" TERM; touch /tmp/delayed-\$BUILDKITE_JOB_ID; sleep 1; fi\nexec /usr/bin/docker \"\$@\"\n" \
+	printf "#!/bin/sh\nif [ \"\$1\" = \"\${DELAY_DOCKER:-}\" ]; then trap \"\" TERM; touch /tmp/delayed-\$BUILDKITE_JOB_ID; sleep 8; fi\nexec /usr/bin/docker \"\$@\"\n" \
 		>/usr/local/sbin/docker
 	chmod +x /usr/local/sbin/docker
 	git -C /srv/marker-buildkite-plugin init --quiet --initial-branch main
@@ -203,13 +203,23 @@ for target in script group; do
 		fail "Cancelled job (${target}) was killed before its pre-exit hook finished" "${logs}/cancel-${target}.log"
 done
 
-# A job cancelled before docker run has started its container doesn't leave
-# it running.
-start_job cancel-starting "${STEP_IMAGE}" 'sleep 600' DELAY_DOCKER=run
-wait_for "cancel-starting docker run" in_agent test -e /tmp/delayed-cancel-starting
-in_agent kill -TERM "-$(in_agent cat /tmp/cancel-starting.pid)"
-status=$(finish_job cancel-starting)
-[[ "${status}" != 0 ]] || fail "Job cancelled while starting exited with status 0" "${logs}/cancel-starting.log"
-[[ -z "$(step_containers cancel-starting)" ]] || fail "Job cancelled while starting left its container behind"
+# A job cancelled before its container starts doesn't start it, however long
+# creating or starting it takes: when only the script is signalled while the
+# container is being created, and when the group is signalled while it is
+# being started.
+for delayed in create start; do
+	id="cancel-before-${delayed}"
+	start_job "${id}" "${STEP_IMAGE}" 'touch /buildkite/command-$BUILDKITE_JOB_ID; sleep 600' "DELAY_DOCKER=${delayed}"
+	wait_for "${id} docker ${delayed}" in_agent test -e "/tmp/delayed-${id}"
+	pid=$(in_agent cat "/tmp/${id}.pid")
+	if [[ "${delayed}" == start ]]; then
+		pid="-${pid}"
+	fi
+	in_agent kill -TERM "${pid}"
+	status=$(finish_job "${id}")
+	[[ "${status}" != 0 ]] || fail "Job cancelled before docker ${delayed} exited with status 0" "${logs}/${id}.log"
+	[[ -z "$(step_containers "${id}")" ]] || fail "Job cancelled before docker ${delayed} left its container behind"
+	! in_agent test -e "/buildkite/command-${id}" || fail "Job cancelled before docker ${delayed} ran its command" "${logs}/${id}.log"
+done
 
 echo "Step images ran plugins, hooks and commands in the image after checking out in the agent, and stopped on cancellation"

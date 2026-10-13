@@ -387,10 +387,12 @@ already has isn't updated until the Pod is replaced. The container is removed
 when the job finishes and stopped when the job is cancelled. It is named
 `buildkite-step-<job ID>` and labelled `buildkite.com/job-id`.
 
-The image needs `bash`, the default shell for commands, and must run as a user
-that can write to the checkout, which is owned by root. It doesn't need git,
-since the plugins are already checked out; without git, the job log shows a
-harmless error when the plugin phase looks up each plugin's commit.
+The agent image needs the `docker` CLI and `setsid`, which `buildkite/agent`
+images have. The step's image needs `bash`, the default shell for commands,
+and must run as a user that can write to the checkout, which is owned by root.
+It doesn't need git, since the plugins are already checked out; without git,
+the job log shows a harmless error when the plugin phase looks up each
+plugin's commit.
 
 An `image:` at the top of a pipeline applies to every step in it, including
 steps that use the Docker or Docker Compose plugins. Their hooks then run in
