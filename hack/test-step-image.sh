@@ -83,6 +83,11 @@ in_agent sh -ec '
 			>/srv/marker-buildkite-plugin/hooks/$hook
 		chmod +x /srv/marker-buildkite-plugin/hooks/$hook
 	done
+	# Cancelled jobs clean up slowly in the image, as within the grace period
+	# they may.
+	printf "#!/bin/sh\ncase \$BUILDKITE_JOB_ID in cancel-*) [ -e /etc/alpine-release ] || { sleep 2; touch /buildkite/pre-exit-\$BUILDKITE_JOB_ID; } ;; esac\n" \
+		>/srv/marker-buildkite-plugin/hooks/pre-exit
+	chmod +x /srv/marker-buildkite-plugin/hooks/pre-exit
 	git -C /srv/marker-buildkite-plugin init --quiet --initial-branch main
 	git -C /srv/marker-buildkite-plugin add . && git -C /srv/marker-buildkite-plugin commit --quiet -m plugin'
 
@@ -170,9 +175,9 @@ start_job failing "${STEP_IMAGE}" 'exit 3'
 status=$(finish_job failing)
 [[ "${status}" == 3 ]] || fail "Failing image job exited with status ${status}, not 3" "${logs}/failing.log"
 
-# Cancelling stops the container well within the agent's grace period, both
-# when only the script is signalled and when, as the agent does, its whole
-# process group is.
+# Cancelling stops the container well within the agent's grace period, after
+# its cleanup hooks, both when only the script is signalled and when, as the
+# agent does, its whole process group is.
 for target in script group; do
 	start_job "cancel-${target}" "${STEP_IMAGE}" 'sleep 600'
 	wait_for "cancel-${target} container" step_container_running "cancel-${target}"
@@ -187,6 +192,8 @@ for target in script group; do
 	[[ "${status}" != 0 ]] || fail "Cancelled job (${target}) exited with status 0" "${logs}/cancel-${target}.log"
 	[[ "${elapsed}" -lt 9 ]] || fail "Cancelled job (${target}) took ${elapsed}s to stop" "${logs}/cancel-${target}.log"
 	[[ -z "$(step_containers "cancel-${target}")" ]] || fail "Cancelled job (${target}) left its container running"
+	in_agent test -e "/buildkite/pre-exit-cancel-${target}" ||
+		fail "Cancelled job (${target}) was killed before its pre-exit hook finished" "${logs}/cancel-${target}.log"
 done
 
 echo "Step images ran plugins, hooks and commands in the image after checking out in the agent, and stopped on cancellation"

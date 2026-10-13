@@ -450,7 +450,6 @@ data:
     fi
     
     container="buildkite-step-$BUILDKITE_JOB_ID"
-    child=""
     started=0
     cancelled=0
     
@@ -462,15 +461,16 @@ data:
     case $grace in '' | *[!0-9]*) grace=10 ;; esac
     stop_timeout=$((grace > 1 ? grace - 1 : 0))
     
-    # The agent signals the job's whole process group, so the bootstrap and the
-    # docker CLI, which forwards it to the container, usually get the signal too.
-    # Act on it here as well in case only this script was signalled.
+    # The agent signals the job's whole process group. The bootstrap stops
+    # handling signals after the first, so a second would kill it during its
+    # cleanup hooks, and each process must be signalled only once. The checkout
+    # bootstrap is in the group, so it gets the signal directly. The docker CLI
+    # doesn't forward it, so this stops the container instead, which also works
+    # when only this script was signalled.
     cancel() {
     	cancelled=1
     	if [ "$started" -eq 1 ]; then
     		docker stop --time "$stop_timeout" "$container" >/dev/null 2>&1 || true
-    	elif [ -n "$child" ]; then
-    		kill -TERM "$child" 2>/dev/null || true
     	fi
     }
     trap cancel TERM INT HUP QUIT
@@ -514,7 +514,7 @@ data:
     # agent.
     printf '~~~ Running in %s\n' "$BUILDKITE_IMAGE"
     started=1
-    run docker run --rm --init --name "$container" \
+    run docker run --rm --init --sig-proxy=false --name "$container" \
     	--label "buildkite.com/job-id=$BUILDKITE_JOB_ID" \
     	--volume /buildkite:/buildkite \
     	--volume /var/run/docker.sock:/var/run/docker.sock \
@@ -789,7 +789,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
-        checksum/step-image: fbda5a66e1f10c8b45d8edad23d08d661a5a5a4ab750ee895ecec3b465d2ca24
+        checksum/step-image: 3b02b5ed8ccaa2c8d4548197b3b230af32df3c94ba995bde78ece2ee97a3da19
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost
       automountServiceAccountToken: false
@@ -1429,7 +1429,7 @@ spec:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
         checksum/supervisor: 9c3bdad338df840b063247dc9fc76579284529af08bf29a6ea379f1746ec4346
-        checksum/step-image: fbda5a66e1f10c8b45d8edad23d08d661a5a5a4ab750ee895ecec3b465d2ca24
+        checksum/step-image: 3b02b5ed8ccaa2c8d4548197b3b230af32df3c94ba995bde78ece2ee97a3da19
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost
       automountServiceAccountToken: false

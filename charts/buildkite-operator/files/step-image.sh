@@ -16,7 +16,6 @@ if [ -z "${BUILDKITE_IMAGE:-}" ]; then
 fi
 
 container="buildkite-step-$BUILDKITE_JOB_ID"
-child=""
 started=0
 cancelled=0
 
@@ -28,15 +27,16 @@ grace=${grace%s}
 case $grace in '' | *[!0-9]*) grace=10 ;; esac
 stop_timeout=$((grace > 1 ? grace - 1 : 0))
 
-# The agent signals the job's whole process group, so the bootstrap and the
-# docker CLI, which forwards it to the container, usually get the signal too.
-# Act on it here as well in case only this script was signalled.
+# The agent signals the job's whole process group. The bootstrap stops
+# handling signals after the first, so a second would kill it during its
+# cleanup hooks, and each process must be signalled only once. The checkout
+# bootstrap is in the group, so it gets the signal directly. The docker CLI
+# doesn't forward it, so this stops the container instead, which also works
+# when only this script was signalled.
 cancel() {
 	cancelled=1
 	if [ "$started" -eq 1 ]; then
 		docker stop --time "$stop_timeout" "$container" >/dev/null 2>&1 || true
-	elif [ -n "$child" ]; then
-		kill -TERM "$child" 2>/dev/null || true
 	fi
 }
 trap cancel TERM INT HUP QUIT
@@ -80,7 +80,7 @@ unset IFS
 # agent.
 printf '~~~ Running in %s\n' "$BUILDKITE_IMAGE"
 started=1
-run docker run --rm --init --name "$container" \
+run docker run --rm --init --sig-proxy=false --name "$container" \
 	--label "buildkite.com/job-id=$BUILDKITE_JOB_ID" \
 	--volume /buildkite:/buildkite \
 	--volume /var/run/docker.sock:/var/run/docker.sock \
