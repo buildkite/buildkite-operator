@@ -86,6 +86,13 @@ defaults:
     # Pull images through the release's OCI accelerator when
     # ociAccelerator.enabled is true. Set false on an entry to pull directly.
     ociAccelerator: true
+    # Run steps that set image: in that image, as agent-stack-k8s does: the
+    # agent checks out the repository and plugins, then plugins, hooks and the
+    # command run in a container from the image in the Docker daemon. The
+    # image needs bash (the default BUILDKITE_SHELL). Steps without image:
+    # are unaffected. Set false to run every step in the agent container,
+    # ignoring image:. See the README's "Step images".
+    stepImages: true
 
 # One entry per Buildkite queue, keyed by a short name used in resource names
 # (<release>-<name>). Each entry becomes a runner pool: a Deployment of runner

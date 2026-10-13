@@ -408,7 +408,8 @@ dockerd docker pull -q "${image}"
 dockerd docker image rm "${image}" >/dev/null
 dockerd docker pull -q "${image}"
 accelerator_logs=$("${KUBECTL[@]}" logs deployment/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -c oci-accelerator)
-if ! grep '"registry":"public.ecr.aws"' <<<"${accelerator_logs}" | grep -q '"cache":"hit"'; then
+# Not grep -q: exiting at the first match would fail the pipeline with SIGPIPE.
+if ! grep '"registry":"public.ecr.aws"' <<<"${accelerator_logs}" | grep '"cache":"hit"' >/dev/null; then
 	echo "Second pull was not served from the OCI accelerator cache" >&2
 	echo "${accelerator_logs}" >&2
 	exit 1

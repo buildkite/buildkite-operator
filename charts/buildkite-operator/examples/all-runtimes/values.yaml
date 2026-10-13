@@ -1,6 +1,7 @@
 # The README's queue examples in one release: every runtime, persistent and
-# ephemeral agents, scale to zero, tokens from existing Secrets, and image
-# pull caching through the OCI accelerator, which one entry opts out of. Run
+# ephemeral agents, scale to zero, tokens from existing Secrets, image pull
+# caching through the OCI accelerator, which one entry opts out of, and step
+# images, which another opts out of. Run
 # `make helm-examples` after changing this file or the chart to update
 # rendered.yaml and NOTES.txt.
 agentToken:
@@ -25,6 +26,8 @@ queues:
     runtime: sysbox
     minReplicas: 0
     maxReplicas: 4
+    docker:
+      stepImages: false
 
   docker:
     queue: docker

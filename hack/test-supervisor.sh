@@ -21,6 +21,8 @@ image_for() { grep -A1 -- "- name: $1\$" <<<"${rendered}" | sed -n 's/^ *image: 
 DIND_IMAGE=$(image_for dockerd)
 CLI_IMAGE=$(image_for supervisor)
 [[ -n "${DIND_IMAGE}" && -n "${CLI_IMAGE}" ]]
+STEP_IMAGE_SCRIPT=$(grep -A1 -- '- name: STEP_IMAGE_SCRIPT$' <<<"${rendered}" | sed -n 's/^ *value: //p')
+[[ "${STEP_IMAGE_SCRIPT}" == /opt/step-image/step-image.sh ]]
 ID="bk-supervisor-test-$$"
 
 cleanup() {
@@ -53,6 +55,7 @@ DOCKER_CONFIG_DIR=/etc/buildkite-agent/docker
 docker run --detach --privileged --name "${ID}-dockerd" \
 	--volume "${ID}-run:/var/run" --volume "${ID}-workspace:/buildkite" \
 	--volume "${ID}-docker-config:${DOCKER_CONFIG_DIR}" \
+	--volume "$(pwd)/${CHART_DIR}/files/step-image.sh:${STEP_IMAGE_SCRIPT}:ro" \
 	"${DIND_IMAGE}" dockerd --host=unix:///var/run/docker.sock >/dev/null
 wait_for "Docker daemon" inner info
 docker exec "${ID}-dockerd" sh -c "echo '{\"auths\":{}}' >${DOCKER_CONFIG_DIR}/config.json"
@@ -69,6 +72,10 @@ docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /ctx && cat >/ctx/agent && chmod 
 [ "$(command -v buildkite-agent)" = /buildkite/bin/buildkite-agent ] &&
 	cmp -s /usr/local/bin/buildkite-agent /buildkite/bin/buildkite-agent ||
 	{ echo "Agent binary not first on PATH from the workspace" >&2; exit 66; }
+# Jobs run through the step-image script, from the Docker daemon's container.
+[ "$BUILDKITE_BOOTSTRAP_SCRIPT_PATH" = "/bin/sh /opt/step-image/step-image.sh" ] && [ -f /opt/step-image/step-image.sh ] &&
+	[ "$BUILDKITE_JOB_CONTEXT_DIR" = /buildkite/job-context ] ||
+	{ echo "Agent does not run jobs through the step-image script" >&2; exit 67; }
 touch "$DOCKER_CONFIG/seen-$BUILDKITE_AGENT_NAME"
 mkdir -p /buildkite/builds
 touch "/buildkite/builds/$BUILDKITE_AGENT_NAME"
@@ -94,6 +101,7 @@ docker run --detach --read-only --name "${ID}-supervisor" \
 	--env AGENT_IMAGE=test-agent:1 --env BUILDKITE_AGENT_TOKEN=unused \
 	--env AGENT_TAGS=queue=test --env POD_NAME=runner-pod \
 	--env TERMINATION_GRACE_PERIOD_SECONDS=20 \
+	--env "STEP_IMAGE_SCRIPT=${STEP_IMAGE_SCRIPT}" \
 	"${CLI_IMAGE}" /bin/sh /opt/supervisor/supervisor.sh >/dev/null
 
 wait_for "first agent" agent_running

@@ -37,5 +37,6 @@ steps:
       - mise install
       - mise exec -- make test-helm
       - mise exec -- make test-supervisor
+      - mise exec -- make test-step-image
       - test -z "$(git status --porcelain)"
       - mise exec -- make test-helm-e2e

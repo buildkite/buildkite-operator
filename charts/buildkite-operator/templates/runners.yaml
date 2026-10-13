@@ -21,6 +21,9 @@ kata or sysbox, and in a restart loop inside the agent container with
 standard. */}}
 {{- $supervised := and $r.ephemeralAgent $docker }}
 {{- $agentLoop := and $r.ephemeralAgent (not $docker) }}
+{{- /* Docker runners run steps that set image: in that image. */}}
+{{- $stepImages := and $docker $r.docker.stepImages }}
+{{- $stepImageScript := "/opt/step-image/step-image.sh" }}
 {{- $accelerated := include "buildkite-operator.usesOciAccelerator" (dict "root" $ "settings" $r) }}
 {{- $registryCredentials := include "buildkite-operator.registryCredentialsEnabled" $ }}
 {{- $dockerConfig := include "buildkite-operator.dockerConfigPath" $ }}
@@ -69,6 +72,9 @@ spec:
         {{- end }}
         {{- if $agentLoop }}
         checksum/ephemeral-agent: {{ $.Files.Get "files/ephemeral-agent.sh" | sha256sum }}
+        {{- end }}
+        {{- if $stepImages }}
+        checksum/step-image: {{ $.Files.Get "files/step-image.sh" | sha256sum }}
         {{- end }}
     spec:
       serviceAccountName: {{ include "buildkite-operator.deletionCostName" $ }}
@@ -171,10 +177,17 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
-            {{- if $supervised }}
-            # The supervisor bind-mounts this into each agent container.
+            {{- if or $supervised $stepImages }}
+            # Containers the daemon runs bind-mount this: ephemeral agents and
+            # step image containers.
             - name: docker-config
               mountPath: {{ $dockerConfig }}
+            {{- end }}
+            {{- if and $supervised $stepImages }}
+            # The supervisor bind-mounts this into each agent container.
+            - name: step-image
+              mountPath: {{ dir $stepImageScript }}
+              readOnly: true
             {{- end }}
             {{- if $accelerated }}
             - name: oci-accelerator-ca
@@ -207,6 +220,10 @@ spec:
               value: unix:///var/run/docker.sock
             - name: DOCKER_CONFIG
               value: {{ $dockerConfig }}
+            {{- if $stepImages }}
+            - name: STEP_IMAGE_SCRIPT
+              value: {{ $stepImageScript }}
+            {{- end }}
           ports:
             - name: health
               containerPort: 8080
@@ -279,6 +296,15 @@ spec:
             - name: DOCKER_CONFIG
               value: {{ $dockerConfig }}
             {{- end }}
+            {{- if $stepImages }}
+            # Runs steps that set image: in that image; see step-image.sh.
+            - name: BUILDKITE_BOOTSTRAP_SCRIPT_PATH
+              value: "/bin/sh {{ $stepImageScript }}"
+            # Puts the job's env files and timeout marker where step image
+            # containers see them.
+            - name: BUILDKITE_JOB_CONTEXT_DIR
+              value: /buildkite/job-context
+            {{- end }}
           ports:
             - name: health
               containerPort: 8080
@@ -301,6 +327,11 @@ spec:
               mountPath: /buildkite
             - name: docker-config
               mountPath: {{ $dockerConfig }}
+            {{- end }}
+            {{- if $stepImages }}
+            - name: step-image
+              mountPath: {{ dir $stepImageScript }}
+              readOnly: true
             {{- end }}
             {{- if $agentLoop }}
             - name: ephemeral-agent-scripts
@@ -362,6 +393,11 @@ spec:
         - name: ephemeral-agent-scripts
           configMap:
             name: {{ include "buildkite-operator.ephemeralAgentName" $ }}
+        {{- end }}
+        {{- if $stepImages }}
+        - name: step-image
+          configMap:
+            name: {{ include "buildkite-operator.stepImageName" $ }}
         {{- end }}
         {{- if $docker }}
         - name: docker-data

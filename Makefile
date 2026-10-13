@@ -184,6 +184,10 @@ install-hooks: ## Use the repository's Git hooks in .githooks.
 test-supervisor: ## Run the ephemeral-agent supervisor against a real Docker daemon.
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-supervisor.sh
 
+.PHONY: test-step-image
+test-step-image: ## Run the step-image bootstrap script against a real Docker daemon.
+	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-step-image.sh
+
 .PHONY: test-helm-e2e
 test-helm-e2e: kind ## Install and uninstall the standalone chart in a fresh, isolated Kind cluster.
 	@set -eu; \

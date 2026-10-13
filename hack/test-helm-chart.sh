@@ -450,6 +450,45 @@ if [[ "${dind_runner}${ephemeral}" == *"BUILDKITE_AGENT_BINARY_PATH"* ]]; then
 	exit 1
 fi
 
+# Docker runners run jobs through the step-image script, so steps that set
+# image: run in that image. The daemon runs the step containers, so it needs
+# the Docker client configuration, and, with ephemeral agents, the script.
+step_image_env=$'- name: BUILDKITE_BOOTSTRAP_SCRIPT_PATH\n              value: "/bin/sh /opt/step-image/step-image.sh"'
+step_image_mount=$'- name: step-image\n              mountPath: /opt/step-image\n              readOnly: true'
+step_image_volume=$'- name: step-image\n          configMap:\n            name: test-buildkite-operator-step-image'
+dind_agent=$(awk '/^        - name: agent$/,/^        - name: deletion-cost$/' <<<"${dind_runner}")
+dind_dockerd=$(awk '/^        - name: dockerd$/,/^      containers:$/' <<<"${dind_runner}")
+assert_contains "${dind_agent}" "${step_image_env}"
+assert_contains "${dind_agent}" $'- name: BUILDKITE_JOB_CONTEXT_DIR\n              value: /buildkite/job-context'
+assert_contains "${dind_agent}" "${step_image_mount}"
+assert_contains "${dind_dockerd}" "${docker_config_mount}"
+assert_contains "${dind_runner}" "${step_image_volume}"
+assert_contains "${dind_runner}" "checksum/step-image:"
+assert_contains "$(document "${dind}" ConfigMap test-buildkite-operator-step-image)" 'run "$agent" bootstrap --phases plugin,checkout'
+assert_contains "${supervisor_container}" $'- name: STEP_IMAGE_SCRIPT\n              value: /opt/step-image/step-image.sh'
+assert_contains "$(awk '/^        - name: dockerd$/,/^      containers:$/' <<<"${ephemeral_dind_runner}")" "${step_image_mount}"
+assert_contains "${ephemeral_dind_runner}" "${step_image_volume}"
+if [[ "${supervisor_container}" == *"- name: step-image"* ]]; then
+	echo "The supervisor mounted the step-image script, which only the Docker daemon needs" >&2
+	exit 1
+fi
+no_step_images=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
+	--set queues.linux.docker.stepImages=false)
+no_step_images_ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
+	--set queues.linux.ephemeralAgent=true --set queues.linux.docker.stepImages=false)
+for output in "${direct}" "${ephemeral_standard}" "${no_step_images}" "${no_step_images_ephemeral}"; do
+	runner=$(document "${output}" Deployment test-linux)
+	if [[ "${runner}" == *"step-image"* || "${runner}" == *"BUILDKITE_JOB_CONTEXT_DIR"* ||
+		"${output}" == *"name: test-buildkite-operator-step-image"* ]]; then
+		echo "Standard runners, or Docker runners with stepImages false, rendered step images" >&2
+		exit 1
+	fi
+done
+if [[ "$(awk '/^        - name: dockerd$/,/^      containers:$/' <<<"${no_step_images}")" == *"docker-config"* ]]; then
+	echo "A persistent Docker daemon without step images mounted the Docker client configuration" >&2
+	exit 1
+fi
+
 # Registry credentials become one dockerconfigjson Secret, used to pull every
 # Pod's images and copied into Docker runners' client configuration.
 credential_args=(

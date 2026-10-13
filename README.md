@@ -112,7 +112,7 @@ separate release.
 | `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales an entry with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
 | `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
 | `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `dind`, `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. With `standard` and `ephemeralAgent`, the image also needs `/bin/sh`. |
-| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `dind`, `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. `docker.ociAccelerator` (default `true`) pulls through the [OCI accelerator](#image-pull-caching) when it is enabled. |
+| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `dind`, `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. `docker.ociAccelerator` (default `true`) pulls through the [OCI accelerator](#image-pull-caching) when it is enabled. `docker.stepImages` (default `true`) runs steps that set `image:` in that image; see [Step images](#step-images). |
 
 ### Examples
 
@@ -359,6 +359,50 @@ boundary between them. Anything a job can reach that persists, such as files
 outside the workspace in a `standard` container or the Pod's Docker image
 cache, remains available to later jobs.
 
+### Step images
+
+On `dind`, `kata` and `sysbox` runners, a command step's `image:` runs the
+step in that image, as it does with
+[agent-stack-k8s](https://github.com/buildkite/agent-stack-k8s). `standard`
+runners have no Docker daemon, so they ignore `image:` and run the step in the
+agent container.
+
+The agent runs each job through a script from the chart instead of
+`buildkite-agent bootstrap`. Steps without `image:` run the usual bootstrap,
+unchanged. For a step with `image:`:
+
+1. The agent container checks out the plugins and the repository, running the
+   environment and checkout hooks
+   (`buildkite-agent bootstrap --phases plugin,checkout`).
+2. A container from the image, started in the Pod's Docker daemon, runs the
+   environment and command hooks, plugins and the command
+   (`buildkite-agent bootstrap --phases plugin,command`).
+
+The container mounts the `/buildkite` workspace at the same path, so it sees
+the checkout, the plugins, the Job API socket and the agent binary, which the
+bootstrap appends to `PATH`. Like the agent, it gets the job's environment,
+the Pod's Docker daemon and its Docker client configuration (`DOCKER_CONFIG`).
+The image is pulled if the daemon doesn't have it yet, so a tag the daemon
+already has isn't updated until the Pod is replaced. The container is removed
+when the job finishes and stopped when the job is cancelled. It is named
+`buildkite-step-<job ID>` and labelled `buildkite.com/job-id`.
+
+The agent image needs the `docker` CLI and `setsid`, which `buildkite/agent`
+images have. The step's image needs `bash`, the default shell for commands,
+and must run as a user that can write to the checkout, which is owned by root.
+It doesn't need git, since the plugins are already checked out; without git,
+the job log shows a harmless error when the plugin phase looks up each
+plugin's commit.
+
+An `image:` at the top of a pipeline applies to every step in it, including
+steps that use the Docker or Docker Compose plugins. Their hooks then run in
+that image, which needs the Docker CLI (and Compose) for them to work. Set
+`image:` on the steps that need it instead, or use an image with the Docker
+CLI.
+
+To ignore `image:` and run every step in the agent container, set
+`docker.stepImages: false` on an entry.
+
 ### Image pull caching
 
 The `dind`, `kata` and `sysbox` Docker daemons can pull images through an
@@ -516,6 +560,7 @@ the [OCI accelerator](#image-pull-caching) use the credentials unchanged.
 make test-helm        # lint and render the standalone chart
 make helm-examples    # update the chart's rendered examples
 make test-supervisor  # run the ephemeral-agent supervisor against Docker
+make test-step-image  # run step images against Docker
 make test-helm-e2e    # install and uninstall the chart in isolated Kind
 make lint             # golangci-lint
 make test             # Go tests and generated-file checks

@@ -85,6 +85,15 @@ start_agent() {
 
 	clean_job_state || return 1
 
+	# With step images, each agent runs jobs through the step-image script,
+	# which the Docker daemon's container has at the same path.
+	set --
+	if [ -n "${STEP_IMAGE_SCRIPT:-}" ]; then
+		set -- --volume "${STEP_IMAGE_SCRIPT%/*}:${STEP_IMAGE_SCRIPT%/*}:ro" \
+			--env "BUILDKITE_BOOTSTRAP_SCRIPT_PATH=/bin/sh $STEP_IMAGE_SCRIPT" \
+			--env BUILDKITE_JOB_CONTEXT_DIR=/buildkite/job-context
+	fi
+
 	agent_name="${POD_NAME}-$(random_suffix)"
 	log "Starting agent $agent_name"
 	# DOCKER_CONFIG is at the same path in the Docker daemon's container, so
@@ -110,6 +119,7 @@ start_agent() {
 		--env BUILDKITE_PLUGINS_PATH=/buildkite/plugins \
 		--env BUILDKITE_SOCKETS_PATH=/buildkite/sockets \
 		--env DOCKER_HOST=unix:///var/run/docker.sock \
+		"$@" \
 		"$AGENT_IMAGE" -c 'mkdir -p /buildkite/bin &&
 			cp /usr/local/bin/buildkite-agent /buildkite/bin/ &&
 			export PATH="/buildkite/bin:$PATH" &&
