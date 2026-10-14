@@ -148,7 +148,7 @@ spec:
             {{- if $accelerated }}
             # Docker Engine does not read certs.d for Docker Hub with the
             # classic image store, so the daemon trusts the CA for every host
-            # instead. Only the proxy holds the CA's private key.
+            # instead. Only the proxy references the CA's private key.
             - name: SSL_CERT_DIR
               value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs
             {{- end }}
@@ -425,12 +425,11 @@ spec:
         {{- end }}
         {{- end }}
         {{- if $accelerated }}
-        # Only the public certificate; the private key stays with the proxy.
+        # The certificate from a ConfigMap, not the CA Secret: the kubelet can
+        # read every key of a Secret a Pod on its node references, including
+        # the private key, which only the proxy may reference.
         - name: oci-accelerator-ca
-          secret:
-            secretName: {{ include "buildkite-operator.ociAcceleratorCASecretName" $ | quote }}
-            items:
-              - key: {{ $.Values.ociAccelerator.ca.existingSecret.certificateKey | quote }}
-                path: ca.crt
+          configMap:
+            name: {{ include "buildkite-operator.ociAcceleratorCACertName" $ | quote }}
         {{- end }}
 {{- end }}
