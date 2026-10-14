@@ -172,6 +172,15 @@ supervisor:
 # multi-platform image index for the tag. The image and resources are also used
 # by the hook Jobs that manage a generated OCI accelerator CA.
 deletionCost:
+  # RBAC lets the sidecar patch any Pod in the release namespace. A
+  # ValidatingAdmissionPolicy and binding, which are cluster-scoped and named
+  # <namespace>-<release>-buildkite-operator-deletion-cost, limit it to the two
+  # scale-in annotations on its own Pod. Installing them needs permission to
+  # create those cluster-scoped resources. Disable only if you can't grant
+  # that; then anyone with a sidecar's token, such as a job that escapes to its
+  # node, can change any Pod in the namespace, including its image.
+  admissionPolicy:
+    enabled: true
   image:
     repository: python
     tag: 3.12.14-alpine3.24

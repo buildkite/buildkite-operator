@@ -28,7 +28,23 @@
       }
     },
     "supervisor": { "$ref": "#/$defs/pinnedSidecar" },
-    "deletionCost": { "$ref": "#/$defs/pinnedSidecar" },
+    "deletionCost": {
+      "type": "object",
+      "required": ["admissionPolicy", "image", "resources"],
+      "additionalProperties": false,
+      "properties": {
+        "admissionPolicy": {
+          "type": "object",
+          "required": ["enabled"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        },
+        "image": { "$ref": "#/$defs/pinnedSidecar/properties/image" },
+        "resources": { "type": "object" }
+      }
+    },
     "ociAccelerator": {
       "type": "object",
       "required": ["enabled", "registries", "noProxy", "ca", "cache", "extraEnv", "networkPolicy", "nodeSelector", "tolerations", "image", "resources"],

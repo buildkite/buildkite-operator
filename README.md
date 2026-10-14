@@ -214,9 +214,25 @@ The deletion cost makes the ReplicaSet prefer removing idle agents. This is
 best-effort. Kubernetes can still select a busy Pod, and deletion cost does not
 protect against node drains or evictions. The sidecar is always enabled
 because it is part of the chart's autoscaling behavior, and its Python image is
-pinned by digest. The sidecar receives the only Kubernetes API token in the Pod,
-but because Deployment Pod names are generated, its Role can patch every Pod in
-the release namespace. Install the chart in a namespace dedicated to runners.
+pinned by digest. The sidecar receives the only Kubernetes API token in the Pod.
+
+Because Deployment Pod names are generated, the sidecar's Role can't be limited
+to its own Pod, so it lets the token patch every Pod in the release namespace.
+A job that escapes to its node can read the tokens of the Pods there, and could
+use one to change another runner Pod's image and take it over, or with the OCI
+accelerator enabled, the proxy's. The chart
+therefore also installs a `ValidatingAdmissionPolicy` and binding, both named
+`<namespace>-<release>-buildkite-operator-deletion-cost`. The kubelet binds
+each sidecar's token to its Pod, and the API server records the Pod's name in
+the token's user info. The policy uses this to allow the sidecar's patches only
+to its own Pod, and only to the two annotations above: the spec, labels,
+finalizers, owner references and every other annotation must stay the same.
+
+The policy and binding are cluster-scoped, so installing the chart needs
+permission to create them, and Kubernetes 1.30 or later. If you can't grant
+that, set `deletionCost.admissionPolicy.enabled: false`; the sidecar then works
+the same, but its token can change any Pod in the namespace, so install the
+chart in a namespace dedicated to runners.
 
 ### Node autoscaling
 
@@ -497,7 +513,9 @@ there, so a release with `dind` queues should keep the proxy off nodes `dind`
 runners can reach. The chart adds no node selector for `dind`, so place the
 proxy with `ociAccelerator.nodeSelector` and `tolerations`, for example on
 nodes tainted for `kata` or `sysbox`, or on dedicated system nodes. The hook
-Jobs that generate and delete the CA use the same placement.
+Jobs that generate and delete the CA use the same placement. Without the
+deletion-cost admission policy, such a job could instead use a runner's token
+to change the proxy Pod's image; see [Scale-in preference](#scale-in-preference).
 
 ### Registry credentials
 
