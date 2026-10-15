@@ -74,7 +74,7 @@ cleanup() {
 	"${KUBECTL[@]}" delete namespace "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${KUBECTL[@]}" delete namespace "${SECOND_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
 	"${KUBECTL[@]}" delete namespace "${KEDA_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
-	rm -rf "${agent_dir:-}" "${agent_logs:-}"
+	rm -rf "${agent_dir:-}" "${agent_logs:-}" "${api_ca:-}" "${patch_response:-}"
 }
 trap cleanup EXIT
 
@@ -229,6 +229,45 @@ cost=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.an
 safe_to_evict=$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.cluster-autoscaler\.kubernetes\.io/safe-to-evict}')
 [[ "${safe_to_evict}" == "false" ]]
 
+# The chart's admission policy limits the sidecar's token to the scale-in
+# annotations on its own Pod. Patch with that token as the sidecar does, or as
+# someone who took it from the node would.
+api_ca=$(mktemp)
+"${KUBECTL[@]}" config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d >"${api_ca}"
+api_server=$("${KUBECTL[@]}" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+sidecar_token=$("${KUBECTL[@]}" exec "${pod}" -n "${NAMESPACE}" -c deletion-cost -- cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+patch_response=$(mktemp)
+# Usage: patch_as_sidecar <pod> <patch type> <patch>. Prints the HTTP status,
+# then the response.
+patch_as_sidecar() {
+	curl -sS --cacert "${api_ca}" -o "${patch_response}" -w '%{http_code}' -X PATCH \
+		-H "Authorization: Bearer ${sidecar_token}" -H "Content-Type: application/$2" --data "$3" \
+		"${api_server}/api/v1/namespaces/${NAMESPACE}/pods/${1#pod/}"
+	echo " $(cat "${patch_response}")"
+}
+# The policy can take a moment to take effect after install.
+for _ in $(seq 1 30); do
+	result=$(patch_as_sidecar "${other_pod}" merge-patch+json '{"metadata":{"annotations":{"cluster-autoscaler.kubernetes.io/safe-to-evict":"true"}}}')
+	[[ "${result}" == 422* ]] && break
+	sleep 1
+done
+[[ "${result}" == *"The deletion-cost sidecar may only patch its own Pod"* ]] || {
+	echo "The sidecar's token patched another Pod: ${result}" >&2
+	exit 1
+}
+result=$(patch_as_sidecar "${pod}" json-patch+json '[{"op":"replace","path":"/spec/containers/0/image","value":"busybox:1.37"}]')
+[[ "${result}" == *"The deletion-cost sidecar may only change the pod-deletion-cost and safe-to-evict annotations"* ]] || {
+	echo "The sidecar's token changed its own Pod's image: ${result}" >&2
+	exit 1
+}
+# The sidecar's own patches, including removing the cost with null.
+result=$(patch_as_sidecar "${pod}" merge-patch+json '{"metadata":{"annotations":{"controller.kubernetes.io/pod-deletion-cost":null,"cluster-autoscaler.kubernetes.io/safe-to-evict":"true"}}}')
+[[ "${result}" == "200 "* ]] || { echo "The sidecar could not mark its own Pod idle: ${result}" >&2; exit 1; }
+[[ -z "$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.controller\.kubernetes\.io/pod-deletion-cost}')" ]]
+result=$(patch_as_sidecar "${pod}" merge-patch+json '{"metadata":{"annotations":{"controller.kubernetes.io/pod-deletion-cost":"100","cluster-autoscaler.kubernetes.io/safe-to-evict":"false"}}}')
+[[ "${result}" == "200 "* ]] || { echo "The sidecar could not mark its own Pod busy: ${result}" >&2; exit 1; }
+[[ "$("${KUBECTL[@]}" get "${pod}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.controller\.kubernetes\.io/pod-deletion-cost}')" == 100 ]]
+
 # Ephemeral standard agents: each job gets a newly registered agent and a clean
 # workspace while the container keeps running.
 ephemeral_pod=""
@@ -331,6 +370,10 @@ done
 [[ -z "${pod}" ]]
 if "${KUBECTL[@]}" get scaledobject/"${RUNNERS}" -n "${NAMESPACE}" >/dev/null 2>&1; then
 	echo "ScaledObject remained after chart uninstall" >&2
+	exit 1
+fi
+if "${KUBECTL[@]}" get validatingadmissionpolicy "${NAMESPACE}-${RELEASE}-buildkite-operator-deletion-cost" >/dev/null 2>&1; then
+	echo "Deletion-cost admission policy remained after chart uninstall" >&2
 	exit 1
 fi
 "${KUBECTL[@]}" get deployment/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null

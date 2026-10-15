@@ -83,6 +83,18 @@ assert_contains "${direct}" 'buildkite.com/runner-pool: "linux"'
 assert_contains "${direct}" "- name: deletion-cost"
 assert_contains "${direct}" "kind: Role"
 assert_contains "${direct}" 'verbs: ["patch"]'
+# The Role can't limit patch to the sidecar's own Pod, so a cluster-scoped
+# admission policy, named per namespace and release, does. The e2e test checks
+# what it admits.
+deletion_cost_policy=$(document "${direct}" ValidatingAdmissionPolicy buildkite-runners-test-buildkite-operator-deletion-cost)
+assert_contains "${deletion_cost_policy}" "kubernetes.io/metadata.name: buildkite-runners"
+assert_contains "${deletion_cost_policy}" 'request.userInfo.username == "system:serviceaccount:buildkite-runners:test-buildkite-operator-deletion-cost"'
+assert_contains "$(document "${direct}" ValidatingAdmissionPolicyBinding buildkite-runners-test-buildkite-operator-deletion-cost)" \
+	$'policyName: buildkite-runners-test-buildkite-operator-deletion-cost\n  validationActions: [Deny]'
+if [[ "$(render --set-string agentToken.value="${TOKEN}" --set deletionCost.admissionPolicy.enabled=false)" == *"kind: ValidatingAdmissionPolicy"* ]]; then
+	echo "Deletion-cost admission policy rendered while disabled" >&2
+	exit 1
+fi
 assert_contains "${direct}" "def agent_busy():"
 assert_contains "${direct}" 'image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"'
 [[ $(grep -c 'mountPath: /var/run/secrets/kubernetes.io/serviceaccount' <<<"${direct}") -eq 1 ]] || {
@@ -248,7 +260,7 @@ multi=$("${HELM}" template test "${CHART_DIR}" \
 	--set queues.build-sysbox.scaleDownStabilizationWindowSeconds=0 \
 	--set-string queues.build-sysbox.docker.resources.limits.memory=16Gi)
 count_kind() { grep -c "^kind: $2\$" <<<"$1" || true; }
-for kind in Secret TriggerAuthentication ServiceAccount Role RoleBinding; do
+for kind in Secret TriggerAuthentication ServiceAccount Role RoleBinding ValidatingAdmissionPolicy ValidatingAdmissionPolicyBinding; do
 	[[ $(count_kind "${multi}" "${kind}") -eq 1 ]] || { echo "Expected one shared ${kind}" >&2; exit 1; }
 done
 [[ $(count_kind "${multi}" Deployment) -eq 2 && $(count_kind "${multi}" ScaledObject) -eq 2 ]] || {

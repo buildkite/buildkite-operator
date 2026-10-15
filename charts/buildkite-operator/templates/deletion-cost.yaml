@@ -20,7 +20,7 @@ metadata:
 automountServiceAccountToken: false
 ---
 # Deployment Pods have generated names, so this Role cannot be limited to each
-# Pod patching only itself. Install the chart in a namespace dedicated to runners.
+# Pod patching only itself; deletionCost.admissionPolicy adds that limit.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -48,4 +48,66 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "buildkite-operator.deletionCostName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.deletionCost.admissionPolicy.enabled }}
+{{- /* Cluster-scoped, so the name includes the namespace to stay unique. */}}
+{{- $policyName := printf "%s-%s" .Release.Namespace (include "buildkite-operator.deletionCostName" .) }}
+---
+# Every runner Pod's sidecar holds this ServiceAccount's token, so without this
+# policy anyone with one (such as a job that escapes to its node) could change
+# any Pod in the namespace, including its image. The kubelet binds each
+# projected token to its Pod, and the API server records the Pod's name in the
+# token's user info, so the sidecar may change only its own Pod's two scale-in
+# annotations.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $policyName }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+    # The Role grants only patch, which admission sees as UPDATE.
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: deletion-cost-service-account
+      expression: request.userInfo.username == {{ printf "system:serviceaccount:%s:%s" .Release.Namespace (include "buildkite-operator.deletionCostName" .) | quote }}
+  variables:
+    - name: scaleInAnnotations
+      expression: "['controller.kubernetes.io/pod-deletion-cost', 'cluster-autoscaler.kubernetes.io/safe-to-evict']"
+    - name: annotations
+      expression: object.metadata.?annotations.orValue({})
+    - name: oldAnnotations
+      expression: oldObject.metadata.?annotations.orValue({})
+  validations:
+    # Tokens not bound to a Pod have no pod-name, so they are denied.
+    - expression: >-
+        request.userInfo.?extra[?'authentication.kubernetes.io/pod-name'].orValue([]) == [object.metadata.name]
+      message: The deletion-cost sidecar may only patch its own Pod
+    - expression: >-
+        object.spec == oldObject.spec &&
+        object.metadata.?labels.orValue({}) == oldObject.metadata.?labels.orValue({}) &&
+        object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) &&
+        object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([]) &&
+        variables.annotations.all(k, k in variables.scaleInAnnotations || (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.annotations[k])) &&
+        variables.oldAnnotations.all(k, k in variables.scaleInAnnotations || k in variables.annotations)
+      message: The deletion-cost sidecar may only change the pod-deletion-cost and safe-to-evict annotations
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $policyName }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $policyName }}
+  validationActions: [Deny]
+{{- end }}
 {{- end }}
