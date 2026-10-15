@@ -112,9 +112,7 @@ release installs it.
 {{- end }}
 
 {{/*
-ConfigMap holding only the CA certificate, which runner Pods mount. The
-kubelet can read every key of a Secret that a Pod on its node references, so
-runner Pods must not reference the CA Secret.
+ConfigMap holding only the CA certificate, which runner Pods mount.
 */}}
 {{- define "buildkite-operator.ociAcceleratorCACertName" -}}
 {{- printf "%s-ca-cert" (include "buildkite-operator.ociAcceleratorName" .) }}

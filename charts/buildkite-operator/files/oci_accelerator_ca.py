@@ -1,10 +1,9 @@
-"""Manage the OCI accelerator CA Secret and the ConfigMap publishing its certificate.
+"""Sync the OCI accelerator CA certificate from its Secret into a ConfigMap.
 
-create copies the certificate from the CA Secret into the ConfigMap, so runner
-Pods never reference the Secret holding the private key. With CA_DIR set, it
-first stores the CA that oci-accelerator init-ca wrote there, unless the Secret
-already exists: the CA is generated once and never replaced. delete removes the
-ConfigMap, and the Secret too when SECRET_NAME is set, after uninstall.
+create copies the certificate into the ConfigMap for runner Pods to use. If the
+Secret is missing, create first stores the CA that oci-accelerator init-ca
+wrote to CA_DIR, or fails when CA_DIR is unset. delete removes the ConfigMap,
+and the Secret when SECRET_NAME is set.
 """
 
 import base64
@@ -69,7 +68,7 @@ def generate_secret(name, cert_key, private_key_key, labels):
 
 
 def certificate(name, cert_key, private_key_key, labels):
-    """Returns the CA certificate from the Secret, generating the Secret if needed."""
+    """Returns the CA certificate, generating the Secret from CA_DIR if it is missing."""
     status, secret = request("GET", api_path("secrets", name))
     if status == 404 and "CA_DIR" in os.environ:
         generate_secret(name, cert_key, private_key_key, labels)

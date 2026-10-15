@@ -1,11 +1,9 @@
 {{- /*
-Hook Jobs keep the proxy's CA in a Secret and publish its certificate in a
-ConfigMap, which is all runner Pods mount: the kubelet can read every key of a
-Secret that a Pod on its node references, so only the proxy references the
-Secret. Before install and every upgrade, the create Job copies the
-certificate from the Secret into the ConfigMap. Without
-ca.existingSecret.name, it first generates the CA with oci-accelerator init-ca
-and stores it in a Secret if none exists. Helm's own certificate functions
+Runner Pods mount the certificate from a ConfigMap, so the kubelet on their
+nodes never needs to read the CA Secret, which holds the private key. Before
+install and every upgrade, the create Job copies the certificate into the
+ConfigMap. Without ca.existingSecret.name, it first generates the CA with
+oci-accelerator init-ca if no Secret exists, since Helm's certificate functions
 cannot produce the CA profile the proxy requires. After uninstall, the delete
 Job removes the ConfigMap and any generated Secret. Neither is a release
 resource, so Helm never renders or stores the private key.
@@ -185,7 +183,7 @@ spec:
                   fieldPath: metadata.namespace
             - name: CONFIGMAP_NAME
               value: {{ $certName | quote }}
-            {{- /* The delete Job deletes the Secret it is given, so it is given only a generated one. */}}
+            {{- /* The delete Job gets SECRET_NAME only for a generated Secret, which it deletes. */}}
             {{- if or (eq $action "create") $generate }}
             - name: SECRET_NAME
               value: {{ $secretName | quote }}

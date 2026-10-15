@@ -313,7 +313,6 @@ assert_contains "${accel_runner}" "- --no-proxy=registry.internal:5000"
 assert_contains "${accel_runner}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
 ca_cert_volume=$'- name: oci-accelerator-ca\n          configMap:\n            name: "test-buildkite-operator-oci-accelerator-ca-cert"'
 assert_contains "${accel_runner}" "${ca_cert_volume}"
-# The kubelet can read every key of a Secret a Pod on its node references.
 if [[ "${accel_runner}" == *'"oci-ca"'* || "${accel_runner}" == *'"ca.key"'* ]]; then
 	echo "Runner Pods referenced the OCI accelerator CA Secret" >&2
 	exit 1
@@ -355,8 +354,7 @@ if [[ "${accel_opt_out}" == *"oci-accelerator"* || "${accel_opt_out}" == *"https
 	echo "OCI accelerator rendered with no entry using it" >&2
 	exit 1
 fi
-# With an existing CA Secret, hook Jobs only copy its certificate into the
-# ConfigMap, and only delete the ConfigMap.
+# With an existing CA Secret, hook Jobs read it but never create or delete it.
 [[ $(count_kind "${accel}" Job) -eq 2 ]] || { echo "Expected two CA hook Jobs with an existing CA Secret" >&2; exit 1; }
 existing_create=$(document "${accel}" Job test-buildkite-operator-oci-accelerator-ca-create)
 assert_contains "${existing_create}" $'SECRET_NAME\n              value: "oci-ca"'

@@ -390,9 +390,7 @@ if [[ -z "${dockerd_pod}" ]]; then
 fi
 dockerd() { "${KUBECTL[@]}" exec -n "${ACCEL_NAMESPACE}" "${dockerd_pod}" -c dockerd -- "$@"; }
 
-# Runner Pods take the certificate from the ConfigMap. The kubelet can read
-# every key of a Secret a Pod on its node references, so they must not
-# reference the CA Secret.
+# Runner Pods trust the CA from the ConfigMap.
 runner_secrets=$("${KUBECTL[@]}" get pod "${dockerd_pod}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.spec.volumes[*].secret.secretName}')
 [[ " ${runner_secrets} " != *" ${ACCEL_CA_SECRET} "* ]] || { echo "Runner Pod references the CA Secret" >&2; exit 1; }
 [[ "$("${KUBECTL[@]}" get pod "${dockerd_pod}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.spec.volumes[?(@.name=="oci-accelerator-ca")].configMap.name}')" == "${ACCEL_CA_CONFIGMAP}" ]]
@@ -408,9 +406,8 @@ served_ca=$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")
 	exit 1
 }
 
-# Upgrades keep the generated CA, and one that leaves the proxy unchanged keeps
-# its Pod and so its cache. Releases installed before the chart published the
-# certificate have no ConfigMap, so upgrades create it from the Secret.
+# Upgrades keep the generated CA and recreate a missing ConfigMap from it. One
+# that leaves the proxy unchanged keeps its Pod and so its cache.
 proxy_pod() {
 	"${KUBECTL[@]}" get pods -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=oci-accelerator -o name
 }
