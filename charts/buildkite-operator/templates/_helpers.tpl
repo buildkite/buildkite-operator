@@ -111,6 +111,13 @@ release installs it.
 {{- .Values.ociAccelerator.ca.existingSecret.name | default (printf "%s-ca" (include "buildkite-operator.ociAcceleratorName" .)) }}
 {{- end }}
 
+{{/*
+ConfigMap holding only the CA certificate, which runner Pods mount.
+*/}}
+{{- define "buildkite-operator.ociAcceleratorCACertName" -}}
+{{- printf "%s-ca-cert" (include "buildkite-operator.ociAcceleratorName" .) }}
+{{- end }}
+
 {{- define "buildkite-operator.ociAcceleratorCAHookName" -}}
 {{- printf "%s-ca-hook" (include "buildkite-operator.ociAcceleratorName" .) }}
 {{- end }}

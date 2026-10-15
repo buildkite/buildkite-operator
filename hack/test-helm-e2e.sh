@@ -27,6 +27,7 @@ ACCEL_NAMESPACE="buildkite-runners-accel"
 ACCEL_RELEASE="accel"
 ACCEL_NAME="${ACCEL_RELEASE}-buildkite-operator-oci-accelerator"
 ACCEL_CA_SECRET="${ACCEL_NAME}-ca"
+ACCEL_CA_CONFIGMAP="${ACCEL_NAME}-ca-cert"
 ACCEL_IMAGE=$("${HELM}" show values "${CHART_DIR}" | awk '
 	/^ociAccelerator:/ { section = 1; next }
 	section && /^[^ #]/ { section = 0 }
@@ -406,8 +407,12 @@ fi
 ca_secret_cert() {
 	"${KUBECTL[@]}" get secret "${ACCEL_CA_SECRET}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.data.ca\.crt}' | base64 -d
 }
+ca_configmap_cert() {
+	"${KUBECTL[@]}" get configmap "${ACCEL_CA_CONFIGMAP}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.data.ca\.crt}'
+}
 generated_ca=$(ca_secret_cert)
 [[ "${generated_ca}" == "-----BEGIN CERTIFICATE-----"* ]] || { echo "The chart did not generate a CA Secret" >&2; exit 1; }
+[[ "$(ca_configmap_cert)" == "${generated_ca}" ]] || { echo "The CA ConfigMap does not hold the generated certificate" >&2; exit 1; }
 [[ -z "$("${KUBECTL[@]}" get jobs,roles,serviceaccounts -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=oci-accelerator-ca -o name)" ]] || {
 	echo "CA hook resources remained after install" >&2
 	exit 1
@@ -428,6 +433,15 @@ if [[ -z "${dockerd_pod}" ]]; then
 fi
 dockerd() { "${KUBECTL[@]}" exec -n "${ACCEL_NAMESPACE}" "${dockerd_pod}" -c dockerd -- "$@"; }
 
+# Runner Pods trust the CA from the ConfigMap.
+runner_secrets=$("${KUBECTL[@]}" get pod "${dockerd_pod}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.spec.volumes[*].secret.secretName}')
+[[ " ${runner_secrets} " != *" ${ACCEL_CA_SECRET} "* ]] || { echo "Runner Pod references the CA Secret" >&2; exit 1; }
+[[ "$("${KUBECTL[@]}" get pod "${dockerd_pod}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.spec.volumes[?(@.name=="oci-accelerator-ca")].configMap.name}')" == "${ACCEL_CA_CONFIGMAP}" ]]
+[[ "$(dockerd cat /etc/ssl/oci-accelerator-certs/ca.crt)" == "${generated_ca}" ]] || {
+	echo "Runner Docker daemon does not trust the generated CA" >&2
+	exit 1
+}
+
 # Runner Pods reach the proxy, which serves the CA from the Secret.
 served_ca=$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")
 [[ "${served_ca}" == "${generated_ca}" ]] || {
@@ -435,14 +449,16 @@ served_ca=$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")
 	exit 1
 }
 
-# Upgrades keep the generated CA, and one that leaves the proxy unchanged keeps
-# its Pod and so its cache.
+# Upgrades keep the generated CA and recreate a missing ConfigMap from it. One
+# that leaves the proxy unchanged keeps its Pod and so its cache.
 proxy_pod() {
 	"${KUBECTL[@]}" get pods -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=oci-accelerator -o name
 }
 proxy_before=$(proxy_pod)
+"${KUBECTL[@]}" delete configmap "${ACCEL_CA_CONFIGMAP}" -n "${ACCEL_NAMESPACE}"
 "${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values
 [[ "$(ca_secret_cert)" == "${generated_ca}" ]] || { echo "helm upgrade replaced the generated CA" >&2; exit 1; }
+[[ "$(ca_configmap_cert)" == "${generated_ca}" ]] || { echo "helm upgrade did not recreate the CA ConfigMap" >&2; exit 1; }
 [[ "$(proxy_pod)" == "${proxy_before}" ]] || { echo "helm upgrade replaced the unchanged proxy Pod" >&2; exit 1; }
 
 # A second pull of a removed image is served from the cache.
@@ -490,6 +506,10 @@ done
 }
 [[ -z "$("${KUBECTL[@]}" get secret "${ACCEL_CA_SECRET}" -n "${ACCEL_NAMESPACE}" -o name --ignore-not-found)" ]] || {
 	echo "Generated CA Secret remained after uninstall" >&2
+	exit 1
+}
+[[ -z "$("${KUBECTL[@]}" get configmap "${ACCEL_CA_CONFIGMAP}" -n "${ACCEL_NAMESPACE}" -o name --ignore-not-found)" ]] || {
+	echo "CA ConfigMap remained after uninstall" >&2
 	exit 1
 }
 [[ -z "$("${KUBECTL[@]}" get jobs,roles,serviceaccounts -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=oci-accelerator-ca -o name)" ]] || {

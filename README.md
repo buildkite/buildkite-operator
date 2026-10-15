@@ -441,16 +441,23 @@ Every `dind`, `kata` and `sysbox` entry then uses it. Set `docker.ociAccelerator
 on an entry to pull directly.
 
 The proxy signs registry certificates with its own root CA, which it loads from
-a Secret in the release namespace; it never generates one itself. By default
-the chart generates the CA. Before install and every upgrade, a hook Job runs
-the accelerator's `init-ca` and stores the result in the Secret
+a Secret in the release namespace; it never generates one itself. Runner Pods
+trust only the CA's certificate, which they mount from a separate ConfigMap,
+`<release>-buildkite-operator-oci-accelerator-ca-cert`, so only the proxy
+references the Secret holding the private key. By default the chart generates
+the CA. Before install and every upgrade, a hook Job runs the accelerator's
+`init-ca` and stores the result in the Secret
 `<release>-buildkite-operator-oci-accelerator-ca`, unless that Secret already
-exists, so the CA is created once and then kept. A second hook Job deletes the
-Secret after `helm uninstall`; `helm uninstall --no-hooks` leaves it behind.
-The hook Jobs run with a short-lived ServiceAccount that may create Secrets
-and read or delete only that one, and Helm itself never renders or stores the
-private key. To rotate the CA, delete the Secret, run `helm upgrade`, then
-restart the proxy Deployment and the runner Deployments.
+exists, so the CA is created once and then kept. The same Job then copies the
+certificate from the Secret into the ConfigMap, creating or updating it, so
+upgrading a release installed before the ConfigMap existed creates it. A second
+hook Job deletes the ConfigMap and the Secret after `helm uninstall`;
+`helm uninstall --no-hooks` leaves them behind. The hook Jobs run with a
+short-lived ServiceAccount that may create Secrets and ConfigMaps, but may
+read or delete only that Secret and ConfigMap and update only the ConfigMap,
+and Helm itself never renders or stores the private key. To rotate the CA,
+delete the Secret, run `helm upgrade`, then restart the proxy Deployment and
+the runner Deployments.
 
 To manage the CA yourself instead, for example to keep it across reinstalls,
 create it once and store it in a Secret in the release namespace. This runs
@@ -470,7 +477,10 @@ kubectl create secret generic oci-accelerator-ca \
 Keep a secure backup of `ca.key`. Anyone with it can impersonate registries
 to the runners' Docker daemons. Then set `ociAccelerator.ca.existingSecret.name:
 oci-accelerator-ca`. The chart never creates, changes or deletes a Secret you
-name; until it exists, the proxy and runner Pods don't start.
+name. Its hook Job only reads it, before install and every upgrade, to copy the
+certificate into the runners' ConfigMap, so install and upgrade fail until the
+Secret exists. After replacing the Secret, run `helm upgrade` to copy the new
+certificate, then restart the proxy Deployment and the runner Deployments.
 
 The chart installs:
 
@@ -498,10 +508,13 @@ request disk too, so size it to fit beside them, or place the proxy with
 
 The daemons trust the CA for every host, not only `registries`. Docker Engine
 does not read `/etc/docker/certs.d` for Docker Hub with the classic image
-store used by `sysbox`, so per-registry trust is not possible. Runner Pods are
-given only the certificate; the private key is mounted only in the proxy and,
-briefly, the hook Job that generates it.
-Pods read the Secret at startup, so after replacing the CA restart the
+store used by `sysbox`, so per-registry trust is not possible. Runner Pods
+reference only the certificate's ConfigMap, never the CA Secret. This matters
+because a node's kubelet can read every key of any Secret that a Pod on the
+node references, whatever `items` the Pod mounts, so a job that escapes to its
+node can read those Secrets. The private key is mounted only in the proxy, and
+held briefly by the hook Job that generates or copies it.
+Pods read the CA at startup, so after replacing it restart the
 proxy Deployment and the runner Deployments. Other `OCI_ACCELERATOR_*` settings can
 be passed through `ociAccelerator.extraEnv`; see the accelerator's
 [deployment guide](https://github.com/buildkite/oci-accelerator/blob/main/docs/deployment.md#configuration).
