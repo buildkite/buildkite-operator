@@ -526,7 +526,7 @@ there, so a release with `dind` queues should keep the proxy off nodes `dind`
 runners can reach. The chart adds no node selector for `dind`, so place the
 proxy with `ociAccelerator.nodeSelector` and `tolerations`, for example on
 nodes tainted for `kata` or `sysbox`, or on dedicated system nodes. The hook
-Jobs that generate and delete the CA use the same placement. Without the
+Jobs that generate, copy and delete the CA use the same placement. Without the
 deletion-cost admission policy, such a job could instead use a runner's token
 to change the proxy Pod's image; see [Scale-in preference](#scale-in-preference).
 
