@@ -51,10 +51,10 @@ Docker daemons for {{ join ", " $accelerated }} pull through the OCI accelerator
   kubectl logs deployment/{{ include "buildkite-operator.ociAcceleratorName" . }} -c oci-accelerator -n {{ .Release.Namespace }}
 {{- if .Values.ociAccelerator.ca.existingSecret.name }}
 
-Pods read the CA Secret {{ .Values.ociAccelerator.ca.existingSecret.name }} only at startup. After replacing it, restart the proxy Deployment and those queues' Deployments.
+The proxy uses the CA in Secret {{ .Values.ociAccelerator.ca.existingSecret.name }}, and runners trust its certificate, copied to ConfigMap {{ include "buildkite-operator.ociAcceleratorCACertName" . }} on every install and upgrade. Pods read both only at startup. After replacing the Secret, run helm upgrade, then restart the proxy Deployment and those queues' Deployments.
 {{- else }}
 
-The chart generated the proxy's CA in Secret {{ include "buildkite-operator.ociAcceleratorCASecretName" . }}, which is deleted on uninstall. To rotate it, delete the Secret and run helm upgrade, then restart the proxy Deployment and those queues' Deployments.
+The chart generated the proxy's CA in Secret {{ include "buildkite-operator.ociAcceleratorCASecretName" . }}, and runners trust its certificate in ConfigMap {{ include "buildkite-operator.ociAcceleratorCACertName" . }}. Both are deleted on uninstall. To rotate the CA, delete the Secret and run helm upgrade, then restart the proxy Deployment and those queues' Deployments.
 {{- end }}
 {{- else }}
 

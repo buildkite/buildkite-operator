@@ -19,4 +19,4 @@ Docker daemons for docker, docker-builds pull through the OCI accelerator, cachi
 
   kubectl logs deployment/buildkite-buildkite-operator-oci-accelerator -c oci-accelerator -n buildkite
 
-The chart generated the proxy's CA in Secret buildkite-buildkite-operator-oci-accelerator-ca, which is deleted on uninstall. To rotate it, delete the Secret and run helm upgrade, then restart the proxy Deployment and those queues' Deployments.
+The chart generated the proxy's CA in Secret buildkite-buildkite-operator-oci-accelerator-ca, and runners trust its certificate in ConfigMap buildkite-buildkite-operator-oci-accelerator-ca-cert. Both are deleted on uninstall. To rotate the CA, delete the Secret and run helm upgrade, then restart the proxy Deployment and those queues' Deployments.

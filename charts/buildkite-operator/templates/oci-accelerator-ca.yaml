@@ -1,14 +1,19 @@
 {{- /*
-Without ca.existingSecret.name, hook Jobs generate the proxy's CA with
-oci-accelerator init-ca before install or upgrade, storing it in a Secret only
-if none exists, and delete that Secret after uninstall. Helm's own certificate
-functions cannot produce the CA profile the proxy requires. The Secret is not a
-release resource, so Helm never renders or stores the private key.
+Runner Pods mount the certificate from a ConfigMap, so the kubelet on their
+nodes never needs to read the CA Secret, which holds the private key. Before
+install and every upgrade, the create Job copies the certificate into the
+ConfigMap. Without ca.existingSecret.name, it first generates the CA with
+oci-accelerator init-ca if no Secret exists, since Helm's certificate functions
+cannot produce the CA profile the proxy requires. After uninstall, the delete
+Job removes the ConfigMap and any generated Secret. Neither is a release
+resource, so Helm never renders or stores the private key.
 */}}
-{{- if and (include "buildkite-operator.ociAcceleratorUsed" .) (not .Values.ociAccelerator.ca.existingSecret.name) }}
+{{- if include "buildkite-operator.ociAcceleratorUsed" . }}
 {{- $accelerator := .Values.ociAccelerator }}
+{{- $generate := not $accelerator.ca.existingSecret.name }}
 {{- $hookName := include "buildkite-operator.ociAcceleratorCAHookName" . }}
 {{- $secretName := include "buildkite-operator.ociAcceleratorCASecretName" . }}
+{{- $certName := include "buildkite-operator.ociAcceleratorCACertName" . }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -23,8 +28,8 @@ metadata:
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 automountServiceAccountToken: false
 ---
-# Kubernetes cannot limit create to one Secret name. These objects exist only
-# while the hooks run.
+# Kubernetes cannot limit create to one name. These objects exist only while
+# the hooks run.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -38,6 +43,7 @@ metadata:
     helm.sh/hook-weight: "-10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 rules:
+  {{- if $generate }}
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create"]
@@ -45,6 +51,19 @@ rules:
     resources: ["secrets"]
     resourceNames: [{{ $secretName | quote }}]
     verbs: ["get", "delete"]
+  {{- else }}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $secretName | quote }}]
+    verbs: ["get"]
+  {{- end }}
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ $certName | quote }}]
+    verbs: ["get", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -112,7 +131,7 @@ spec:
       {{- with include "buildkite-operator.hookImagePullSecrets" $ }}
       {{- . | nindent 6 }}
       {{- end }}
-      # The proxy's user, so the Secret step can read the generated private key.
+      # The proxy's user, so the create step can read the generated private key.
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -129,7 +148,7 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if eq $action "create" }}
+      {{- if and (eq $action "create") $generate }}
       initContainers:
         # init-ca requires an owner-controlled parent directory, which an
         # emptyDir mount is not.
@@ -153,7 +172,7 @@ spec:
       {{- end }}
       containers:
         # Reuses the chart's pinned Python image to call the Kubernetes API.
-        - name: {{ $action }}-secret
+        - name: {{ $action }}-ca
           image: "{{ $.Values.deletionCost.image.repository }}:{{ $.Values.deletionCost.image.tag }}@{{ $.Values.deletionCost.image.digest }}"
           imagePullPolicy: {{ $.Values.deletionCost.image.pullPolicy }}
           command: ["python3", "-u", "/opt/oci-accelerator-ca/oci_accelerator_ca.py", {{ $action | quote }}]
@@ -162,16 +181,23 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: CONFIGMAP_NAME
+              value: {{ $certName | quote }}
+            {{- /* The delete Job gets SECRET_NAME only for a generated Secret, which it deletes. */}}
+            {{- if or (eq $action "create") $generate }}
             - name: SECRET_NAME
               value: {{ $secretName | quote }}
+            {{- end }}
             {{- if eq $action "create" }}
             - name: CERTIFICATE_KEY
               value: {{ $accelerator.ca.existingSecret.certificateKey | quote }}
             - name: PRIVATE_KEY_KEY
               value: {{ $accelerator.ca.existingSecret.privateKeyKey | quote }}
+            {{- if $generate }}
             - name: CA_DIR
               value: /work/state/ca
-            - name: SECRET_LABELS
+            {{- end }}
+            - name: LABELS
               value: {{ dict "app.kubernetes.io/name" (include "buildkite-operator.name" $) "app.kubernetes.io/instance" $.Release.Name "app.kubernetes.io/component" "oci-accelerator-ca" | toJson | quote }}
             {{- end }}
           securityContext:
@@ -188,7 +214,7 @@ spec:
             - name: api
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
-            {{- if eq $action "create" }}
+            {{- if and (eq $action "create") $generate }}
             - name: work
               mountPath: /work
               readOnly: true
@@ -208,7 +234,7 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
-        {{- if eq $action "create" }}
+        {{- if and (eq $action "create") $generate }}
         - name: work
           emptyDir:
             medium: Memory

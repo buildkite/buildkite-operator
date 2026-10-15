@@ -311,9 +311,10 @@ accel_runner=$(document "${accel}" Deployment test-linux)
 assert_contains "${accel_runner}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
 assert_contains "${accel_runner}" "- --no-proxy=registry.internal:5000"
 assert_contains "${accel_runner}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
-assert_contains "${accel_runner}" $'secretName: "oci-ca"\n            items:\n              - key: "ca.crt"\n                path: ca.crt'
-if [[ "${accel_runner}" == *'"ca.key"'* ]]; then
-	echo "Runner Pods mounted the OCI accelerator private key" >&2
+ca_cert_volume=$'- name: oci-accelerator-ca\n          configMap:\n            name: "test-buildkite-operator-oci-accelerator-ca-cert"'
+assert_contains "${accel_runner}" "${ca_cert_volume}"
+if [[ "${accel_runner}" == *'"oci-ca"'* || "${accel_runner}" == *'"ca.key"'* ]]; then
+	echo "Runner Pods referenced the OCI accelerator CA Secret" >&2
 	exit 1
 fi
 accel_proxy=$(document "${accel}" Deployment test-buildkite-operator-oci-accelerator)
@@ -336,8 +337,9 @@ assert_contains "$(document "${accel}" NetworkPolicy test-buildkite-operator-oci
 accel_dind=$(document "$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind)" Deployment test-linux)
 assert_contains "${accel_dind}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
 assert_contains "${accel_dind}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
-if [[ "${accel_dind}" == *'"ca.key"'* ]]; then
-	echo "dind runner Pods mounted the OCI accelerator private key" >&2
+assert_contains "${accel_dind}" "${ca_cert_volume}"
+if [[ "${accel_dind}" == *'"oci-ca"'* || "${accel_dind}" == *'"ca.key"'* ]]; then
+	echo "dind runner Pods referenced the OCI accelerator CA Secret" >&2
 	exit 1
 fi
 no_policy=$(render "${accel_args[@]}" --set-string queues.linux.runtime=kata --set ociAccelerator.networkPolicy.enabled=false)
@@ -352,7 +354,23 @@ if [[ "${accel_opt_out}" == *"oci-accelerator"* || "${accel_opt_out}" == *"https
 	echo "OCI accelerator rendered with no entry using it" >&2
 	exit 1
 fi
-[[ $(count_kind "${accel}" Job) -eq 0 ]] || { echo "CA hook Jobs rendered with an existing CA Secret" >&2; exit 1; }
+# With an existing CA Secret, hook Jobs read it but never create or delete it.
+[[ $(count_kind "${accel}" Job) -eq 2 ]] || { echo "Expected two CA hook Jobs with an existing CA Secret" >&2; exit 1; }
+existing_create=$(document "${accel}" Job test-buildkite-operator-oci-accelerator-ca-create)
+assert_contains "${existing_create}" $'SECRET_NAME\n              value: "oci-ca"'
+assert_contains "${existing_create}" $'CONFIGMAP_NAME\n              value: "test-buildkite-operator-oci-accelerator-ca-cert"'
+existing_delete=$(document "${accel}" Job test-buildkite-operator-oci-accelerator-ca-delete)
+assert_contains "${existing_delete}" $'CONFIGMAP_NAME\n              value: "test-buildkite-operator-oci-accelerator-ca-cert"'
+if [[ "${existing_create}" == *"init-ca"* || "${existing_delete}" == *"SECRET_NAME"* ]]; then
+	echo "CA hook Jobs would generate or delete an existing CA Secret" >&2
+	exit 1
+fi
+existing_role=$(document "${accel}" Role test-buildkite-operator-oci-accelerator-ca-hook)
+assert_contains "${existing_role}" $'resourceNames: ["oci-ca"]\n    verbs: ["get"]'
+if [[ "${existing_role}" == *'resources: ["secrets"]'$'\n    verbs:'* ]]; then
+	echo "CA hook Role could create Secrets with an existing CA Secret" >&2
+	exit 1
+fi
 if [[ "${accel}" == *"oci-accelerator-ca\""* ]]; then
 	echo "Generated CA Secret referenced with an existing CA Secret" >&2
 	exit 1
@@ -364,12 +382,17 @@ assert_contains "${accel_proxy}" $'- name: ca-source\n          secret:\n       
 assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CA_DIR\n              value: /run/oci-accelerator/private/ca'
 
 # Without an existing Secret, hook Jobs generate the CA with init-ca before
-# install and upgrade, and delete its Secret after uninstall.
+# install and upgrade, and delete its Secret and ConfigMap after uninstall.
 generated=$(render --set-string agentToken.value="${TOKEN}" --set ociAccelerator.enabled=true \
 	--set-string queues.linux.runtime=dind)
 generated_secret="test-buildkite-operator-oci-accelerator-ca"
 assert_contains "$(document "${generated}" Deployment test-buildkite-operator-oci-accelerator)" "secretName: \"${generated_secret}\""
-assert_contains "$(document "${generated}" Deployment test-linux)" "secretName: \"${generated_secret}\""
+generated_runner=$(document "${generated}" Deployment test-linux)
+assert_contains "${generated_runner}" "${ca_cert_volume}"
+if [[ "${generated_runner}" == *"${generated_secret}\""* ]]; then
+	echo "Runner Pods referenced the generated CA Secret" >&2
+	exit 1
+fi
 [[ $(count_kind "${generated}" Job) -eq 2 ]] || { echo "Expected two CA hook Jobs" >&2; exit 1; }
 ca_create=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-create)
 assert_contains "${ca_create}" "helm.sh/hook: pre-install,pre-upgrade"
@@ -379,6 +402,7 @@ assert_contains "${ca_create}" $'SECRET_NAME\n              value: "'"${generate
 ca_delete=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-delete)
 assert_contains "${ca_delete}" "helm.sh/hook: post-delete"
 assert_contains "${ca_delete}" '"/opt/oci-accelerator-ca/oci_accelerator_ca.py", "delete"'
+assert_contains "${ca_delete}" $'SECRET_NAME\n              value: "'"${generated_secret}"'"'
 if [[ "${ca_delete}" == *"init-ca"* ]]; then
 	echo "CA delete Job generated a CA" >&2
 	exit 1
@@ -386,6 +410,7 @@ fi
 ca_role=$(document "${generated}" Role test-buildkite-operator-oci-accelerator-ca-hook)
 assert_contains "${ca_role}" "helm.sh/hook: pre-install,pre-upgrade,post-delete"
 assert_contains "${ca_role}" $'resourceNames: ["'"${generated_secret}"$'"]\n    verbs: ["get", "delete"]'
+assert_contains "${ca_role}" $'resourceNames: ["test-buildkite-operator-oci-accelerator-ca-cert"]\n    verbs: ["get", "patch", "delete"]'
 for kind in ServiceAccount RoleBinding ConfigMap; do
 	assert_contains "$(document "${generated}" "${kind}" test-buildkite-operator-oci-accelerator-ca-hook)" \
 		"helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded"
@@ -539,15 +564,10 @@ for job in create delete; do
 		$'imagePullSecrets:\n        - name: "test-buildkite-operator-registry-credentials-hook"'
 done
 # Without hook Jobs, there is no hook copy.
-for no_hooks in \
-	"$(render "${credential_args[@]}" --set-string queues.linux.runtime=dind)" \
-	"$(render "${credential_args[@]}" --set-string queues.linux.runtime=dind --set ociAccelerator.enabled=true \
-		--set-string ociAccelerator.ca.existingSecret.name=oci-ca)"; do
-	if [[ "${no_hooks}" == *"registry-credentials-hook"* ]]; then
-		echo "Hook registry credentials Secret rendered without hook Jobs" >&2
-		exit 1
-	fi
-done
+if [[ "$(render "${credential_args[@]}" --set-string queues.linux.runtime=dind)" == *"registry-credentials-hook"* ]]; then
+	echo "Hook registry credentials Secret rendered without hook Jobs" >&2
+	exit 1
+fi
 credentials_std=$(document "${credentials}" Deployment test-std)
 if [[ "${credentials_std}" == *"docker-config"* || "${credentials_std}" == *"- name: registry-credentials"* ]]; then
 	echo "Standard runners received Docker client credentials" >&2

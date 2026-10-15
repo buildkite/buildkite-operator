@@ -170,7 +170,7 @@ supervisor:
 # pod-deletion-cost 100 and removes the annotation from idle agents. It needs
 # permission to patch Pods in the release namespace. The digest pins the
 # multi-platform image index for the tag. The image and resources are also used
-# by the hook Jobs that manage a generated OCI accelerator CA.
+# by the OCI accelerator CA hook Jobs.
 deletionCost:
   image:
     repository: python
@@ -202,13 +202,14 @@ ociAccelerator:
   # Hosts the Docker daemons reach directly instead of through the proxy, such
   # as private registries the proxy cannot reach. Must not include registries.
   noProxy: []
-  # Root CA the proxy signs registry certificates with. Runner Docker daemons
-  # are given only the certificate. With no existingSecret.name, a hook Job
-  # generates the CA with "oci-accelerator init-ca" into a
-  # <release>-...-oci-accelerator-ca Secret if it does not exist, and deletes
-  # that Secret on uninstall. To provide your own, set existingSecret.name to a
-  # Secret in the release namespace holding both files (see the README); the
-  # chart never creates or deletes it.
+  # Root CA the proxy signs registry certificates with, held in a Secret only
+  # the proxy references. Before install and every upgrade, a hook Job copies the
+  # certificate into a <release>-...-oci-accelerator-ca-cert ConfigMap for runner
+  # Docker daemons. With no existingSecret.name, it first generates the CA with
+  # "oci-accelerator init-ca" into a <release>-...-oci-accelerator-ca Secret if
+  # none exists. Hooks delete the ConfigMap, and any generated Secret, on
+  # uninstall. To provide your own, set existingSecret.name to a Secret in the
+  # release namespace holding both files (see the README); the chart only reads it.
   ca:
     existingSecret:
       name: ""
