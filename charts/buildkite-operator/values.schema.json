@@ -11,7 +11,7 @@
           "properties": {
             "image": { "required": ["repository", "tag", "pullPolicy"] },
             "docker": {
-              "required": ["image", "resources", "storage", "ociAccelerator", "stepImages", "defaultStepImage"],
+              "required": ["image", "resources", "storage", "ociAccelerator", "stepImages", "defaultStepImage", "agentRuntimeImage"],
               "properties": {
                 "image": { "required": ["repository", "tag", "pullPolicy"] },
                 "storage": { "required": ["data", "workspace"] }
@@ -224,7 +224,8 @@
             },
             "ociAccelerator": { "type": "boolean" },
             "stepImages": { "type": "boolean" },
-            "defaultStepImage": { "type": "string" }
+            "defaultStepImage": { "type": "string" },
+            "agentRuntimeImage": { "type": "string", "pattern": "^[^,\\s]*$" }
           }
         }
       }

@@ -78,10 +78,13 @@ clean_job_state() {
 }
 
 start_agent() {
-	if ! docker image inspect "$AGENT_IMAGE" >/dev/null 2>&1; then
-		log "Pulling $AGENT_IMAGE"
-		docker pull --quiet "$AGENT_IMAGE" >/dev/null || return 1
-	fi
+	for image in "$AGENT_IMAGE" "${AGENT_RUNTIME_IMAGE:-}"; do
+		[ -n "$image" ] || continue
+		if ! docker image inspect "$image" >/dev/null 2>&1; then
+			log "Pulling $image"
+			docker pull --quiet "$image" >/dev/null || return 1
+		fi
+	done
 
 	clean_job_state || return 1
 
@@ -95,6 +98,22 @@ start_agent() {
 			--env DEFAULT_STEP_IMAGE
 	fi
 
+	image="$AGENT_IMAGE"
+	agent_binary=/usr/local/bin/buildkite-agent
+	agent_command="$agent_binary"
+	if [ -n "${AGENT_RUNTIME_IMAGE:-}" ]; then
+		case "$(docker info --format '{{json .DriverStatus}}')" in
+		*io.containerd.snapshotter.v1*) ;;
+		*) log "agentRuntimeImage requires Docker's containerd image store"; return 1 ;;
+		esac
+		image="$AGENT_RUNTIME_IMAGE"
+		agent_binary=/opt/buildkite-agent-source/usr/local/bin/buildkite-agent
+		# Run the shared copy so the agent's BUILDKITE_BIN_PATH is also visible
+		# to sibling containers: they do not inherit the source image mount.
+		agent_command=/buildkite/bin/buildkite-agent
+		set -- "$@" --mount "type=image,source=$AGENT_IMAGE,target=/opt/buildkite-agent-source,readonly"
+	fi
+
 	agent_name="${POD_NAME}-$(random_suffix)"
 	log "Starting agent $agent_name"
 	# DOCKER_CONFIG is at the same path in the Docker daemon's container, so
@@ -103,6 +122,7 @@ start_agent() {
 	# workspace with the agent, so jobs whose plugins mount the agent binary
 	# (mount-buildkite-agent) find a copy there first on PATH.
 	docker run --detach --pull never \
+		--stop-signal SIGTERM \
 		--name "$agent_container" \
 		--hostname "$POD_NAME" \
 		--publish 8080:8080 \
@@ -121,10 +141,10 @@ start_agent() {
 		--env BUILDKITE_SOCKETS_PATH=/buildkite/sockets \
 		--env DOCKER_HOST=unix:///var/run/docker.sock \
 		"$@" \
-		"$AGENT_IMAGE" -c 'mkdir -p /buildkite/bin &&
-			cp /usr/local/bin/buildkite-agent /buildkite/bin/ &&
+		"$image" -c 'mkdir -p /buildkite/bin &&
+			cp "$1" /buildkite/bin/buildkite-agent &&
 			export PATH="/buildkite/bin:$PATH" &&
-			exec /usr/local/bin/buildkite-agent start --disconnect-after-job' >/dev/null
+			exec "$2" start --disconnect-after-job' agent "$agent_binary" "$agent_command" >/dev/null
 }
 
 follow_agent_logs() {

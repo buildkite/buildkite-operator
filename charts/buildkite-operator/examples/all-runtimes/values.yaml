@@ -1,7 +1,7 @@
 # The README's queue examples in one release: every runtime, persistent and
 # ephemeral agents, scale to zero, tokens from existing Secrets, image pull
 # caching through the OCI accelerator, which one entry opts out of, and step
-# images, which another opts out of. Run
+# images, which another opts out of, and a composed agent runtime. Run
 # `make helm-examples` after changing this file or the chart to update
 # rendered.yaml and NOTES.txt.
 agentToken:
@@ -41,3 +41,4 @@ queues:
     maxReplicas: 6
     docker:
       ociAccelerator: false
+      agentRuntimeImage: buildkite/agent-base:ubuntu-noble-hosted-toolchains

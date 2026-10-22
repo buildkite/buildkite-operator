@@ -375,6 +375,53 @@ boundary between them. Anything a job can reach that persists, such as files
 outside the workspace in a `standard` container or the Pod's Docker image
 cache, remains available to later jobs.
 
+### Agent runtime image
+
+Supervised ephemeral `dind`, `kata` and `sysbox` agents can run in a separate
+runtime image, including their initial environment/plugin/checkout hooks:
+
+```yaml
+defaults:
+  ephemeralAgent: true
+  runtime: dind
+  docker:
+    agentRuntimeImage: buildkite/agent-base:ubuntu-noble-hosted-toolchains
+```
+
+`image` remains the agent-binary source (`buildkite/agent:4` by default). Docker
+mounts its filesystem read-only at `/opt/buildkite-agent-source` inside the
+runtime; it is not overlaid on the runtime's root. Startup copies only the agent
+binary to `/buildkite/bin/buildkite-agent` and runs that copy. The shared path is
+first on `PATH` and is the agent's `BUILDKITE_BIN_PATH`, so Docker/Compose plugins
+and step containers can bind-mount it without inheriting the source-image mount.
+No extraction container or custom combined image is needed; the existing
+between-job workspace cleanup is unchanged.
+
+The runtime must match the source binary's architecture and provide `/bin/sh`,
+`cp`, a writable workspace and whatever tools/hooks the jobs require. Source-image
+configuration and hooks are not copied. With step images enabled it also needs
+the Docker CLI and `setsid`; Docker/Compose plugins need their usual tooling.
+The Ubuntu example supplies AWS tools to the initial hooks, unlike a command-only
+`defaultStepImage`. Explicit/default command-image selection still works after
+checkout, and `docker.stepImages: false` keeps the whole job in this runtime.
+
+Override `docker.agentRuntimeImage` per queue; `""` clears an inherited runtime.
+An empty default preserves the existing behavior. Nonempty values are rejected
+for persistent agents or `standard` runners rather than silently ignored.
+
+Requires Docker Engine/CLI 29+ and the containerd image store for `type=image`
+mounts. The opt-in explicitly enables that store; for Sysbox this replaces the
+usual classic `overlay2` selection. It does not migrate an existing daemon's
+images: a runner Pod replacement starts with a fresh emptyDir image cache. The
+supervisor refuses an incompatible store instead of falling back to an overlay
+or extraction helper. CI exercises isolated Docker image mounts, not Sysbox or
+Kata host/runtime compatibility; validate those before rolling out an opted-in
+pool. The feature is not enabled in any deployed values by this chart change.
+
+Both source and runtime are pulled only when missing, reusing cached mutable
+tags between agents, not requesting per-job freshness. Coordinate active jobs
+before changing either image or upgrading runner Pods.
+
 ### Step images
 
 On `dind`, `kata` and `sysbox` runners, a command step's `image:` runs the
