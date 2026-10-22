@@ -54,6 +54,9 @@ over .Values.defaults, with the entry taking precedence.
 {{- if gt (int $settings.minReplicas) $maxReplicas }}
 {{- fail (printf "queues.%s.minReplicas must be less than or equal to maxReplicas" $name) }}
 {{- end }}
+{{- if and $settings.docker.agentRuntimeImage (not (and $settings.ephemeralAgent (has $settings.runtime (list "dind" "kata" "sysbox")))) }}
+{{- fail (printf "queues.%s.docker.agentRuntimeImage requires ephemeralAgent and a dind, kata or sysbox runtime" $name) }}
+{{- end }}
 {{- $entries = append $entries (dict "name" $name "resourceName" $resourceName "settings" $settings) }}
 {{- end }}
 {{- toJson $entries }}

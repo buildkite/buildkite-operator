@@ -133,7 +133,10 @@ spec:
           args:
             - dockerd
             - --host=unix:///var/run/docker.sock
-            {{- if eq $r.runtime "sysbox" }}
+            {{- if $r.docker.agentRuntimeImage }}
+            # Docker image mounts require the containerd image store.
+            - --feature=containerd-snapshotter=true
+            {{- else if eq $r.runtime "sysbox" }}
             - --storage-driver=overlay2
             {{- end }}
             {{- if $accelerated }}
@@ -203,6 +206,10 @@ spec:
           env:
             - name: AGENT_IMAGE
               value: "{{ $r.image.repository }}:{{ $r.image.tag }}"
+            {{- with $r.docker.agentRuntimeImage }}
+            - name: AGENT_RUNTIME_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
             - name: BUILDKITE_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:

@@ -70,8 +70,18 @@ docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /ctx && cat >/ctx/agent && chmod 
 [ "$DOCKER_CONFIG" = /etc/buildkite-agent/docker ] && [ -f "$DOCKER_CONFIG/config.json" ] ||
 	{ echo "Docker client configuration missing" >&2; exit 65; }
 # /buildkite is the daemon's, so jobs can bind-mount the binary from there.
+source=/usr/local/bin/buildkite-agent
+if [ "$(cat "$DOCKER_CONFIG/expected-runtime")" = ubuntu ]; then
+	. /etc/os-release
+	[ "$ID" = ubuntu ] || { echo "Agent did not run in Ubuntu" >&2; exit 69; }
+	source=/opt/buildkite-agent-source/usr/local/bin/buildkite-agent
+	if touch /opt/buildkite-agent-source/write-test 2>/dev/null; then
+		echo "Source image mount is writable" >&2; exit 70
+	fi
+	[ ! -e /usr/local/bin/buildkite-agent ] || { echo "Source was merged over runtime root" >&2; exit 71; }
+fi
 [ "$(command -v buildkite-agent)" = /buildkite/bin/buildkite-agent ] &&
-	cmp -s /usr/local/bin/buildkite-agent /buildkite/bin/buildkite-agent ||
+	cmp -s "$source" /buildkite/bin/buildkite-agent ||
 	{ echo "Agent binary not first on PATH from the workspace" >&2; exit 66; }
 # Jobs run through the step-image script, from the Docker daemon's container.
 [ "$BUILDKITE_BOOTSTRAP_SCRIPT_PATH" = "/bin/sh /opt/step-image/step-image.sh" ] && [ -f /opt/step-image/step-image.sh ] &&
@@ -96,21 +106,33 @@ FROM busybox:1.37
 COPY agent /usr/local/bin/buildkite-agent
 EOF
 
-docker run --detach --read-only --name "${ID}-supervisor" \
-	--volume "${ID}-run:/var/run" \
-	--volume "${ID}-docker-config:${DOCKER_CONFIG_DIR}" \
-	--volume "$(pwd)/${SCRIPT}:/opt/supervisor/supervisor.sh:ro" \
-	--env "DOCKER_CONFIG=${DOCKER_CONFIG_DIR}" \
-	--env AGENT_IMAGE=test-agent:1 --env BUILDKITE_AGENT_TOKEN=unused \
-	--env AGENT_TAGS=queue=test --env POD_NAME=runner-pod \
-	--env TERMINATION_GRACE_PERIOD_SECONDS=20 \
-	--env "STEP_IMAGE_SCRIPT=${STEP_IMAGE_SCRIPT}" \
-	--env DEFAULT_STEP_IMAGE=test-step:default \
-	"${CLI_IMAGE}" /bin/sh /opt/supervisor/supervisor.sh >/dev/null
+expected=busybox
+if [[ -n "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
+	expected=ubuntu
+	# Keep image download time outside the agent-readiness deadline.
+	inner pull --quiet "${TEST_AGENT_RUNTIME_IMAGE}" >/dev/null
+fi
+docker exec "${ID}-dockerd" sh -c 'printf "%s" "$1" >"$2/expected-runtime"' sh "${expected}" "${DOCKER_CONFIG_DIR}"
+start_supervisor() {
+	docker run --detach --read-only --name "${ID}-supervisor" \
+		--volume "${ID}-run:/var/run" \
+		--volume "${ID}-docker-config:${DOCKER_CONFIG_DIR}" \
+		--volume "$(pwd)/${SCRIPT}:/opt/supervisor/supervisor.sh:ro" \
+		--env "DOCKER_CONFIG=${DOCKER_CONFIG_DIR}" \
+		--env "AGENT_IMAGE=$1" --env BUILDKITE_AGENT_TOKEN=unused \
+		--env "AGENT_RUNTIME_IMAGE=${TEST_AGENT_RUNTIME_IMAGE:-}" \
+		--env AGENT_TAGS=queue=test --env POD_NAME=runner-pod \
+		--env TERMINATION_GRACE_PERIOD_SECONDS=20 \
+		--env "STEP_IMAGE_SCRIPT=${STEP_IMAGE_SCRIPT}" \
+		--env DEFAULT_STEP_IMAGE=test-step:default \
+		"${CLI_IMAGE}" /bin/sh /opt/supervisor/supervisor.sh >/dev/null
+}
+start_supervisor test-agent:1
 
 wait_for "first agent" agent_running
 first=$(agent_name)
 [[ "${first}" == runner-pod-???? ]]
+wait_for "first agent's runtime checks" docker exec "${ID}-dockerd" test -e "${DOCKER_CONFIG_DIR}/seen-${first}"
 
 # Leave state behind as a job would.
 inner run --detach --name leftover busybox:1.37 sleep 600 >/dev/null
@@ -154,3 +176,20 @@ docker exec "${ID}-dockerd" test -e /buildkite/drain-finished || {
 }
 
 echo "Supervisor ran fresh agents for each job, cleaned state between them, and drained on shutdown"
+if [[ -n "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
+	# A source without the agent must fail closed, not start some binary from
+	# the runtime or reuse a stale shared copy left by the previous agent.
+	docker rm "${ID}-supervisor" >/dev/null
+	inner tag busybox:1.37 test-agent:missing
+	start_supervisor test-agent:missing
+	startup_failed() { docker logs "${ID}-supervisor" 2>&1 | grep -q 'Agent exited with status 1'; }
+	wait_for "missing source binary failure" startup_failed
+	! agent_running
+	docker exec "${ID}-dockerd" test ! -e /buildkite/bin/buildkite-agent
+	docker stop --time 30 "${ID}-supervisor" >/dev/null
+	echo "Missing source binary blocked agent startup without retaining the previous shared copy"
+else
+	cleanup
+	trap - EXIT
+	TEST_AGENT_RUNTIME_IMAGE=buildkite/agent-base:ubuntu-noble-hosted-toolchains "$0"
+fi

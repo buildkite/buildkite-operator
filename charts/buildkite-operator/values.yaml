@@ -97,6 +97,11 @@ defaults:
     # image: wins. Requires stepImages; ignored by standard runners. Initial
     # plugin/checkout hooks still run in the agent image, not this image.
     defaultStepImage: ""
+    # Optional runtime for supervised ephemeral Docker agents. The agent binary
+    # still comes from image, mounted read-only into this runtime, then copied
+    # to the shared workspace for Docker/Compose plugins and step containers.
+    # Requires Docker 29+ with the containerd image store. See the README.
+    agentRuntimeImage: ""
 
 # One entry per Buildkite queue, keyed by a short name used in resource names
 # (<release>-<name>). Each entry becomes a runner pool: a Deployment of runner

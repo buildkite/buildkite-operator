@@ -212,6 +212,35 @@ ephemeral_kata=$(render --set-string agentToken.value="${TOKEN}" --set-string qu
 assert_contains "${ephemeral_kata}" "runtimeClassName: kata-qemu-runtime-rs"
 assert_contains "${ephemeral_kata}" "- name: supervisor"
 
+# Runtime composition is only meaningful for supervised Docker agents. Keep
+# the source image separate and select the image-mount-capable store explicitly.
+runtime_args=(--set-string agentToken.value="${TOKEN}" --set queues.linux.ephemeralAgent=true \
+	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=4 \
+	--set-string defaults.docker.agentRuntimeImage=example/runtime:noble)
+for runtime in dind kata sysbox; do
+	composed=$(document "$(render "${runtime_args[@]}" --set-string queues.linux.runtime="${runtime}")" Deployment test-linux)
+	assert_contains "${composed}" $'- name: AGENT_RUNTIME_IMAGE\n              value: "example/runtime:noble"'
+	assert_contains "${composed}" $'- name: AGENT_IMAGE\n              value: "buildkite/agent:4"'
+	assert_contains "${composed}" '- --feature=containerd-snapshotter=true'
+	if [[ "${composed}" == *'--storage-driver=overlay2'* ]]; then
+		echo "Composed agents selected the incompatible classic image store" >&2
+		exit 1
+	fi
+done
+runtime_override=$(render "${runtime_args[@]}" --set-string queues.linux.runtime=dind \
+	--set-string queues.linux.docker.agentRuntimeImage=example/queue:ubuntu --set queues.linux.docker.stepImages=false)
+assert_contains "$(document "${runtime_override}" Deployment test-linux)" $'- name: AGENT_RUNTIME_IMAGE\n              value: "example/queue:ubuntu"'
+runtime_cleared=$(document "$(render "${runtime_args[@]}" --set-string queues.linux.runtime=sysbox \
+	--set-string queues.linux.docker.agentRuntimeImage=)" Deployment test-linux)
+assert_contains "${runtime_cleared}" '- --storage-driver=overlay2'
+if [[ "${runtime_cleared}${ephemeral_dind_runner}" == *'AGENT_RUNTIME_IMAGE'* ]]; then
+	echo "An unset runtime image changed the supervisor environment" >&2
+	exit 1
+fi
+assert_fails 'agentRuntimeImage requires ephemeralAgent' "${runtime_args[@]}" --set-string queues.linux.runtime=standard
+assert_fails 'agentRuntimeImage requires ephemeralAgent' "${runtime_args[@]}" --set-string queues.linux.runtime=dind --set queues.linux.ephemeralAgent=false
+assert_fails 'agentRuntimeImage' --set defaults.docker.agentRuntimeImage=42
+
 # Standard ephemeral agents restart in a loop inside the agent container, which
 # keeps the agent's own resources.
 ephemeral_standard=$(render --set-string agentToken.value="${TOKEN}" --set queues.linux.ephemeralAgent=true \
