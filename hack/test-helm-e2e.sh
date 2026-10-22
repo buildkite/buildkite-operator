@@ -462,13 +462,13 @@ proxy_before=$(proxy_pod)
 [[ "$(proxy_pod)" == "${proxy_before}" ]] || { echo "helm upgrade replaced the unchanged proxy Pod" >&2; exit 1; }
 
 # A second pull of a removed image is served from the cache.
-image=public.ecr.aws/docker/library/alpine:3.20
+image=alpine:3.20
 dockerd docker pull -q "${image}"
 dockerd docker image rm "${image}" >/dev/null
 dockerd docker pull -q "${image}"
 accelerator_logs=$("${KUBECTL[@]}" logs deployment/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -c oci-accelerator)
 # Not grep -q: exiting at the first match would fail the pipeline with SIGPIPE.
-if ! grep '"registry":"public.ecr.aws"' <<<"${accelerator_logs}" | grep '"cache":"hit"' >/dev/null; then
+if ! grep '"registry":"registry-1.docker.io"' <<<"${accelerator_logs}" | grep '"cache":"hit"' >/dev/null; then
 	echo "Second pull was not served from the OCI accelerator cache" >&2
 	echo "${accelerator_logs}" >&2
 	exit 1
