@@ -122,6 +122,7 @@ start_agent() {
 	# workspace with the agent, so jobs whose plugins mount the agent binary
 	# (mount-buildkite-agent) find a copy there first on PATH.
 	docker run --detach --pull never \
+		--stop-signal SIGTERM \
 		--name "$agent_container" \
 		--hostname "$POD_NAME" \
 		--publish 8080:8080 \

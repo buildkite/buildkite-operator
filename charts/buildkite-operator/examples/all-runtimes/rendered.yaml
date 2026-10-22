@@ -372,6 +372,7 @@ data:
     	# workspace with the agent, so jobs whose plugins mount the agent binary
     	# (mount-buildkite-agent) find a copy there first on PATH.
     	docker run --detach --pull never \
+    		--stop-signal SIGTERM \
     		--name "$agent_container" \
     		--hostname "$POD_NAME" \
     		--publish 8080:8080 \
@@ -1458,7 +1459,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
-        checksum/supervisor: 76628ea90b25134124ef3f518b434d7e397c93fe8f78884a88abb926b7e1ef46
+        checksum/supervisor: b8858c5315b49c0523d0429676f4c48a7941cb4065ea381921844453af5d7506
         checksum/step-image: f30641177695594d875a43fc4375839709c0b64b45af325913e301cc9ce28472
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost

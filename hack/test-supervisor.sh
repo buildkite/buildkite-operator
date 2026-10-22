@@ -111,6 +111,14 @@ if [[ -n "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
 	expected=ubuntu
 	# Keep image download time outside the agent-readiness deadline.
 	inner pull --quiet "${TEST_AGENT_RUNTIME_IMAGE}" >/dev/null
+	# The runtime's default stop signal must not override the agent's graceful
+	# TERM handler: the drain assertions below must still complete.
+	docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /runtime-ctx && cat >/runtime-ctx/Dockerfile &&
+		docker build --quiet --tag test-agent-runtime:quit /runtime-ctx >/dev/null' <<EOF
+FROM ${TEST_AGENT_RUNTIME_IMAGE}
+STOPSIGNAL SIGQUIT
+EOF
+	TEST_AGENT_RUNTIME_IMAGE=test-agent-runtime:quit
 fi
 docker exec "${ID}-dockerd" sh -c 'printf "%s" "$1" >"$2/expected-runtime"' sh "${expected}" "${DOCKER_CONFIG_DIR}"
 start_supervisor() {
