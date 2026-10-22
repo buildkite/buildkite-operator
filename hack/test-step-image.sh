@@ -52,6 +52,8 @@ wait_for() {
 		fi
 		sleep 0.5
 	done
+	inner top "${ID}-agent" -ef >&2 || true
+	in_agent sh -c 'cat /tmp/*.log' >&2 || true
 	fail "Timed out waiting for ${description}"
 }
 
@@ -237,7 +239,7 @@ for target in script group; do
 		pid="-${pid}"
 	fi
 	started=$(date +%s)
-	in_agent kill -TERM "${pid}"
+	in_agent bash -c 'kill -TERM -- "$1"' bash "${pid}"
 	status=$(finish_job "cancel-${target}")
 	elapsed=$(($(date +%s) - started))
 	[[ "${status}" != 0 ]] || fail "Cancelled job (${target}) exited with status 0" "${logs}/cancel-${target}.log"
@@ -259,7 +261,7 @@ for delayed in create start; do
 	if [[ "${delayed}" == start ]]; then
 		pid="-${pid}"
 	fi
-	in_agent kill -TERM "${pid}"
+	in_agent bash -c 'kill -TERM -- "$1"' bash "${pid}"
 	status=$(finish_job "${id}")
 	[[ "${status}" != 0 ]] || fail "Job cancelled before docker ${delayed} exited with status 0" "${logs}/${id}.log"
 	[[ -z "$(step_containers "${id}")" ]] || fail "Job cancelled before docker ${delayed} left its container behind"
