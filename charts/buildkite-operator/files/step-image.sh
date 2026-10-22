@@ -2,8 +2,9 @@
 # The agent's bootstrap-script on dind, kata and sysbox runners: the command
 # the agent runs for each job instead of `buildkite-agent bootstrap`.
 #
-# A step's image: sets BUILDKITE_IMAGE. Without it the job runs as usual. With
-# it, as in agent-stack-k8s, plugins and the repository are checked out here in
+# A step's image: sets BUILDKITE_IMAGE, taking precedence over DEFAULT_STEP_IMAGE.
+# Without either the job runs as usual. With an image, as in agent-stack-k8s,
+# plugins and the repository are checked out here in
 # the agent, then plugins, hooks and the command run in a container from that
 # image in the Pod's Docker daemon. The daemon shares /buildkite with the
 # agent, so the container sees the checkout, plugins, Job API socket and the
@@ -11,9 +12,11 @@
 set -uf
 
 agent="$BUILDKITE_BIN_PATH/buildkite-agent"
-if [ -z "${BUILDKITE_IMAGE:-}" ]; then
+image=${BUILDKITE_IMAGE:-${DEFAULT_STEP_IMAGE:-}}
+if [ -z "$image" ]; then
 	exec "$agent" bootstrap
 fi
+export BUILDKITE_IMAGE="$image"
 
 container="buildkite-step-$BUILDKITE_JOB_ID"
 created=0

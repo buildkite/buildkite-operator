@@ -93,6 +93,10 @@ defaults:
     # are unaffected. Set false to run every step in the agent container,
     # ignoring image:. See the README's "Step images".
     stepImages: true
+    # Optional command image for steps without image:. An explicit nonempty
+    # image: wins. Requires stepImages; ignored by standard runners. Initial
+    # plugin/checkout hooks still run in the agent image, not this image.
+    defaultStepImage: ""
 
 # One entry per Buildkite queue, keyed by a short name used in resource names
 # (<release>-<name>). Each entry becomes a runner pool: a Deployment of runner
