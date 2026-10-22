@@ -384,8 +384,20 @@ runners have no Docker daemon, so they ignore `image:` and run the step in the
 agent container.
 
 The agent runs each job through a script from the chart instead of
-`buildkite-agent bootstrap`. Steps without `image:` run the usual bootstrap,
-unchanged. For a step with `image:`:
+`buildkite-agent bootstrap`. Set a default command image for steps without a
+nonempty `image:`:
+
+```yaml
+defaults:
+  docker:
+    defaultStepImage: buildkite/agent-base:ubuntu-noble-hosted-toolchains
+```
+
+An explicit nonempty step `image:` takes precedence. Override
+`docker.defaultStepImage` per queue, or set it to `""` there to clear the default.
+With neither a step image nor a default, the usual bootstrap runs unchanged.
+This does not change `defaults.image`, the agent image. For either a step image
+or the configured default:
 
 1. The agent container checks out the plugins and the repository, running the
    environment and checkout hooks
@@ -393,6 +405,10 @@ unchanged. For a step with `image:`:
 2. A container from the image, started in the Pod's Docker daemon, runs the
    environment and command hooks, plugins and the command
    (`buildkite-agent bootstrap --phases plugin,command`).
+
+The first environment/plugin/checkout phase still runs in the agent environment.
+Tools present only in the command image cannot fix a failure in that phase
+(for example an environment hook requiring the AWS CLI).
 
 The container mounts the `/buildkite` workspace at the same path, so it sees
 the checkout, the plugins, the Job API socket and the agent binary, which the
@@ -416,8 +432,10 @@ that image, which needs the Docker CLI (and Compose) for them to work. Set
 `image:` on the steps that need it instead, or use an image with the Docker
 CLI.
 
-To ignore `image:` and run every step in the agent container, set
-`docker.stepImages: false` on an entry.
+To ignore both `image:` and the default and run every step in the agent
+container, set `docker.stepImages: false` on an entry. `standard` runners also
+ignore the default. Neither explicit nor default images are pulled per job:
+the daemon reuses cached tags, including across ephemeral agent replacements.
 
 ### Image pull caching
 

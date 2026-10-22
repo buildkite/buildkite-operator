@@ -222,6 +222,8 @@ spec:
             {{- if $stepImages }}
             - name: STEP_IMAGE_SCRIPT
               value: {{ $stepImageScript }}
+            - name: DEFAULT_STEP_IMAGE
+              value: {{ $r.docker.defaultStepImage | quote }}
             {{- end }}
           ports:
             - name: health
@@ -296,9 +298,11 @@ spec:
               value: {{ $dockerConfig }}
             {{- end }}
             {{- if $stepImages }}
-            # Runs steps that set image: in that image; see step-image.sh.
+            # Selects the step's image or the configured default; see step-image.sh.
             - name: BUILDKITE_BOOTSTRAP_SCRIPT_PATH
               value: "/bin/sh {{ $stepImageScript }}"
+            - name: DEFAULT_STEP_IMAGE
+              value: {{ $r.docker.defaultStepImage | quote }}
             # Puts the job's env files and timeout marker where step image
             # containers see them.
             - name: BUILDKITE_JOB_CONTEXT_DIR

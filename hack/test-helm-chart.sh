@@ -509,13 +509,37 @@ if [[ "${supervisor_container}" == *"- name: step-image"* ]]; then
 	echo "The supervisor mounted the step-image script, which only the Docker daemon needs" >&2
 	exit 1
 fi
+# Defaults reach both direct agents and supervisors for every Docker runtime.
+for runtime in dind kata sysbox; do
+	for ephemeral in false true; do
+		with_default=$(render --set-string agentToken.value="${TOKEN}" \
+			--set-string queues.linux.runtime="${runtime}" --set queues.linux.ephemeralAgent="${ephemeral}" \
+			--set-string defaults.docker.defaultStepImage=example/default:noble)
+		assert_contains "$(document "${with_default}" Deployment test-linux)" \
+			$'- name: DEFAULT_STEP_IMAGE\n              value: "example/default:noble"'
+	done
+done
+queue_image_args=(--set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
+	--set-string defaults.docker.defaultStepImage=example/default:noble)
+overridden=$(render "${queue_image_args[@]}" --set-string queues.linux.docker.defaultStepImage=example/queue:alpine)
+assert_contains "$(document "${overridden}" Deployment test-linux)" \
+	$'- name: DEFAULT_STEP_IMAGE\n              value: "example/queue:alpine"'
+cleared=$(render "${queue_image_args[@]}" --set-string queues.linux.docker.defaultStepImage=)
+assert_contains "$(document "${cleared}" Deployment test-linux)" \
+	$'- name: DEFAULT_STEP_IMAGE\n              value: ""'
+assert_fails "defaultStepImage" --set-string agentToken.value="${TOKEN}" \
+	--set defaults.docker.defaultStepImage=42
 no_step_images=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
-	--set queues.linux.docker.stepImages=false)
+	--set queues.linux.docker.stepImages=false --set-string defaults.docker.defaultStepImage=example/default:noble)
 no_step_images_ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
-	--set queues.linux.ephemeralAgent=true --set queues.linux.docker.stepImages=false)
-for output in "${direct}" "${ephemeral_standard}" "${no_step_images}" "${no_step_images_ephemeral}"; do
+	--set queues.linux.ephemeralAgent=true --set queues.linux.docker.stepImages=false \
+	--set-string defaults.docker.defaultStepImage=example/default:noble)
+standard_with_default=$(render --set-string agentToken.value="${TOKEN}" \
+	--set-string defaults.docker.defaultStepImage=example/default:noble)
+for output in "${direct}" "${ephemeral_standard}" "${standard_with_default}" "${no_step_images}" "${no_step_images_ephemeral}"; do
 	runner=$(document "${output}" Deployment test-linux)
 	if [[ "${runner}" == *"step-image"* || "${runner}" == *"BUILDKITE_JOB_CONTEXT_DIR"* ||
+		"${runner}" == *"DEFAULT_STEP_IMAGE"* ||
 		"${output}" == *"name: test-buildkite-operator-step-image"* ]]; then
 		echo "Standard runners, or Docker runners with stepImages false, rendered step images" >&2
 		exit 1

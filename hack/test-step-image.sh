@@ -153,7 +153,7 @@ start_job image "${STEP_IMAGE}" 'test ! -e /etc/alpine-release
 test "$(cat checked-out.txt)" = checked-out
 buildkite-agent --version
 buildkite-agent env get BUILDKITE_JOB_ID >/buildkite/job-api-image
-touch /buildkite/command-image'
+touch /buildkite/command-image' "DEFAULT_STEP_IMAGE=${AGENT_IMAGE}"
 status=$(finish_job image)
 [[ "${status}" == 0 ]] || fail "Image job exited with status ${status}" "${logs}/image.log"
 grep -q '^~~~ Running in busybox:1.37$' "${logs}/image.log" || fail "Image job did not run in its image" "${logs}/image.log"
@@ -165,6 +165,18 @@ in_agent test -e /buildkite/command-image || fail "Image job's command did not f
 [[ "$(in_agent cat /buildkite/post-checkout-image)" == agent ]] || fail "Checkout hooks did not run in the agent" "${logs}/image.log"
 [[ "$(in_agent cat /buildkite/pre-command-image)" == image ]] || fail "Command hooks did not run in the image" "${logs}/image.log"
 [[ -z "$(step_containers image)" ]] || fail "Image job left its container behind"
+
+# An empty job image falls back to the command image, not the Alpine agent.
+start_job default "" 'test ! -e /etc/alpine-release
+test "$(cat checked-out.txt)" = checked-out
+test "$BUILDKITE_IMAGE" = busybox:1.37
+touch /buildkite/command-default' "DEFAULT_STEP_IMAGE=${STEP_IMAGE}"
+status=$(finish_job default)
+[[ "${status}" == 0 ]] || fail "Default-image job exited with status ${status}" "${logs}/default.log"
+in_agent test -e /buildkite/command-default || fail "Default-image command did not finish" "${logs}/default.log"
+[[ "$(in_agent cat /buildkite/post-checkout-default)" == agent ]] || fail "Default-image checkout hooks moved" "${logs}/default.log"
+[[ "$(in_agent cat /buildkite/pre-command-default)" == image ]] || fail "Default-image command hooks stayed in agent" "${logs}/default.log"
+[[ -z "$(step_containers default)" ]] || fail "Default-image job left its container behind"
 
 # Without an image, the whole job runs in the agent as before.
 start_job plain "" 'test -e /etc/alpine-release
@@ -193,7 +205,11 @@ EOF
 # its cleanup hooks, both when only the script is signalled and when, as the
 # agent does, its whole process group is.
 for target in script group; do
-	start_job "cancel-${target}" step-image-test:stop-signal 'sleep 600'
+	if [[ "${target}" == script ]]; then
+		start_job "cancel-${target}" "" 'sleep 600' DEFAULT_STEP_IMAGE=step-image-test:stop-signal
+	else
+		start_job "cancel-${target}" step-image-test:stop-signal 'sleep 600'
+	fi
 	wait_for "cancel-${target} container" step_container_running "cancel-${target}"
 	pid=$(in_agent cat "/tmp/cancel-${target}.pid")
 	if [[ "${target}" == group ]]; then

@@ -16,6 +16,7 @@ rendered=$("${HELM}" template test "${CHART_DIR}" \
 	--set queues.test.maxReplicas=1 \
 	--set-string queues.test.runtime=sysbox \
 	--set queues.test.ephemeralAgent=true \
+	--set-string defaults.docker.defaultStepImage=test-step:default \
 	--set-string agentToken.value=unused)
 image_for() { grep -A1 -- "- name: $1\$" <<<"${rendered}" | sed -n 's/^ *image: "\(.*\)"$/\1/p'; }
 DIND_IMAGE=$(image_for dockerd)
@@ -76,6 +77,8 @@ docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /ctx && cat >/ctx/agent && chmod 
 [ "$BUILDKITE_BOOTSTRAP_SCRIPT_PATH" = "/bin/sh /opt/step-image/step-image.sh" ] && [ -f /opt/step-image/step-image.sh ] &&
 	[ "$BUILDKITE_JOB_CONTEXT_DIR" = /buildkite/job-context ] ||
 	{ echo "Agent does not run jobs through the step-image script" >&2; exit 67; }
+[ "$DEFAULT_STEP_IMAGE" = test-step:default ] ||
+	{ echo "Agent did not inherit the default command image" >&2; exit 68; }
 touch "$DOCKER_CONFIG/seen-$BUILDKITE_AGENT_NAME"
 mkdir -p /buildkite/builds
 touch "/buildkite/builds/$BUILDKITE_AGENT_NAME"
@@ -102,6 +105,7 @@ docker run --detach --read-only --name "${ID}-supervisor" \
 	--env AGENT_TAGS=queue=test --env POD_NAME=runner-pod \
 	--env TERMINATION_GRACE_PERIOD_SECONDS=20 \
 	--env "STEP_IMAGE_SCRIPT=${STEP_IMAGE_SCRIPT}" \
+	--env DEFAULT_STEP_IMAGE=test-step:default \
 	"${CLI_IMAGE}" /bin/sh /opt/supervisor/supervisor.sh >/dev/null
 
 wait_for "first agent" agent_running

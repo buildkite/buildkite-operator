@@ -91,7 +91,8 @@ start_agent() {
 	if [ -n "${STEP_IMAGE_SCRIPT:-}" ]; then
 		set -- --volume "${STEP_IMAGE_SCRIPT%/*}:${STEP_IMAGE_SCRIPT%/*}:ro" \
 			--env "BUILDKITE_BOOTSTRAP_SCRIPT_PATH=/bin/sh $STEP_IMAGE_SCRIPT" \
-			--env BUILDKITE_JOB_CONTEXT_DIR=/buildkite/job-context
+			--env BUILDKITE_JOB_CONTEXT_DIR=/buildkite/job-context \
+			--env DEFAULT_STEP_IMAGE
 	fi
 
 	agent_name="${POD_NAME}-$(random_suffix)"
