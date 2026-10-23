@@ -401,9 +401,12 @@ The runtime must match the source binary's architecture and provide `/bin/sh`,
 `cp`, a writable workspace and whatever tools/hooks the jobs require. Source-image
 configuration and hooks are not copied. With step images enabled it also needs
 the Docker CLI and `setsid`; Docker/Compose plugins need their usual tooling.
-The Ubuntu example supplies AWS tools to the initial hooks, unlike a command-only
-`defaultStepImage`. Explicit/default command-image selection still works after
-checkout, and `docker.stepImages: false` keeps the whole job in this runtime.
+Without a selected step image, the whole job runs in this runtime, including
+initial hooks. A selected explicit/default step image instead runs the whole
+job there. If the runtime is already the desired job image, leave
+`defaultStepImage` empty to avoid a redundant container. Setting
+`docker.stepImages: false` also keeps the whole job in this runtime, but ignores
+explicit step images too.
 
 Override `docker.agentRuntimeImage` per queue; `""` clears an inherited runtime.
 An empty default preserves the existing behavior. Nonempty values are rejected
@@ -425,13 +428,12 @@ before changing either image or upgrading runner Pods.
 ### Step images
 
 On `dind`, `kata` and `sysbox` runners, a command step's `image:` runs the
-step in that image, as it does with
-[agent-stack-k8s](https://github.com/buildkite/agent-stack-k8s). `standard`
+whole job in that image, including plugin and repository checkout. `standard`
 runners have no Docker daemon, so they ignore `image:` and run the step in the
 agent container.
 
 The agent runs each job through a script from the chart instead of
-`buildkite-agent bootstrap`. Set a default command image for steps without a
+`buildkite-agent bootstrap`. Set a default whole-job image for steps without a
 nonempty `image:`:
 
 ```yaml
@@ -443,19 +445,24 @@ defaults:
 An explicit nonempty step `image:` takes precedence. Override
 `docker.defaultStepImage` per queue, or set it to `""` there to clear the default.
 With neither a step image nor a default, the usual bootstrap runs unchanged.
-This does not change `defaults.image`, the agent image. For either a step image
-or the configured default:
+This does not change `defaults.image`, the agent-binary source. For either a
+step image or the configured default, a container started in the Pod's Docker
+daemon runs one full `buildkite-agent bootstrap`: plugins, checkout, hooks and
+commands. Hook-added, changed and unset environment variables, and changes to
+the working directory, stay in the same executor through the command phase.
+This does not fix the agent's own environment semantics: agent 4.8 can
+reintroduce a hook-unset variable if it was inherited at bootstrap startup,
+because its subprocess layer merges the original OS environment back in.
+Variables created by an earlier hook and later unset are not affected.
 
-1. The agent container checks out the plugins and the repository, running the
-   environment and checkout hooks
-   (`buildkite-agent bootstrap --phases plugin,checkout`).
-2. A container from the image, started in the Pod's Docker daemon, runs the
-   environment and command hooks, plugins and the command
-   (`buildkite-agent bootstrap --phases plugin,command`).
-
-The first environment/plugin/checkout phase still runs in the agent environment.
-Tools present only in the command image cannot fix a failure in that phase
-(for example an environment hook requiring the AWS CLI).
+**Upgrading from 0.14:** step images were command-only environments, with
+initial plugin/checkout hooks running separately in the agent. They are now
+whole-job environments. Supply Git and all initial hook/checkout tools in the
+selected image (for example AWS CLI for AWS plugin environment hooks).
+Agent-image tools, global hooks, home-directory files and configuration are not
+automatically copied into it. Private step images must be pullable using the
+existing Docker client configuration before their own hooks can run; a login
+performed by a job hook is too late to pull that job's image.
 
 The container mounts the `/buildkite` workspace at the same path, so it sees
 the checkout, the plugins, the Job API socket and the agent binary, which the
@@ -466,12 +473,12 @@ already has isn't updated until the Pod is replaced. The container is removed
 when the job finishes and stopped when the job is cancelled. It is named
 `buildkite-step-<job ID>` and labelled `buildkite.com/job-id`.
 
-The agent image needs the `docker` CLI and `setsid`, which `buildkite/agent`
-images have. The step's image needs `bash`, the default shell for commands,
-and must run as a user that can write to the checkout, which is owned by root.
-It doesn't need git, since the plugins are already checked out; without git,
-the job log shows a harmless error when the plugin phase looks up each
-plugin's commit.
+The agent runtime needs the `docker` CLI and `setsid`, which `buildkite/agent`
+images have. The step's image must match the agent binary's architecture and
+needs Git, `bash` (the default command shell), and any checkout authentication,
+SSH/CA or plugin tools the job requires. It must run as a user that can write
+to the shared workspace and use the Docker socket when required. No agent
+installation is needed in the step image: it runs the shared binary.
 
 An `image:` at the top of a pipeline applies to every step in it, including
 steps that use the Docker or Docker Compose plugins. Their hooks then run in

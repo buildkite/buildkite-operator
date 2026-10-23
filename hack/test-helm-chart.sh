@@ -530,7 +530,7 @@ assert_contains "${dind_agent}" "${step_image_mount}"
 assert_contains "${dind_dockerd}" "${docker_config_mount}"
 assert_contains "${dind_runner}" "${step_image_volume}"
 assert_contains "${dind_runner}" "checksum/step-image:"
-assert_contains "$(document "${dind}" ConfigMap test-buildkite-operator-step-image)" 'run "$agent" bootstrap --phases plugin,checkout'
+assert_contains "$(document "${dind}" ConfigMap test-buildkite-operator-step-image)" '"$BUILDKITE_IMAGE" bootstrap >/dev/null'
 assert_contains "${supervisor_container}" $'- name: STEP_IMAGE_SCRIPT\n              value: /opt/step-image/step-image.sh'
 assert_contains "$(awk '/^        - name: dockerd$/,/^      containers:$/' <<<"${ephemeral_dind_runner}")" "${step_image_mount}"
 assert_contains "${ephemeral_dind_runner}" "${step_image_volume}"

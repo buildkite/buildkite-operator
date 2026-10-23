@@ -86,16 +86,14 @@ defaults:
     # Pull images through the release's OCI accelerator when
     # ociAccelerator.enabled is true. Set false on an entry to pull directly.
     ociAccelerator: true
-    # Run steps that set image: in that image, as agent-stack-k8s does: the
-    # agent checks out the repository and plugins, then plugins, hooks and the
-    # command run in a container from the image in the Docker daemon. The
-    # image needs bash (the default BUILDKITE_SHELL). Steps without image:
-    # are unaffected. Set false to run every step in the agent container,
-    # ignoring image:. See the README's "Step images".
+    # Run the whole job in its image:, including plugin/repository checkout,
+    # hooks and commands, using the shared agent binary. The image needs git,
+    # bash (the default BUILDKITE_SHELL) and the tools its hooks/plugins use.
+    # Set false to run every step in the agent container, ignoring image:.
+    # See the README's "Step images".
     stepImages: true
-    # Optional command image for steps without image:. An explicit nonempty
-    # image: wins. Requires stepImages; ignored by standard runners. Initial
-    # plugin/checkout hooks still run in the agent image, not this image.
+    # Optional whole-job image for steps without image:. An explicit nonempty
+    # image: wins. Requires stepImages; ignored by standard runners.
     defaultStepImage: ""
     # Optional runtime for supervised ephemeral Docker agents. The agent binary
     # still comes from image, mounted read-only into this runtime, then copied

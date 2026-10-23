@@ -3,12 +3,10 @@
 # the agent runs for each job instead of `buildkite-agent bootstrap`.
 #
 # A step's image: sets BUILDKITE_IMAGE, taking precedence over DEFAULT_STEP_IMAGE.
-# Without either the job runs as usual. With an image, as in agent-stack-k8s,
-# plugins and the repository are checked out here in
-# the agent, then plugins, hooks and the command run in a container from that
-# image in the Pod's Docker daemon. The daemon shares /buildkite with the
-# agent, so the container sees the checkout, plugins, Job API socket and the
-# agent binary at the same paths.
+# Without either the job runs as usual. With an image, one full bootstrap runs
+# plugins, checkout, hooks and the command in that image. The daemon shares
+# /buildkite with the agent, so the container sees the workspace, Job API
+# socket and agent binary at the same paths.
 set -uf
 
 agent="$BUILDKITE_BIN_PATH/buildkite-agent"
@@ -32,8 +30,7 @@ stop_timeout=$((grace > 1 ? grace - 1 : 0))
 
 # The agent signals the job's whole process group. The bootstrap stops
 # handling signals after the first, so a second would kill it during its
-# cleanup hooks, and each process must be signalled only once. The checkout
-# bootstrap is in the group, so it gets the signal directly. docker start
+# cleanup hooks, and each process must be signalled only once. docker start
 # runs in its own session, so it gets no signal to forward, and this stops
 # the container instead, which also works when only this script was
 # signalled. A container that hasn't started yet is removed, so that a
@@ -62,26 +59,15 @@ run() {
 	done
 }
 
-# Exits unless the last step succeeded and the job hasn't been cancelled.
-check() {
-	[ "$1" -eq 0 ] || exit "$1"
-	[ "$cancelled" -eq 0 ] || exit 1
-}
-
-run "$agent" bootstrap --phases plugin,checkout
-check $?
-
 # Pass the job's environment by name, so values with newlines survive, except
-# for variables that describe the agent's container rather than the job. The
-# plugins were just checked out, so don't clone them again: the image needs no
-# git.
+# for variables that describe the agent's container rather than the job.
 set --
 names=$(awk 'BEGIN { for (name in ENVIRON) print name }')
 IFS='
 '
 for name in $names; do
 	case $name in
-	PATH | HOME | HOSTNAME | PWD | OLDPWD | SHLVL | _ | BUILDKITE_BIN_PATH | BUILDKITE_PLUGINS_ALWAYS_CLONE_FRESH) ;;
+	PATH | HOME | HOSTNAME | PWD | OLDPWD | SHLVL | _ | BUILDKITE_BIN_PATH) ;;
 	*) set -- "$@" --env "$name" ;;
 	esac
 done
@@ -100,7 +86,7 @@ run docker create --rm --init --stop-signal SIGTERM --name "$container" \
 	"$@" \
 	--env BUILDKITE_BIN_PATH=/buildkite/bin \
 	--entrypoint /buildkite/bin/buildkite-agent \
-	"$BUILDKITE_IMAGE" bootstrap --phases plugin,command >/dev/null
+	"$BUILDKITE_IMAGE" bootstrap >/dev/null
 status=$?
 created=1
 if [ "$status" -ne 0 ] || [ "$cancelled" -eq 1 ]; then

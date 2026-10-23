@@ -9,7 +9,7 @@ set -euo pipefail
 HELM="${HELM:-helm}"
 CHART_DIR="${HELM_CHART_DIR:-charts/buildkite-operator}"
 SCRIPT="${CHART_DIR}/files/step-image.sh"
-STEP_IMAGE="busybox:1.37"
+STEP_IMAGE="step-image-test:job"
 
 # Use the chart's own images, as rendered for a persistent dind runner.
 rendered=$("${HELM}" template test "${CHART_DIR}" \
@@ -81,6 +81,11 @@ inner run --detach --name "${ID}-agent" --hostname runner-pod \
 	--entrypoint /bin/sh "${runtime}" \
 	-c 'mkdir -p /buildkite/bin && cp "$1" /buildkite/bin/buildkite-agent && exec sleep infinity' agent "${binary}" >/dev/null
 wait_for "agent binary copy" in_agent test -x /buildkite/bin/buildkite-agent
+docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /job-image && cat >/job-image/Dockerfile &&
+	docker build --quiet --tag step-image-test:job /job-image >/dev/null' <<EOF
+FROM ${runtime}
+RUN rm -f /usr/local/bin/buildkite-agent && touch /whole-job-image
+EOF
 if [[ -n "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
 	in_agent sh -ec '. /etc/os-release; test "$ID" = ubuntu; aws --version
 		/opt/buildkite-agent-source/usr/local/bin/buildkite-agent --version
@@ -90,38 +95,66 @@ fi
 in_agent sh -ec '
 	git config --global user.name test
 	git config --global user.email test@example.com
-	git init --quiet --initial-branch main /srv/repo
-	echo checked-out >/srv/repo/checked-out.txt
-	git -C /srv/repo add . && git -C /srv/repo commit --quiet -m repo
+	git init --quiet --initial-branch main /buildkite/fixtures/repo
+	mkdir -p /buildkite/fixtures/repo/.buildkite/hooks /buildkite/fixtures/repo/command-dir
+	echo checked-out >/buildkite/fixtures/repo/command-dir/checked-out.txt
 	# The agent has a known hostname regardless of its runtime distribution.
-	mkdir -p /srv/marker-buildkite-plugin/hooks
+	mkdir -p /buildkite/fixtures/marker-buildkite-plugin/hooks
 	for hook in post-checkout pre-command; do
 		printf "#!/bin/sh\nif [ \"\$(hostname)\" = runner-pod ]; then where=agent; else where=image; fi\necho \$where >/buildkite/$hook-\$BUILDKITE_JOB_ID\n" \
-			>/srv/marker-buildkite-plugin/hooks/$hook
-		chmod +x /srv/marker-buildkite-plugin/hooks/$hook
+			>/buildkite/fixtures/marker-buildkite-plugin/hooks/$hook
+		chmod +x /buildkite/fixtures/marker-buildkite-plugin/hooks/$hook
 	done
+	# Seed the removed variable in a hook: agent 4.8 subprocesses reintroduce
+	# unset variables inherited from the original bootstrap OS environment.
+	printf "#!/bin/sh\nexport CHECKOUT_REMOVED=remove-me\n" \
+		>/buildkite/fixtures/marker-buildkite-plugin/hooks/pre-checkout
+	chmod +x /buildkite/fixtures/marker-buildkite-plugin/hooks/pre-checkout
 	# Cancelled jobs clean up slowly in the image, as within the grace period
 	# they may.
 	printf "#!/bin/sh\ncase \$BUILDKITE_JOB_ID in cancel-*) [ \"\$(hostname)\" = runner-pod ] || { sleep 2; touch /buildkite/pre-exit-\$BUILDKITE_JOB_ID; } ;; esac\n" \
-		>/srv/marker-buildkite-plugin/hooks/pre-exit
-	chmod +x /srv/marker-buildkite-plugin/hooks/pre-exit
+		>/buildkite/fixtures/marker-buildkite-plugin/hooks/pre-exit
+	chmod +x /buildkite/fixtures/marker-buildkite-plugin/hooks/pre-exit
 	# With DELAY_DOCKER set to a docker subcommand, the CLI waits before running
 	# it, ignoring SIGTERM as a CLI with a request in flight would.
 	mkdir -p /usr/local/sbin
 	printf "#!/bin/sh\nif [ \"\$1\" = \"\${DELAY_DOCKER:-}\" ]; then trap \"\" TERM; touch /tmp/delayed-\$BUILDKITE_JOB_ID; sleep 8; fi\nexec /usr/bin/docker \"\$@\"\n" \
 		>/usr/local/sbin/docker
 	chmod +x /usr/local/sbin/docker
-	git -C /srv/marker-buildkite-plugin init --quiet --initial-branch main
-	git -C /srv/marker-buildkite-plugin add . && git -C /srv/marker-buildkite-plugin commit --quiet -m plugin'
+	git -C /buildkite/fixtures/marker-buildkite-plugin init --quiet --initial-branch main
+	git -C /buildkite/fixtures/marker-buildkite-plugin add . && git -C /buildkite/fixtures/marker-buildkite-plugin commit --quiet -m plugin'
+docker exec -i "${ID}-dockerd" docker exec -i "${ID}-agent" sh -c 'cat >/buildkite/fixtures/repo/.buildkite/hooks/post-checkout' <<'EOF'
+#!/bin/sh
+export CHECKOUT_ADDED=from-checkout
+export CHECKOUT_CHANGED=after
+unset CHECKOUT_REMOVED
+export CHECKOUT_IMAGE=busybox:1.37
+export CHECKOUT_MULTILINE='first line
+second line'
+export BUILDKITE_BUILD_CHECKOUT_PATH="$BUILDKITE_BUILD_CHECKOUT_PATH/command-dir"
+cd "$BUILDKITE_BUILD_CHECKOUT_PATH"
+EOF
+docker exec -i "${ID}-dockerd" docker exec -i "${ID}-agent" sh -c 'cat >/buildkite/fixtures/repo/command-dir/compose.yaml' <<'EOF'
+services:
+  check:
+    image: "${CHECKOUT_IMAGE:?missing post-checkout image}"
+    environment:
+      CHECKOUT_ADDED: "${CHECKOUT_ADDED:?missing post-checkout export}"
+      CHECKOUT_CHANGED: "${CHECKOUT_CHANGED}"
+      CHECKOUT_REMOVED: "${CHECKOUT_REMOVED-unset}"
+      CHECKOUT_MULTILINE: "${CHECKOUT_MULTILINE}"
+EOF
+in_agent sh -ec 'chmod +x /buildkite/fixtures/repo/.buildkite/hooks/post-checkout
+	git -C /buildkite/fixtures/repo add . && git -C /buildkite/fixtures/repo commit --quiet -m repo'
 if [[ -n "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
-	in_agent sh -ec 'printf "#!/bin/sh\nif [ \"\$(hostname)\" = runner-pod ]; then aws --version >/buildkite/aws-in-environment-hook; fi\n" >/srv/marker-buildkite-plugin/hooks/environment
-		chmod +x /srv/marker-buildkite-plugin/hooks/environment
-		git -C /srv/marker-buildkite-plugin add . && git -C /srv/marker-buildkite-plugin commit --quiet -m environment'
+	in_agent sh -ec 'printf "#!/bin/sh\naws --version >/buildkite/aws-in-environment-hook-\$BUILDKITE_JOB_ID\n" >/buildkite/fixtures/marker-buildkite-plugin/hooks/environment
+		chmod +x /buildkite/fixtures/marker-buildkite-plugin/hooks/environment
+		git -C /buildkite/fixtures/marker-buildkite-plugin add . && git -C /buildkite/fixtures/marker-buildkite-plugin commit --quiet -m environment'
 fi
 
-# The environment the agent gives a job, with the chart's paths. The step
-# image has no bash, so commands use sh. Always cloning plugins fresh must not
-# reach the step image, which has no git.
+# The environment the agent gives a job, with the chart's paths. Repository
+# and local plugin fixtures live in the shared workspace so either image can
+# check them out, without a Buildkite token or API.
 job_env=(
 	--env PATH=/buildkite/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	--env BUILDKITE_BIN_PATH=/buildkite/bin
@@ -130,16 +163,18 @@ job_env=(
 	--env BUILDKITE_AGENT_ENDPOINT=http://127.0.0.1:1
 	--env BUILDKITE_ORGANIZATION_SLUG=org
 	--env BUILDKITE_PIPELINE_SLUG=pipeline
+	--env BUILDKITE_BUILD_NUMBER=1
 	--env BUILDKITE_PIPELINE_PROVIDER=git
 	--env BUILDKITE_BUILD_PATH=/buildkite/builds
 	--env BUILDKITE_PLUGINS_PATH=/buildkite/plugins
 	--env BUILDKITE_SOCKETS_PATH=/buildkite/sockets
-	--env BUILDKITE_REPO=/srv/repo
+	--env BUILDKITE_REPO=/buildkite/fixtures/repo
 	--env BUILDKITE_COMMIT=HEAD
 	--env BUILDKITE_COMMIT_RESOLVED=true
 	--env BUILDKITE_BRANCH=main
-	--env 'BUILDKITE_PLUGINS=[{"/srv/marker-buildkite-plugin":null}]'
+	--env 'BUILDKITE_PLUGINS=[{"/buildkite/fixtures/marker-buildkite-plugin":null}]'
 	--env BUILDKITE_PLUGINS_ALWAYS_CLONE_FRESH=true
+	--env CHECKOUT_CHANGED=before
 	--env 'BUILDKITE_SHELL=/bin/sh -e -c'
 	--env BUILDKITE_CANCEL_SIGNAL_TIMEOUT=10s
 	--env DOCKER_HOST=unix:///var/run/docker.sock
@@ -167,37 +202,65 @@ finish_job() {
 	in_agent cat "/tmp/$1.status"
 }
 step_containers() { inner ps --all --quiet --filter "label=buildkite.com/job-id=$1"; }
-step_container_running() { [[ -n "$(inner ps --quiet --filter "label=buildkite.com/job-id=$1")" ]]; }
 
-# With an image, the checkout and its hooks run in the agent; plugins, hooks
-# and the command run in the image, with the Job API, the agent binary and the
-# job's multi-line environment.
-start_job image "${STEP_IMAGE}" 'test ! -e /etc/alpine-release
+# With an explicit image, one bootstrap checks out plugins and the repository
+# and keeps post-checkout environment changes and cwd through the command.
+start_job image "${STEP_IMAGE}" 'set -x
+test -e /whole-job-image
+test "$CHECKOUT_ADDED" = from-checkout
+test "$CHECKOUT_CHANGED" = after
+test "${CHECKOUT_REMOVED+x}" != x
+test "$CHECKOUT_MULTILINE" = "first line
+second line"
+test "$PWD" = "$BUILDKITE_BUILD_CHECKOUT_PATH"
+test "${PWD##*/}" = command-dir
 test "$(cat checked-out.txt)" = checked-out
 buildkite-agent --version
 buildkite-agent env get BUILDKITE_JOB_ID >/buildkite/job-api-image
 touch /buildkite/command-image' "DEFAULT_STEP_IMAGE=${AGENT_IMAGE}"
 status=$(finish_job image)
 [[ "${status}" == 0 ]] || fail "Image job exited with status ${status}" "${logs}/image.log"
-grep -q '^~~~ Running in busybox:1.37$' "${logs}/image.log" || fail "Image job did not run in its image" "${logs}/image.log"
-grep -q 'already checked out' "${logs}/image.log" || fail "Image job cloned its plugin again" "${logs}/image.log"
+grep -q '^~~~ Running in step-image-test:job$' "${logs}/image.log" || fail "Image job did not run in its image" "${logs}/image.log"
 grep -q '^buildkite-agent version ' "${logs}/image.log" || fail "buildkite-agent did not run in the image" "${logs}/image.log"
 in_agent test -e /buildkite/command-image || fail "Image job's command did not finish" "${logs}/image.log"
 [[ "$(in_agent cat /buildkite/job-api-image)" == image ]] ||
 	fail "Job API was not reachable from the image" "${logs}/image.log"
-[[ "$(in_agent cat /buildkite/post-checkout-image)" == agent ]] || fail "Checkout hooks did not run in the agent" "${logs}/image.log"
+[[ "$(in_agent cat /buildkite/post-checkout-image)" == image ]] || fail "Checkout hooks did not run in the image" "${logs}/image.log"
 [[ "$(in_agent cat /buildkite/pre-command-image)" == image ]] || fail "Command hooks did not run in the image" "${logs}/image.log"
 [[ -z "$(step_containers image)" ]] || fail "Image job left its container behind"
 
-# An empty job image falls back to the command image, not the Alpine agent.
-start_job default "" 'test ! -e /etc/alpine-release
+# The actual Compose plugin command hook must see the same exports and cwd:
+# a relative config and checkout mount resolve only from command-dir. Its
+# sibling container also runs the shared agent binary from the daemon's path.
+inner pull --quiet busybox:1.37 >/dev/null
+in_agent git clone --quiet --depth 1 --branch v5.16.0 \
+	https://github.com/buildkite-plugins/docker-compose-buildkite-plugin \
+	/buildkite/fixtures/docker-compose-buildkite-plugin
+start_job compose "${STEP_IMAGE}" 'set -x
+test "$CHECKOUT_ADDED" = from-checkout
+test "$CHECKOUT_CHANGED" = after
+test "$CHECKOUT_REMOVED" = unset
+test "$CHECKOUT_MULTILINE" = "first line
+second line"
+test -f checked-out.txt
+buildkite-agent --version
+echo compose-ok >compose-proof' \
+	'BUILDKITE_PLUGINS=[{"/buildkite/fixtures/marker-buildkite-plugin":null},{"/buildkite/fixtures/docker-compose-buildkite-plugin":{"run":"check","config":"compose.yaml","run-image":"busybox:1.37","skip-pull":true,"dependencies":false,"mount-checkout":true,"mount-buildkite-agent":true,"upload-container-logs":"never","run-labels":false}}]'
+status=$(finish_job compose)
+[[ "${status}" == 0 ]] || fail "Compose plugin job exited with status ${status}" "${logs}/compose.log"
+[[ "$(in_agent cat /buildkite/builds/runner-pod/org/pipeline/command-dir/compose-proof)" == compose-ok ]] ||
+	fail "Compose plugin command did not see the checkout's environment and cwd" "${logs}/compose.log"
+[[ -z "$(step_containers compose)" ]] || fail "Compose plugin job left its step container behind"
+
+# An empty job image falls back to the default whole-job image.
+start_job default "" 'test -e /whole-job-image
 test "$(cat checked-out.txt)" = checked-out
-test "$BUILDKITE_IMAGE" = busybox:1.37
+test "$BUILDKITE_IMAGE" = step-image-test:job
 touch /buildkite/command-default' "DEFAULT_STEP_IMAGE=${STEP_IMAGE}"
 status=$(finish_job default)
 [[ "${status}" == 0 ]] || fail "Default-image job exited with status ${status}" "${logs}/default.log"
 in_agent test -e /buildkite/command-default || fail "Default-image command did not finish" "${logs}/default.log"
-[[ "$(in_agent cat /buildkite/post-checkout-default)" == agent ]] || fail "Default-image checkout hooks moved" "${logs}/default.log"
+[[ "$(in_agent cat /buildkite/post-checkout-default)" == image ]] || fail "Default-image checkout hooks did not run in the image" "${logs}/default.log"
 [[ "$(in_agent cat /buildkite/pre-command-default)" == image ]] || fail "Default-image command hooks stayed in agent" "${logs}/default.log"
 [[ -z "$(step_containers default)" ]] || fail "Default-image job left its container behind"
 
@@ -229,11 +292,11 @@ EOF
 # agent does, its whole process group is.
 for target in script group; do
 	if [[ "${target}" == script ]]; then
-		start_job "cancel-${target}" "" 'sleep 600' DEFAULT_STEP_IMAGE=step-image-test:stop-signal
+		start_job "cancel-${target}" "" 'touch /buildkite/command-$BUILDKITE_JOB_ID; sleep 600' DEFAULT_STEP_IMAGE=step-image-test:stop-signal
 	else
-		start_job "cancel-${target}" step-image-test:stop-signal 'sleep 600'
+		start_job "cancel-${target}" step-image-test:stop-signal 'touch /buildkite/command-$BUILDKITE_JOB_ID; sleep 600'
 	fi
-	wait_for "cancel-${target} container" step_container_running "cancel-${target}"
+	wait_for "cancel-${target} command" in_agent test -e "/buildkite/command-cancel-${target}"
 	pid=$(in_agent cat "/tmp/cancel-${target}.pid")
 	if [[ "${target}" == group ]]; then
 		pid="-${pid}"
@@ -268,16 +331,10 @@ for delayed in create start; do
 	! in_agent test -e "/buildkite/command-${id}" || fail "Job cancelled before docker ${delayed} ran its command" "${logs}/${id}.log"
 done
 
-echo "Step images ran plugins, hooks and commands in the image after checking out in the agent, and stopped on cancellation"
+echo "Step images ran one full bootstrap with checkout environment and cwd intact, and stopped on cancellation"
 if [[ -n "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
-	in_agent test -s /buildkite/aws-in-environment-hook
-	# Compose's mount-buildkite-agent uses the shared binary, not the private
-	# source-image mount. The sibling needs neither source image nor agent.
-	in_agent sh -ec 'printf "%s\n" "services:" "  check:" "    image: busybox:1.37" \
-		"    entrypoint: /usr/bin/buildkite-agent" "    command: [\"--version\"]" \
-		"    volumes:" "      - /buildkite/bin/buildkite-agent:/usr/bin/buildkite-agent:ro" >/buildkite/compose-proof.yaml'
-	in_agent docker compose -p step-image-proof -f /buildkite/compose-proof.yaml up --abort-on-container-exit --exit-code-from check
-	in_agent docker compose -p step-image-proof -f /buildkite/compose-proof.yaml down --volumes
+	in_agent test -s /buildkite/aws-in-environment-hook-image
+	in_agent test -s /buildkite/aws-in-environment-hook-plain
 	echo "Ubuntu runtime ran the read-only source binary, AWS environment hook and shared-binary Compose container"
 else
 	cleanup
