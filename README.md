@@ -537,7 +537,7 @@ create it once and store it in a Secret in the release namespace. This runs
 
 ```bash
 mkdir -m 0700 oci-accelerator-ca
-docker run --rm --entrypoint /bin/sh buildkite/oci-accelerator:v0.2.1 -ec \
+docker run --rm --entrypoint /bin/sh buildkite/oci-accelerator:v0.3.0 -ec \
   'mkdir -m 0700 /tmp/state; oci-accelerator init-ca --dir /tmp/state/ca >&2; tar -C /tmp/state/ca -cf - ca.crt ca.key' |
   tar -C oci-accelerator-ca -xf -
 kubectl create secret generic oci-accelerator-ca \
@@ -568,6 +568,12 @@ hosts the proxy cannot reach, such as in-cluster registries, in `noProxy`.
 Pulls fail while the proxy is unavailable. Upgrades start the new proxy before
 stopping the old one, but pulls fail if its node is lost until a replacement
 starts. Job containers don't inherit the daemon's proxy settings.
+
+Besides content addressed by digest, the proxy keeps tag manifests, tag lists,
+referrer lists and catalog responses in memory for 30 seconds. A tag pushed or
+moved during that time can still resolve to its previous digest, for example
+when one step pushes `myapp:latest` and the next pulls it. Set
+`OCI_ACCELERATOR_CACHE_MUTABLE_TTL: "0s"` in `extraEnv` to disable this.
 
 The cache is an `emptyDir` on the proxy's node, limited to `cache.size`
 (default 20Gi), so it needs no StorageClass. It outlives runner Pods but starts
