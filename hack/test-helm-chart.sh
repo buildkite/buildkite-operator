@@ -375,6 +375,35 @@ assert_contains "${accel_storage}" "ephemeral-storage: 12Gi"
 assert_contains "${accel_storage}" $'limits:\n              memory: 2Gi'
 assert_contains "${accel_proxy}" $'path: ca.key\n'
 assert_contains "$(document "${accel}" NetworkPolicy test-buildkite-operator-oci-accelerator)" "app.kubernetes.io/component: runner"
+# Peering keeps the runner endpoint but gives each proxy its own stable address.
+peering=$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind \
+	--set ociAccelerator.peering.enabled=true --set ociAccelerator.replicas=3)
+peer_proxy=$(document "${peering}" StatefulSet test-buildkite-operator-oci-accelerator)
+assert_contains "${peer_proxy}" $'replicas: 3\n  serviceName: test-buildkite-operator-oci-accelerator-peers\n  podManagementPolicy: Parallel'
+assert_contains "${peer_proxy}" 'value: "$(POD_NAME).test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:7443"'
+assert_contains "${peer_proxy}" 'fieldPath: metadata.name'
+assert_contains "${peer_proxy}" 'value: "test-buildkite-operator-oci-accelerator-0.test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:7443,test-buildkite-operator-oci-accelerator-1.test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:7443,test-buildkite-operator-oci-accelerator-2.test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:7443"'
+assert_contains "${peer_proxy}" $'OCI_ACCELERATOR_PEER_STATE_DIR\n              value: /run/oci-accelerator/private/peers'
+assert_contains "${peer_proxy}" $'- name: peer\n              containerPort: 7443'
+assert_contains "${peer_proxy}" 'automountServiceAccountToken: false'
+assert_contains "${peer_proxy}" 'whenUnsatisfiable: ScheduleAnyway'
+peer_service=$(document "${peering}" Service test-buildkite-operator-oci-accelerator-peers)
+assert_contains "${peer_service}" 'clusterIP: None'
+assert_contains "${peer_service}" 'publishNotReadyAddresses: true'
+assert_contains "${peer_service}" 'targetPort: peer'
+assert_contains "$(document "${peering}" Deployment test-linux)" '- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128'
+peer_policy=$(document "${peering}" NetworkPolicy test-buildkite-operator-oci-accelerator)
+assert_contains "${peer_policy}" $'app.kubernetes.io/component: runner\n      ports:\n        - port: proxy'
+assert_contains "${peer_policy}" $'app.kubernetes.io/component: oci-accelerator\n      ports:\n        - port: peer'
+if [[ -n "$(document "${peering}" Deployment test-buildkite-operator-oci-accelerator)" || "${peer_proxy}" == *"volumeClaimTemplates"* || "${accel_proxy}" == *"OCI_ACCELERATOR_PEER_"* ]]; then
+	echo "Peering rendered the wrong workload, persistent storage, or leaked into default mode" >&2
+	exit 1
+fi
+assert_fails "ociAccelerator.replicas must be 1 unless ociAccelerator.peering.enabled is true" \
+	"${accel_args[@]}" --set queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
+	--set queues.linux.runtime=dind --set ociAccelerator.replicas=2
+assert_fails "'/ociAccelerator/replicas': minimum:" "${accel_args[@]}" --set ociAccelerator.replicas=0
+assert_fails "'/ociAccelerator/replicas': maximum:" "${accel_args[@]}" --set ociAccelerator.replicas=1025
 accel_dind=$(document "$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind)" Deployment test-linux)
 assert_contains "${accel_dind}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
 assert_contains "${accel_dind}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
@@ -745,6 +774,11 @@ accel_notes=$(notes -f "${values_dir}/base.yaml" --set ociAccelerator.enabled=tr
 	--set-string ociAccelerator.ca.existingSecret.name=oci-ca --set queues.build-sysbox.docker.ociAccelerator=false)
 assert_contains "${accel_notes}" "Docker daemons for linux-kata pull through the OCI accelerator"
 assert_contains "${accel_notes}" "kubectl logs deployment/test-buildkite-operator-oci-accelerator"
+peer_notes=$(notes -f "${values_dir}/base.yaml" --set ociAccelerator.enabled=true \
+	--set ociAccelerator.peering.enabled=true --set ociAccelerator.replicas=3)
+assert_contains "${peer_notes}" "kubectl logs statefulset/test-buildkite-operator-oci-accelerator"
+assert_contains "${peer_notes}" "3 peering proxies use stable DNS seeds"
+assert_contains "${peer_notes}" "restart the proxy StatefulSet"
 unused_accel_notes=$(notes --set ociAccelerator.enabled=true --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)
 assert_contains "${unused_accel_notes}" "no dind, kata or sysbox queue entry uses it"
 standard_notes=$(notes --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)

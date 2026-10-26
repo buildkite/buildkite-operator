@@ -569,6 +569,58 @@ Pulls fail while the proxy is unavailable. Upgrades start the new proxy before
 stopping the old one, but pulls fail if its node is lost until a replacement
 starts. Job containers don't inherit the daemon's proxy settings.
 
+#### Peering
+
+For multiple proxies that can fetch cached content from one another, enable
+peering and set the replica count:
+
+```yaml
+ociAccelerator:
+  enabled: true
+  replicas: 3
+  peering:
+    enabled: true
+```
+
+This replaces the single-replica Deployment with a StatefulSet. Runners keep
+using the same proxy Service on port 3128. A separate headless Service provides
+stable per-Pod DNS names on port 7443; the chart seeds each proxy with all the
+replicas' names, including its own, which the accelerator ignores. Seeds are
+DNS names, not snapshots of Pod IPs, so replacements can rediscover each other.
+Pods start in parallel, and peer DNS is published before readiness. No API
+access or discovery sidecar is needed. More than one replica requires peering.
+
+Peers use mutual TLS with the release's existing CA and private key. The
+NetworkPolicy allows port 7443 only between this release's accelerator Pods;
+runner access stays limited to port 3128. Proxies prefer spreading across nodes
+without requiring a separate node for each replica. Keep the existing CA-key
+placement precautions below for every proxy node.
+
+Each replica has its own `emptyDir` cache and peer state. Both survive container
+restarts, but Pod replacement loses its cache and creates a new peer identity.
+Cache size and resource requests apply **per replica**. Peering is not sharding
+or proactive replication: popular content can be duplicated across caches, and
+losing every proxy Pod loses all cached content. A peer miss or unavailable
+peer falls back to origin; the requesting proxy still obtains upstream registry
+authorization before fetching peer content. Mutable tag responses are not shared.
+
+Use at least two replicas to keep a proxy available during StatefulSet rolling
+updates, which replace one Pod at a time without surging. In-flight pulls through
+a terminating proxy can still fail. Changing the replica count changes the seed
+list and rolls the fleet. Discovery and cache inventory refresh are asynchronous,
+so a new proxy can initially fetch from origin before peer hints are available.
+
+Switching peering on or off changes workload kind, discards the old workload's
+cache, and can interrupt pulls during the Helm upgrade. Schedule that transition
+outside active builds; it is not a zero-downtime migration. The proxy Service and
+CA stay the same, so runner Pods need no configuration change or restart. With
+peering enabled, CA rotation instructions referring to the proxy Deployment
+apply to its StatefulSet instead. The 40-second Pod termination grace covers the
+default proxy and peer drains; keep any `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT`
+override below half that budget, leaving time for cleanup.
+
+#### Cache storage and trust
+
 Besides content addressed by digest, the proxy keeps tag manifests, tag lists,
 referrer lists and catalog responses in memory for 30 seconds. A tag pushed or
 moved during that time can still resolve to its previous digest, for example
@@ -577,12 +629,13 @@ when one step pushes `myapp:latest` and the next pulls it. Set
 
 The cache is an `emptyDir` on the proxy's node, limited to `cache.size`
 (default 20Gi), so it needs no StorageClass. It outlives runner Pods but starts
-empty whenever the proxy Pod is replaced: on upgrades that change it, on
-restarts, and when its node is removed. The proxy requests `cache.size` of
-`ephemeral-storage`, unless `resources.requests` sets it, so it is only
-scheduled on a node with that much disk free. Runner Pods with a Docker daemon
-request disk too, so size it to fit beside them, or place the proxy with
-`nodeSelector` and `tolerations`. Keep `cache.maxBytes` below `cache.size`.
+empty whenever the proxy Pod is replaced: on upgrades that change it and when
+its node is removed. Container restarts within a Pod keep the cache. The proxy
+requests `cache.size` of `ephemeral-storage`, unless `resources.requests` sets
+it, so it is only scheduled on a node with that much disk free. Runner Pods
+with a Docker daemon request disk too, so size it to fit beside them, or place
+the proxy with `nodeSelector` and `tolerations`. Keep `cache.maxBytes` below
+`cache.size`.
 
 The daemons trust the CA for every host, not only `registries`. Docker Engine
 does not read `/etc/docker/certs.d` for Docker Hub with the classic image

@@ -494,6 +494,87 @@ done
 	exit 1
 }
 
+# Switch the existing release to a cold, DNS-seeded fleet without changing the
+# runner endpoint or CA. Keep the known Kind upstream-policy workaround for
+# pulls; check peer ingress separately below.
+"${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values \
+	--set ociAccelerator.peering.enabled=true --set ociAccelerator.replicas=2 \
+	--set ociAccelerator.networkPolicy.enabled=false \
+	--set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL=1s >/dev/null
+"${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
+[[ -z "$("${KUBECTL[@]}" get deployment "${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --ignore-not-found -o name)" ]]
+[[ "$(ca_secret_cert)" == "${generated_ca}" ]]
+[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]]
+
+# Give discovery one normal 30-second exchange interval plus jitter. Pull an
+# immutable blob through each proxy explicitly so a local cache hit or Service
+# load balancing cannot masquerade as peer delivery. Credentials are anonymous.
+sleep 40
+"${KUBECTL[@]}" run peer-pull -n "${ACCEL_NAMESPACE}" --image=python:3.12-alpine --restart=Never \
+	--labels="app.kubernetes.io/name=buildkite-operator,app.kubernetes.io/instance=${ACCEL_RELEASE},app.kubernetes.io/component=runner" \
+	--env="CA_CERT=${generated_ca}" --env="PROXY_NAME=${ACCEL_NAME}" --rm -i --quiet --command -- python3 -u -c '
+import hashlib
+import json
+import os
+import ssl
+import time
+import urllib.request
+
+direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with direct.open("https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/alpine:pull", timeout=30) as response:
+    token = json.load(response)["token"]
+headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"}
+base = "https://registry-1.docker.io/v2/library/alpine/"
+context = ssl.create_default_context(cadata=os.environ["CA_CERT"])
+name = os.environ["PROXY_NAME"]
+
+def fetch(ordinal, path):
+    proxy = "http://" + name + "-" + str(ordinal) + "." + name + "-peers:3128"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy}), urllib.request.HTTPSHandler(context=context))
+    with opener.open(urllib.request.Request(base + path, headers=headers), timeout=60) as response:
+        return response.read()
+
+index = json.loads(fetch(0, "manifests/3.20"))
+digest = next(m["digest"] for m in index["manifests"] if m["platform"].get("architecture") == "amd64" and m["platform"].get("os") == "linux")
+manifest = json.loads(fetch(0, "manifests/" + digest))
+layer = manifest["layers"][0]["digest"]
+for ordinal in (0, 1):
+    body = fetch(ordinal, "blobs/" + layer)
+    assert "sha256:" + hashlib.sha256(body).hexdigest() == layer
+    print("Proxy", ordinal, "served verified blob", layer, "bytes", len(body))
+    # Inventory refresh is set to one second for this test.
+    time.sleep(3)
+'
+peer_metrics=$("${KUBECTL[@]}" exec -n "${ACCEL_NAMESPACE}" "${ACCEL_NAME}-1" -c oci-accelerator -- \
+	wget -q -O - http://127.0.0.1:9090/metrics)
+if ! awk '/^oci_accelerator_served_bytes_total\{.*source="peer"/ && $NF > 0 { found = 1 } END { exit !found }' <<<"${peer_metrics}"; then
+	echo "The cold proxy did not serve peer bytes" >&2
+	echo "${peer_metrics}" >&2
+	exit 1
+fi
+
+# Replacement keeps the DNS endpoint but obtains a fresh cache and identity.
+"${KUBECTL[@]}" delete pod "${ACCEL_NAME}-1" -n "${ACCEL_NAMESPACE}" --wait
+"${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
+"${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values \
+	--set ociAccelerator.replicas=3 --set ociAccelerator.networkPolicy.enabled=true >/dev/null
+"${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
+# A peer's TCP connection reaches the TLS listener; a runner cannot reach it.
+"${KUBECTL[@]}" exec -n "${ACCEL_NAMESPACE}" "${ACCEL_NAME}-0" -c oci-accelerator -- \
+	nc -z -w 5 "${ACCEL_NAME}-2.${ACCEL_NAME}-peers" 7443
+if dockerd nc -z -w 5 "${ACCEL_NAME}-2.${ACCEL_NAME}-peers" 7443; then
+	echo "NetworkPolicy admitted a runner to the peer listener" >&2
+	exit 1
+fi
+
+# Returning to single-instance mode removes the peer workload and Service.
+"${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values \
+	--set ociAccelerator.peering.enabled=false --set ociAccelerator.replicas=1 >/dev/null
+"${KUBECTL[@]}" rollout status deployment/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
+[[ -z "$("${KUBECTL[@]}" get statefulset "${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --ignore-not-found -o name)" ]]
+[[ -z "$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" --ignore-not-found -o name)" ]]
+[[ "$(ca_secret_cert)" == "${generated_ca}" ]]
+
 "${HELM_CLUSTER[@]}" uninstall "${ACCEL_RELEASE}" --namespace "${ACCEL_NAMESPACE}" --wait --timeout 2m
 for _ in $(seq 1 60); do
 	proxy=$(proxy_pod)

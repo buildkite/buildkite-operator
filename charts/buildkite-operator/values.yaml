@@ -202,12 +202,22 @@ deletionCost:
       memory: 64Mi
 
 # Caching HTTPS proxy for image pulls by the dind, kata and sysbox Docker
-# daemons (https://github.com/buildkite/oci-accelerator). One instance per release
-# caches registry content on its node's disk and serves every queue entry with
+# daemons (https://github.com/buildkite/oci-accelerator). Instances in a release
+# cache registry content on their nodes' disks and serve every queue entry with
 # docker.ociAccelerator enabled. Each daemon sends all of its HTTPS traffic
 # through the proxy, so pulls fail while the proxy is unavailable.
 ociAccelerator:
   enabled: false
+  # More than one replica requires peering. Cache size and resource requests
+  # apply to each replica, not the whole fleet.
+  replicas: 1
+  peering:
+    # Use a StatefulSet and headless Service for stable per-Pod DNS seeds.
+    # Peers share the release's CA and fetch cached content from one another.
+    # Cache and peer identity survive container restarts, but not Pod replacement.
+    # Switching this changes workload kind and loses the existing cache; see
+    # the README's Image pull caching section for rollout considerations.
+    enabled: false
   # Registries whose digest-addressed manifests and blobs are cached, as host
   # or host:port. Use registry-1.docker.io for Docker Hub. Traffic to other
   # hosts passes through the proxy uncached.

@@ -16,6 +16,9 @@
 {{- end }}
 {{- end }}
 {{- $name := include "buildkite-operator.ociAcceleratorName" . }}
+{{- if and (not $accelerator.peering.enabled) (ne (int $accelerator.replicas) 1) }}
+{{- fail "ociAccelerator.replicas must be 1 unless ociAccelerator.peering.enabled is true" }}
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -36,11 +39,36 @@ spec:
       targetPort: proxy
       protocol: TCP
 ---
-# Each proxy Pod caches in its own emptyDir, so more replicas would only split
-# the cache. A rollout starts the replacement before stopping the old Pod, so
-# pulls keep working; the new Pod starts with an empty cache.
+{{- if $accelerator.peering.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-peers
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buildkite-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: oci-accelerator
+spec:
+  clusterIP: None
+  # Bootstrap must not depend on another peer becoming ready first.
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: oci-accelerator
+  ports:
+    - name: peer
+      port: 7443
+      targetPort: peer
+      protocol: TCP
+---
+{{- end }}
 apiVersion: apps/v1
+{{- if $accelerator.peering.enabled }}
+kind: StatefulSet
+{{- else }}
 kind: Deployment
+{{- end }}
 metadata:
   name: {{ $name }}
   namespace: {{ .Release.Namespace }}
@@ -48,12 +76,20 @@ metadata:
     {{- include "buildkite-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: oci-accelerator
 spec:
+{{- if $accelerator.peering.enabled }}
+  replicas: {{ $accelerator.replicas }}
+  serviceName: {{ $name }}-peers
+  podManagementPolicy: Parallel
+{{- else }}
+  # Without peering, replicas would only split the cache. Surge keeps pulls
+  # working while the replacement starts with an empty cache.
   replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
       maxUnavailable: 0
+{{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
@@ -70,10 +106,22 @@ spec:
       {{- end }}
     spec:
       automountServiceAccountToken: false
+      {{- if $accelerator.peering.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: oci-accelerator
+      {{- end }}
       {{- with include "buildkite-operator.imagePullSecrets" . }}
       {{- . | nindent 6 }}
       {{- end }}
-      # Longer than the proxy's default 15 second drain.
+      # Covers the default 15 second proxy drain and, with peering, a second
+      # 15 second peer drain. Increase this if overriding the shutdown timeout.
       terminationGracePeriodSeconds: 40
       securityContext:
         runAsNonRoot: true
@@ -139,6 +187,24 @@ spec:
               value: /var/cache/oci-accelerator/private/cache
             - name: OCI_ACCELERATOR_CACHE_MAX_BYTES
               value: {{ int64 $accelerator.cache.maxBytes | toString | quote }}
+            {{- if $accelerator.peering.enabled }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OCI_ACCELERATOR_PEER_LISTEN
+              value: 0.0.0.0:7443
+            - name: OCI_ACCELERATOR_PEER_ADVERTISE
+              value: "$(POD_NAME).{{ $name }}-peers.{{ .Release.Namespace }}.svc:7443"
+            - name: OCI_ACCELERATOR_PEER_SEEDS
+              {{- $seeds := list }}
+              {{- range $ordinal := until (int $accelerator.replicas) }}
+              {{- $seeds = append $seeds (printf "%s-%d.%s-peers.%s.svc:7443" $name $ordinal $name $.Release.Namespace) }}
+              {{- end }}
+              value: {{ join "," $seeds | quote }}
+            - name: OCI_ACCELERATOR_PEER_STATE_DIR
+              value: /run/oci-accelerator/private/peers
+            {{- end }}
             {{- range $key := keys $accelerator.extraEnv | sortAlpha }}
             - name: {{ $key }}
               value: {{ get $accelerator.extraEnv $key | quote }}
@@ -146,6 +212,10 @@ spec:
           ports:
             - name: proxy
               containerPort: 3128
+            {{- if $accelerator.peering.enabled }}
+            - name: peer
+              containerPort: 7443
+            {{- end }}
           # Probes use the loopback metrics listener, so it is never exposed.
           startupProbe:
             exec:
@@ -223,5 +293,16 @@ spec:
       ports:
         - port: proxy
           protocol: TCP
+    {{- if $accelerator.peering.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "buildkite-operator.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: oci-accelerator
+      ports:
+        - port: peer
+          protocol: TCP
+    {{- end }}
 {{- end }}
 {{- end }}
