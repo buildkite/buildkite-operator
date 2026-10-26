@@ -359,7 +359,7 @@ if [[ "${accel_runner}" == *'"oci-ca"'* || "${accel_runner}" == *'"ca.key"'* ]];
 	exit 1
 fi
 accel_proxy=$(document "${accel}" Deployment test-buildkite-operator-oci-accelerator)
-assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.2.1@sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf"'
+assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.3.0@sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641"'
 assert_contains "${accel_proxy}" 'value: "registry-1.docker.io,ghcr.io,public.ecr.aws"'
 assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CACHE_MAX_FILLS\n              value: "32"'
 assert_contains "${accel_proxy}" $'- name: cache\n          emptyDir:\n            sizeLimit: 20Gi'
@@ -438,7 +438,7 @@ fi
 ca_create=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-create)
 assert_contains "${ca_create}" "helm.sh/hook: pre-install,pre-upgrade"
 assert_contains "${ca_create}" "oci-accelerator init-ca --dir /work/state/ca"
-assert_contains "${ca_create}" 'image: "buildkite/oci-accelerator:v0.2.1@sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf"'
+assert_contains "${ca_create}" 'image: "buildkite/oci-accelerator:v0.3.0@sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641"'
 assert_contains "${ca_create}" $'SECRET_NAME\n              value: "'"${generated_secret}"'"'
 ca_delete=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-delete)
 assert_contains "${ca_delete}" "helm.sh/hook: post-delete"
@@ -470,6 +470,9 @@ assert_fails "ociAccelerator.noProxy must not include ghcr.io:443" \
 assert_fails "ociAccelerator.extraEnv.OCI_ACCELERATOR_LISTEN is managed by the chart" \
 	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 --set-string queues.linux.runtime=kata \
 	"${accel_args[@]}" --set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_LISTEN=0.0.0.0:1
+assert_fails "ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_LISTEN is managed by the chart" \
+	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 --set-string queues.linux.runtime=kata \
+	"${accel_args[@]}" --set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:7443
 assert_fails "does not match pattern" \
 	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
 	"${accel_args[@]}" --set ociAccelerator.registries='{https://ghcr.io}'

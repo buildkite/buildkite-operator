@@ -9,7 +9,7 @@
 {{- fail (printf "ociAccelerator.noProxy must not include %s, which is in ociAccelerator.registries" $host) }}
 {{- end }}
 {{- end }}
-{{- $managed := list "OCI_ACCELERATOR_REGISTRIES" "OCI_ACCELERATOR_LISTEN" "OCI_ACCELERATOR_METRICS_LISTEN" "OCI_ACCELERATOR_METRICS_ALLOW_REMOTE" "OCI_ACCELERATOR_CA_DIR" "OCI_ACCELERATOR_CACHE_DIR" "OCI_ACCELERATOR_CACHE_MAX_BYTES" }}
+{{- $managed := list "OCI_ACCELERATOR_REGISTRIES" "OCI_ACCELERATOR_LISTEN" "OCI_ACCELERATOR_METRICS_LISTEN" "OCI_ACCELERATOR_METRICS_ALLOW_REMOTE" "OCI_ACCELERATOR_CA_DIR" "OCI_ACCELERATOR_CACHE_DIR" "OCI_ACCELERATOR_CACHE_MAX_BYTES" "OCI_ACCELERATOR_PEER_LISTEN" "OCI_ACCELERATOR_PEER_ADVERTISE" "OCI_ACCELERATOR_PEER_SEEDS" "OCI_ACCELERATOR_PEER_STATE_DIR" }}
 {{- range $name := keys $accelerator.extraEnv | sortAlpha }}
 {{- if has $name $managed }}
 {{- fail (printf "ociAccelerator.extraEnv.%s is managed by the chart" $name) }}

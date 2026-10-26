@@ -244,7 +244,15 @@ ociAccelerator:
     maxBytes: 19327352832
   # Additional OCI_ACCELERATOR_* settings, such as
   # OCI_ACCELERATOR_CACHE_MAX_FILLS: "32". Settings the chart manages
-  # (registries, listeners, state directories and maxBytes) cannot be set here.
+  # (registries, listeners, state directories, maxBytes and peering) cannot be
+  # set here.
+  #
+  # The proxy also keeps tag manifests, tag lists, referrer lists and catalog
+  # responses in memory for 30 seconds, so a tag pushed or moved during that
+  # time can still resolve to its previous digest. Set
+  # OCI_ACCELERATOR_CACHE_MUTABLE_TTL: "0s" to disable this, or
+  # OCI_ACCELERATOR_CACHE_MUTABLE_SHARED: "false" for registries whose tag or
+  # referrer listings differ by token.
   extraEnv: {}
   # Admit proxy connections only from this release's runner Pods. Requires a
   # network plugin that enforces NetworkPolicy.
@@ -255,8 +263,8 @@ ociAccelerator:
   # The digest pins the multi-platform image index for the tag.
   image:
     repository: buildkite/oci-accelerator
-    tag: v0.2.1
-    digest: sha256:a26eb344cc4858ccd63a92150a7deaf11766e3a5155add2c00e4dad4a5fec6cf
+    tag: v0.3.0
+    digest: sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641
     pullPolicy: IfNotPresent
   resources:
     requests:
