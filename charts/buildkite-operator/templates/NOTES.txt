@@ -48,13 +48,22 @@ WARNING: dind needs nothing installed, but its privileged Docker daemon has host
 
 Docker daemons for {{ join ", " $accelerated }} pull through the OCI accelerator, caching {{ join ", " .Values.ociAccelerator.registries }}:
 
-  kubectl logs deployment/{{ include "buildkite-operator.ociAcceleratorName" . }} -c oci-accelerator -n {{ .Release.Namespace }}
-{{- if .Values.ociAccelerator.ca.existingSecret.name }}
+  kubectl logs statefulset/{{ include "buildkite-operator.ociAcceleratorName" . }} -c oci-accelerator -n {{ .Release.Namespace }}
 
-The proxy uses the CA in Secret {{ .Values.ociAccelerator.ca.existingSecret.name }}, and runners trust its certificate, copied to ConfigMap {{ include "buildkite-operator.ociAcceleratorCACertName" . }} on every install and upgrade. Pods read both only at startup. After replacing the Secret, run helm upgrade, then restart the proxy Deployment and those queues' Deployments.
+Proxy replicas: {{ .Values.ociAccelerator.replicas }}. Each StatefulSet Pod has an ephemeral cache; replacing all Pods loses all cached content. Rolling updates replace one Pod at a time without surging, so use at least two replicas for availability during updates.
+{{- if .Values.ociAccelerator.peering.enabled }}
+
+Peers use stable DNS seeds through the headless Service {{ include "buildkite-operator.ociAcceleratorName" . }}-peers. Pod replacement also loses peer identity.
 {{- else }}
 
-The chart generated the proxy's CA in Secret {{ include "buildkite-operator.ociAcceleratorCASecretName" . }}, and runners trust its certificate in ConfigMap {{ include "buildkite-operator.ociAcceleratorCACertName" . }}. Both are deleted on uninstall. To rotate the CA, delete the Secret and run helm upgrade, then restart the proxy Deployment and those queues' Deployments.
+Peering is disabled, so each proxy fills its cache independently from origin, even if another proxy has the content.
+{{- end }}
+{{- if .Values.ociAccelerator.ca.existingSecret.name }}
+
+The proxy uses the CA in Secret {{ .Values.ociAccelerator.ca.existingSecret.name }}, and runners trust its certificate, copied to ConfigMap {{ include "buildkite-operator.ociAcceleratorCACertName" . }} on every install and upgrade. Pods read both only at startup. After replacing the Secret, run helm upgrade, then restart the proxy StatefulSet and those queues' Deployments.
+{{- else }}
+
+The chart generated the proxy's CA in Secret {{ include "buildkite-operator.ociAcceleratorCASecretName" . }}, and runners trust its certificate in ConfigMap {{ include "buildkite-operator.ociAcceleratorCACertName" . }}. Both are deleted on uninstall. To rotate the CA, delete the Secret and run helm upgrade, then restart the proxy StatefulSet and those queues' Deployments.
 {{- end }}
 {{- else }}
 

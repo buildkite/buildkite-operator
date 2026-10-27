@@ -21,22 +21,36 @@ steps:
     command: make test
     plugins: *go_container
 
-  - label: ":kubernetes: chart examples are up to date"
-    command:
-      - curl -fsSL https://mise.run | sh
-      - export PATH="$$HOME/.local/bin:$$PATH"
-      - mise install helm
-      - make helm-examples HELM="$(mise which helm)"
-      - git diff --exit-code
-      - test -z "$(git status --porcelain)"
-
-  - label: ":kubernetes: standalone chart"
+  - label: ":kubernetes: chart validation and examples"
     command:
       - curl -fsSL https://mise.run | sh
       - export PATH="$$HOME/.local/bin:$$PATH"
       - mise install
       - mise exec -- make test-helm
+      - mise exec -- make helm-examples
+      - git diff --exit-code
+      - test -z "$(git status --porcelain)"
+
+  - label: ":docker: agent supervisor"
+    command:
+      - curl -fsSL https://mise.run | sh
+      - export PATH="$$HOME/.local/bin:$$PATH"
+      - mise install
       - mise exec -- make test-supervisor
+      - test -z "$(git status --porcelain)"
+
+  - label: ":docker: step images"
+    command:
+      - curl -fsSL https://mise.run | sh
+      - export PATH="$$HOME/.local/bin:$$PATH"
+      - mise install
       - mise exec -- make test-step-image
       - test -z "$(git status --porcelain)"
+
+  - label: ":kubernetes: chart e2e"
+    command:
+      - curl -fsSL https://mise.run | sh
+      - export PATH="$$HOME/.local/bin:$$PATH"
+      - mise install
       - mise exec -- make test-helm-e2e
+      - test -z "$(git status --porcelain)"
