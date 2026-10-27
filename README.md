@@ -740,6 +740,12 @@ CI runs the checks, and also fails if the rendered examples are out of date.
 The end-to-end check deletes its isolated Kind cluster when it finishes, which
 may clear the current kubeconfig context.
 
+The chart E2E test temporarily pins Kind 0.30's Kindnet image by digest because
+CI's kernel lacks `CONFIG_NETFILTER_NETLINK_GLUE_CT`, required by newer policy
+engines to recognise allowed connections' replies. This changes only the test
+cluster's CNI; the chart's NetworkPolicy and peer-isolation checks are unchanged.
+Remove the pin once CI provides that kernel capability.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

@@ -78,6 +78,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Temporarily pin Kind 0.30's Kindnet (policy engine v0.8.0). Newer engines
+# require CONFIG_NETFILTER_NETLINK_GLUE_CT to label allowed connections, which
+# CI's kernel lacks. Remove the pin when that capability is available on CI.
+"${KUBECTL[@]}" set image daemonset/kindnet -n kube-system \
+	kindnet-cni=docker.io/kindest/kindnetd:v20250512-df8de77b@sha256:07a4b3fe0077a0ae606cc0a200fc25a28fa64dcc30b8d311b461089969449f9a
+"${KUBECTL[@]}" rollout status daemonset/kindnet -n kube-system --timeout=1m
+
 # The pause image stands in for persistent agents. Ephemeral standard agents
 # need a shell, so they use busybox with a stand-in agent mounted from a
 # ConfigMap. The stand-in serves the health and status endpoints, records
