@@ -618,10 +618,10 @@ spec:
 
 ---
 # Source: buildkite-operator/templates/oci-accelerator.yaml
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Service
 metadata:
-  name: buildkite-buildkite-operator-oci-accelerator
+  name: buildkite-buildkite-operator-oci-accelerator-peers
   namespace: buildkite
   labels:
     app.kubernetes.io/name: buildkite-operator
@@ -630,149 +630,18 @@ metadata:
     helm.sh/chart: buildkite-operator-0.17.0
     app.kubernetes.io/component: oci-accelerator
 spec:
-  # Without peering, replicas would only split the cache. Surge keeps pulls
-  # working while the replacement starts with an empty cache.
-  replicas: 1
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+  clusterIP: None
+  # Bootstrap must not depend on another peer becoming ready first.
+  publishNotReadyAddresses: true
   selector:
-    matchLabels:
-      app.kubernetes.io/name: buildkite-operator
-      app.kubernetes.io/instance: buildkite
-      app.kubernetes.io/component: oci-accelerator
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: buildkite-operator
-        app.kubernetes.io/instance: buildkite
-        app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-0.17.0
-        app.kubernetes.io/component: oci-accelerator
-    spec:
-      automountServiceAccountToken: false
-      # Covers the default 15 second proxy drain and, with peering, a second
-      # 15 second peer drain. Increase this if overriding the shutdown timeout.
-      terminationGracePeriodSeconds: 40
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
-        seccompProfile:
-          type: RuntimeDefault
-      initContainers:
-        # The proxy requires private, non-symlink state directories owned by
-        # its user, which Secret and volume mounts do not provide directly.
-        - name: prepare-state
-          image: "buildkite/oci-accelerator:v0.3.0@sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641"
-          imagePullPolicy: IfNotPresent
-          command:
-            - /bin/sh
-            - -ec
-            - |
-              umask 077
-              mkdir -p /run/oci-accelerator/private /var/cache/oci-accelerator/private
-              chmod 0700 /run/oci-accelerator/private /var/cache/oci-accelerator/private
-              rm -rf /run/oci-accelerator/private/ca
-              mkdir /run/oci-accelerator/private/ca
-              cp /ca-source/ca.crt /ca-source/ca.key /run/oci-accelerator/private/ca/
-              chmod 0644 /run/oci-accelerator/private/ca/ca.crt
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
-          resources:
-            limits:
-              memory: 2Gi
-            requests:
-              cpu: 500m
-              memory: 512Mi
-          volumeMounts:
-            - name: ca-source
-              mountPath: /ca-source
-              readOnly: true
-            - name: state
-              mountPath: /run/oci-accelerator
-            - name: cache
-              mountPath: /var/cache/oci-accelerator
-      containers:
-        - name: oci-accelerator
-          image: "buildkite/oci-accelerator:v0.3.0@sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641"
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: OCI_ACCELERATOR_REGISTRIES
-              value: "registry-1.docker.io,ghcr.io,public.ecr.aws"
-            - name: OCI_ACCELERATOR_LISTEN
-              value: 0.0.0.0:3128
-            - name: OCI_ACCELERATOR_METRICS_LISTEN
-              value: 127.0.0.1:9090
-            - name: OCI_ACCELERATOR_CA_DIR
-              value: /run/oci-accelerator/private/ca
-            - name: OCI_ACCELERATOR_CACHE_DIR
-              value: /var/cache/oci-accelerator/private/cache
-            - name: OCI_ACCELERATOR_CACHE_MAX_BYTES
-              value: "19327352832"
-          ports:
-            - name: proxy
-              containerPort: 3128
-          # Probes use the loopback metrics listener, so it is never exposed.
-          startupProbe:
-            exec:
-              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
-            periodSeconds: 2
-            timeoutSeconds: 3
-            failureThreshold: 90
-          readinessProbe:
-            exec:
-              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
-            periodSeconds: 10
-            timeoutSeconds: 3
-          livenessProbe:
-            exec:
-              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/livez]
-            periodSeconds: 30
-            timeoutSeconds: 3
-            failureThreshold: 3
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
-          # Requesting the cache's size keeps the Pod off nodes without the disk
-          # for it, where it would be evicted once the cache filled.
-          resources:
-            limits:
-              memory: 2Gi
-            requests:
-              cpu: 500m
-              ephemeral-storage: 20Gi
-              memory: 512Mi
-          volumeMounts:
-            - name: state
-              mountPath: /run/oci-accelerator
-            - name: cache
-              mountPath: /var/cache/oci-accelerator
-      volumes:
-        - name: ca-source
-          secret:
-            secretName: "buildkite-buildkite-operator-oci-accelerator-ca"
-            defaultMode: 0440
-            items:
-              - key: "ca.crt"
-                path: ca.crt
-              - key: "ca.key"
-                path: ca.key
-        - name: state
-          emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
-        - name: cache
-          emptyDir:
-            sizeLimit: 20Gi
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/component: oci-accelerator
+  ports:
+    - name: proxy
+      port: 3128
+      targetPort: proxy
+      protocol: TCP
 
 ---
 # Source: buildkite-operator/templates/runners.yaml
@@ -1647,6 +1516,168 @@ spec:
         - name: docker-config
           emptyDir:
             sizeLimit: 16Mi
+
+---
+# Source: buildkite-operator/templates/oci-accelerator.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: buildkite-buildkite-operator-oci-accelerator
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: buildkite-operator
+    app.kubernetes.io/instance: buildkite
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: buildkite-operator-0.17.0
+    app.kubernetes.io/component: oci-accelerator
+spec:
+  replicas: 2
+  serviceName: buildkite-buildkite-operator-oci-accelerator-peers
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkite-operator
+      app.kubernetes.io/instance: buildkite
+      app.kubernetes.io/component: oci-accelerator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkite-operator
+        app.kubernetes.io/instance: buildkite
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: buildkite-operator-0.17.0
+        app.kubernetes.io/component: oci-accelerator
+    spec:
+      automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: buildkite-operator
+              app.kubernetes.io/instance: buildkite
+              app.kubernetes.io/component: oci-accelerator
+      # Covers the default 15 second proxy drain and, with peering, a second
+      # 15 second peer drain. Increase this if overriding the shutdown timeout.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # The proxy requires private, non-symlink state directories owned by
+        # its user, which Secret and volume mounts do not provide directly.
+        - name: prepare-state
+          image: "buildkite/oci-accelerator:v0.3.0@sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              umask 077
+              mkdir -p /run/oci-accelerator/private /var/cache/oci-accelerator/private
+              chmod 0700 /run/oci-accelerator/private /var/cache/oci-accelerator/private
+              rm -rf /run/oci-accelerator/private/ca
+              mkdir /run/oci-accelerator/private/ca
+              cp /ca-source/ca.crt /ca-source/ca.key /run/oci-accelerator/private/ca/
+              chmod 0644 /run/oci-accelerator/private/ca/ca.crt
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 2Gi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: ca-source
+              mountPath: /ca-source
+              readOnly: true
+            - name: state
+              mountPath: /run/oci-accelerator
+            - name: cache
+              mountPath: /var/cache/oci-accelerator
+      containers:
+        - name: oci-accelerator
+          image: "buildkite/oci-accelerator:v0.3.0@sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OCI_ACCELERATOR_REGISTRIES
+              value: "registry-1.docker.io,ghcr.io,public.ecr.aws"
+            - name: OCI_ACCELERATOR_LISTEN
+              value: 0.0.0.0:3128
+            - name: OCI_ACCELERATOR_METRICS_LISTEN
+              value: 127.0.0.1:9090
+            - name: OCI_ACCELERATOR_CA_DIR
+              value: /run/oci-accelerator/private/ca
+            - name: OCI_ACCELERATOR_CACHE_DIR
+              value: /var/cache/oci-accelerator/private/cache
+            - name: OCI_ACCELERATOR_CACHE_MAX_BYTES
+              value: "19327352832"
+          ports:
+            - name: proxy
+              containerPort: 3128
+          # Probes use the loopback metrics listener, so it is never exposed.
+          startupProbe:
+            exec:
+              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 90
+          readinessProbe:
+            exec:
+              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/livez]
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # Requesting the cache's size keeps the Pod off nodes without the disk
+          # for it, where it would be evicted once the cache filled.
+          resources:
+            limits:
+              memory: 2Gi
+            requests:
+              cpu: 500m
+              ephemeral-storage: 20Gi
+              memory: 512Mi
+          volumeMounts:
+            - name: state
+              mountPath: /run/oci-accelerator
+            - name: cache
+              mountPath: /var/cache/oci-accelerator
+      volumes:
+        - name: ca-source
+          secret:
+            secretName: "buildkite-buildkite-operator-oci-accelerator-ca"
+            defaultMode: 0440
+            items:
+              - key: "ca.crt"
+                path: ca.crt
+              - key: "ca.key"
+                path: ca.key
+        - name: state
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: cache
+          emptyDir:
+            sizeLimit: 20Gi
 
 ---
 # Source: buildkite-operator/templates/scaling.yaml

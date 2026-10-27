@@ -424,7 +424,7 @@ generated_ca=$(ca_secret_cert)
 	echo "CA hook resources remained after install" >&2
 	exit 1
 }
-"${KUBECTL[@]}" rollout status deployment/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
+"${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
 
 dockerd_pod=""
 for _ in $(seq 1 180); do
@@ -459,9 +459,11 @@ served_ca=$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")
 # Upgrades keep the generated CA and recreate a missing ConfigMap from it. One
 # that leaves the proxy unchanged keeps its Pod and so its cache.
 proxy_pod() {
-	"${KUBECTL[@]}" get pods -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=oci-accelerator -o name
+	"${KUBECTL[@]}" get pods -n "${ACCEL_NAMESPACE}" -l app.kubernetes.io/component=oci-accelerator -o jsonpath='{.items[*].metadata.uid}'
 }
 proxy_before=$(proxy_pod)
+accelerator_uid=$("${KUBECTL[@]}" get statefulset "${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')
+headless_uid=$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')
 "${KUBECTL[@]}" delete configmap "${ACCEL_CA_CONFIGMAP}" -n "${ACCEL_NAMESPACE}"
 "${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values
 [[ "$(ca_secret_cert)" == "${generated_ca}" ]] || { echo "helm upgrade replaced the generated CA" >&2; exit 1; }
@@ -473,7 +475,7 @@ image=alpine:3.20
 dockerd docker pull -q "${image}"
 dockerd docker image rm "${image}" >/dev/null
 dockerd docker pull -q "${image}"
-accelerator_logs=$("${KUBECTL[@]}" logs deployment/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -c oci-accelerator)
+accelerator_logs=$("${KUBECTL[@]}" logs statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -c oci-accelerator)
 # Not grep -q: exiting at the first match would fail the pipeline with SIGPIPE.
 if ! grep '"registry":"registry-1.docker.io"' <<<"${accelerator_logs}" | grep '"cache":"hit"' >/dev/null; then
 	echo "Second pull was not served from the OCI accelerator cache" >&2
@@ -501,15 +503,32 @@ done
 	exit 1
 }
 
-# Switch the existing release to a cold, DNS-seeded fleet without changing the
-# runner endpoint or CA. Keep the known Kind upstream-policy workaround for
-# pulls; check peer ingress separately below.
+# Independent proxies scale behind the same ready-only Service without peering.
+# Keep the known Kind upstream-policy workaround for pulls.
+"${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values \
+	--set ociAccelerator.replicas=2 --set ociAccelerator.networkPolicy.enabled=false >/dev/null
+"${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
+"${KUBECTL[@]}" wait --for=jsonpath='{.subsets[0].addresses[1].targetRef.name}' \
+	endpoints/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=1m
+for ordinal in 0 1; do
+	[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}-${ordinal}.${ACCEL_NAME}-peers:3128/ca.crt")" == "${generated_ca}" ]]
+done
+[[ "$("${KUBECTL[@]}" get pod "${ACCEL_NAME}-0" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${proxy_before}" ]]
+"${KUBECTL[@]}" delete pod "${ACCEL_NAME}-1" -n "${ACCEL_NAMESPACE}" --wait
+dockerd docker image rm "${image}" >/dev/null
+dockerd docker pull -q "${image}"
+"${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
+
+# Enable DNS-seeded peering by rolling the existing StatefulSet, without
+# replacing its governing Service, runner endpoint or CA.
 "${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values \
 	--set ociAccelerator.peering.enabled=true --set ociAccelerator.replicas=2 \
 	--set ociAccelerator.networkPolicy.enabled=false \
 	--set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL=1s >/dev/null
 "${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
 [[ -z "$("${KUBECTL[@]}" get deployment "${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --ignore-not-found -o name)" ]]
+[[ "$("${KUBECTL[@]}" get statefulset "${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${accelerator_uid}" ]]
+[[ "$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${headless_uid}" ]]
 [[ "$(ca_secret_cert)" == "${generated_ca}" ]]
 [[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]]
 
@@ -577,12 +596,14 @@ if dockerd nc -z -w 5 "${peer_ip}" 7443; then
 	exit 1
 fi
 
-# Returning to single-instance mode removes the peer workload and Service.
+# Disabling peering keeps independent replicas and the same governing Service.
 "${HELM_CLUSTER[@]}" upgrade "${ACCEL_RELEASE}" "${CHART_DIR}" --namespace "${ACCEL_NAMESPACE}" --reuse-values \
-	--set ociAccelerator.peering.enabled=false --set ociAccelerator.replicas=1 >/dev/null
-"${KUBECTL[@]}" rollout status deployment/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
-[[ -z "$("${KUBECTL[@]}" get statefulset "${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --ignore-not-found -o name)" ]]
-[[ -z "$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" --ignore-not-found -o name)" ]]
+	--set ociAccelerator.peering.enabled=false --set ociAccelerator.replicas=2 >/dev/null
+"${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
+[[ "$("${KUBECTL[@]}" get statefulset "${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${accelerator_uid}" ]]
+[[ "$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${headless_uid}" ]]
+[[ "$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.spec.ports[*].port}')" == "3128" ]]
+[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]]
 [[ "$(ca_secret_cert)" == "${generated_ca}" ]]
 
 "${HELM_CLUSTER[@]}" uninstall "${ACCEL_RELEASE}" --namespace "${ACCEL_NAMESPACE}" --wait --timeout 2m

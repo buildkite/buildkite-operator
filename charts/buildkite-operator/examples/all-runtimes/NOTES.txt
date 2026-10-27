@@ -17,6 +17,10 @@ WARNING: dind needs nothing installed, but its privileged Docker daemon has host
 
 Docker daemons for docker, docker-builds pull through the OCI accelerator, caching registry-1.docker.io, ghcr.io, public.ecr.aws:
 
-  kubectl logs deployment/buildkite-buildkite-operator-oci-accelerator -c oci-accelerator -n buildkite
+  kubectl logs statefulset/buildkite-buildkite-operator-oci-accelerator -c oci-accelerator -n buildkite
 
-The chart generated the proxy's CA in Secret buildkite-buildkite-operator-oci-accelerator-ca, and runners trust its certificate in ConfigMap buildkite-buildkite-operator-oci-accelerator-ca-cert. Both are deleted on uninstall. To rotate the CA, delete the Secret and run helm upgrade, then restart the proxy Deployment and those queues' Deployments.
+Proxy replicas: 2. Each StatefulSet Pod has an ephemeral cache; replacing all Pods loses all cached content. Rolling updates replace one Pod at a time without surging, so use at least two replicas for availability during updates.
+
+Peering is disabled, so each proxy fills its cache independently from origin, even if another proxy has the content.
+
+The chart generated the proxy's CA in Secret buildkite-buildkite-operator-oci-accelerator-ca, and runners trust its certificate in ConfigMap buildkite-buildkite-operator-oci-accelerator-ca-cert. Both are deleted on uninstall. To rotate the CA, delete the Secret and run helm upgrade, then restart the proxy StatefulSet and those queues' Deployments.

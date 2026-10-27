@@ -356,6 +356,10 @@ spec:
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/component: oci-accelerator
   ports:
+    - name: proxy
+      port: 3128
+      targetPort: proxy
+      protocol: TCP
     - name: peer
       port: 7443
       targetPort: peer

@@ -13,6 +13,8 @@ Docker daemons for docker pull through the OCI accelerator, caching registry-1.d
 
   kubectl logs statefulset/buildkite-buildkite-operator-oci-accelerator -c oci-accelerator -n buildkite
 
-3 peering proxies use stable DNS seeds through the headless Service buildkite-buildkite-operator-oci-accelerator-peers. Each Pod has its own ephemeral cache and peer identity; replacing all Pods loses all cached content. Rolling updates replace one Pod at a time without surging, so use at least two replicas for availability during updates.
+Proxy replicas: 3. Each StatefulSet Pod has an ephemeral cache; replacing all Pods loses all cached content. Rolling updates replace one Pod at a time without surging, so use at least two replicas for availability during updates.
+
+Peers use stable DNS seeds through the headless Service buildkite-buildkite-operator-oci-accelerator-peers. Pod replacement also loses peer identity.
 
 The proxy uses the CA in Secret oci-accelerator-ca, and runners trust its certificate, copied to ConfigMap buildkite-buildkite-operator-oci-accelerator-ca-cert on every install and upgrade. Pods read both only at startup. After replacing the Secret, run helm upgrade, then restart the proxy StatefulSet and those queues' Deployments.

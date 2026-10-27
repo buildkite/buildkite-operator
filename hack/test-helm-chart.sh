@@ -340,11 +340,15 @@ fi
 accel=$(render "${accel_args[@]}" --set-string queues.linux.runtime=sysbox \
 	--set ociAccelerator.noProxy='{registry.internal:5000}' \
 	--set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_CACHE_MAX_FILLS=32)
-for kind in Service NetworkPolicy; do
-	[[ $(count_kind "${accel}" "${kind}") -eq 1 ]] || { echo "Expected one OCI accelerator ${kind}" >&2; exit 1; }
-done
-[[ $(count_kind "${accel}" Deployment) -eq 2 ]] || { echo "Expected a runner and an OCI accelerator Deployment" >&2; exit 1; }
-if [[ "${accel}" == *"kind: StatefulSet"* || "${accel}" == *"PersistentVolumeClaim"* || "${accel}" == *"volumeClaimTemplates"* ]]; then
+[[ $(count_kind "${accel}" Service) -eq 2 && $(count_kind "${accel}" NetworkPolicy) -eq 1 ]] || {
+	echo "Expected proxy and headless Services and one OCI accelerator NetworkPolicy" >&2
+	exit 1
+}
+[[ $(count_kind "${accel}" Deployment) -eq 1 && $(count_kind "${accel}" StatefulSet) -eq 1 ]] || {
+	echo "Expected a runner Deployment and an OCI accelerator StatefulSet" >&2
+	exit 1
+}
+if [[ "${accel}" == *"PersistentVolumeClaim"* || "${accel}" == *"volumeClaimTemplates"* ]]; then
 	echo "OCI accelerator rendered persistent storage" >&2
 	exit 1
 fi
@@ -358,18 +362,19 @@ if [[ "${accel_runner}" == *'"oci-ca"'* || "${accel_runner}" == *'"ca.key"'* ]];
 	echo "Runner Pods referenced the OCI accelerator CA Secret" >&2
 	exit 1
 fi
-accel_proxy=$(document "${accel}" Deployment test-buildkite-operator-oci-accelerator)
+accel_proxy=$(document "${accel}" StatefulSet test-buildkite-operator-oci-accelerator)
 assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.3.0@sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641"'
 assert_contains "${accel_proxy}" 'value: "registry-1.docker.io,ghcr.io,public.ecr.aws"'
 assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CACHE_MAX_FILLS\n              value: "32"'
 assert_contains "${accel_proxy}" $'- name: cache\n          emptyDir:\n            sizeLimit: 20Gi'
 assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CACHE_MAX_BYTES\n              value: "19327352832"'
-assert_contains "${accel_proxy}" $'maxSurge: 1\n      maxUnavailable: 0'
+assert_contains "${accel_proxy}" $'replicas: 1\n  serviceName: test-buildkite-operator-oci-accelerator-peers\n  podManagementPolicy: Parallel'
+assert_contains "${accel_proxy}" 'whenUnsatisfiable: ScheduleAnyway'
 assert_contains "${accel_proxy}" $'requests:\n              cpu: 500m\n              ephemeral-storage: 20Gi\n              memory: 512Mi'
 # A request set in resources is kept, and limits are untouched.
 accel_storage=$(document "$(render "${accel_args[@]}" --set-string queues.linux.runtime=kata \
 	--set-string ociAccelerator.cache.size=8Gi --set ociAccelerator.cache.maxBytes=7516192768 \
-	--set-string ociAccelerator.resources.requests.ephemeral-storage=12Gi)" Deployment test-buildkite-operator-oci-accelerator)
+	--set-string ociAccelerator.resources.requests.ephemeral-storage=12Gi)" StatefulSet test-buildkite-operator-oci-accelerator)
 assert_contains "${accel_storage}" "sizeLimit: 8Gi"
 assert_contains "${accel_storage}" "ephemeral-storage: 12Gi"
 assert_contains "${accel_storage}" $'limits:\n              memory: 2Gi'
@@ -399,9 +404,18 @@ if [[ -n "$(document "${peering}" Deployment test-buildkite-operator-oci-acceler
 	echo "Peering rendered the wrong workload, persistent storage, or leaked into default mode" >&2
 	exit 1
 fi
-assert_fails "ociAccelerator.replicas must be 1 unless ociAccelerator.peering.enabled is true" \
-	"${accel_args[@]}" --set queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
-	--set queues.linux.runtime=dind --set ociAccelerator.replicas=2
+# Independent replicas use the same Services, without peer listeners or ingress.
+independent=$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind --set ociAccelerator.replicas=2)
+assert_contains "$(document "${independent}" StatefulSet test-buildkite-operator-oci-accelerator)" \
+	$'replicas: 2\n  serviceName: test-buildkite-operator-oci-accelerator-peers'
+assert_contains "$(document "${independent}" Service test-buildkite-operator-oci-accelerator)" 'type: ClusterIP'
+independent_headless=$(document "${independent}" Service test-buildkite-operator-oci-accelerator-peers)
+assert_contains "${independent_headless}" 'clusterIP: None'
+assert_contains "${independent_headless}" 'targetPort: proxy'
+if [[ "${independent}" == *"OCI_ACCELERATOR_PEER_"* || "${independent_headless}" == *"name: peer"* || "$(document "${independent}" NetworkPolicy test-buildkite-operator-oci-accelerator)" == *"port: peer"* ]]; then
+	echo "Peering was enabled for independent replicas" >&2
+	exit 1
+fi
 assert_fails "'/ociAccelerator/replicas': minimum:" "${accel_args[@]}" --set ociAccelerator.replicas=0
 assert_fails "'/ociAccelerator/replicas': maximum:" "${accel_args[@]}" --set ociAccelerator.replicas=1025
 accel_dind=$(document "$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind)" Deployment test-linux)
@@ -456,7 +470,7 @@ assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CA_DIR\n              value: 
 generated=$(render --set-string agentToken.value="${TOKEN}" --set ociAccelerator.enabled=true \
 	--set-string queues.linux.runtime=dind)
 generated_secret="test-buildkite-operator-oci-accelerator-ca"
-assert_contains "$(document "${generated}" Deployment test-buildkite-operator-oci-accelerator)" "secretName: \"${generated_secret}\""
+assert_contains "$(document "${generated}" StatefulSet test-buildkite-operator-oci-accelerator)" "secretName: \"${generated_secret}\""
 generated_runner=$(document "${generated}" Deployment test-linux)
 assert_contains "${generated_runner}" "${ca_cert_volume}"
 if [[ "${generated_runner}" == *"${generated_secret}\""* ]]; then
@@ -637,10 +651,13 @@ expected_config='{"auths":{"ghcr.io":{"auth":"'"$(printf 'gh-user:gh-token' | ba
 	exit 1
 }
 pull_secret=$'imagePullSecrets:\n        - name: "test-buildkite-operator-registry-credentials"'
-for deployment in test-std test-per test-eph test-buildkite-operator-oci-accelerator; do
+for deployment in test-std test-per test-eph; do
 	assert_contains "$(document "${credentials}" Deployment "${deployment}")" "${pull_secret}"
 	assert_contains "$(document "${credentials}" Deployment "${deployment}")" "checksum/registry-credentials:"
 done
+credentials_proxy=$(document "${credentials}" StatefulSet test-buildkite-operator-oci-accelerator)
+assert_contains "${credentials_proxy}" "${pull_secret}"
+assert_contains "${credentials_proxy}" "checksum/registry-credentials:"
 # Hooks run before the release's Secret exists on install and after it is
 # deleted on uninstall, so they pull with a copy that exists only while they run.
 hook_secret=$(document "${credentials}" Secret test-buildkite-operator-registry-credentials-hook)
@@ -773,11 +790,14 @@ assert_contains "${runtime_notes}" "build-sysbox: queue build, sysbox, ephemeral
 accel_notes=$(notes -f "${values_dir}/base.yaml" --set ociAccelerator.enabled=true \
 	--set-string ociAccelerator.ca.existingSecret.name=oci-ca --set queues.build-sysbox.docker.ociAccelerator=false)
 assert_contains "${accel_notes}" "Docker daemons for linux-kata pull through the OCI accelerator"
-assert_contains "${accel_notes}" "kubectl logs deployment/test-buildkite-operator-oci-accelerator"
+assert_contains "${accel_notes}" "kubectl logs statefulset/test-buildkite-operator-oci-accelerator"
+assert_contains "${accel_notes}" "use at least two replicas for availability during updates"
+assert_contains "${accel_notes}" "Peering is disabled"
 peer_notes=$(notes -f "${values_dir}/base.yaml" --set ociAccelerator.enabled=true \
 	--set ociAccelerator.peering.enabled=true --set ociAccelerator.replicas=3)
 assert_contains "${peer_notes}" "kubectl logs statefulset/test-buildkite-operator-oci-accelerator"
-assert_contains "${peer_notes}" "3 peering proxies use stable DNS seeds"
+assert_contains "${peer_notes}" "Proxy replicas: 3"
+assert_contains "${peer_notes}" "Peers use stable DNS seeds"
 assert_contains "${peer_notes}" "restart the proxy StatefulSet"
 unused_accel_notes=$(notes --set ociAccelerator.enabled=true --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)
 assert_contains "${unused_accel_notes}" "no dind, kata or sysbox queue entry uses it"

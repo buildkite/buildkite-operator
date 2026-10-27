@@ -528,7 +528,7 @@ hook Job deletes the ConfigMap and the Secret after `helm uninstall`;
 short-lived ServiceAccount that may create Secrets and ConfigMaps, but may
 read or delete only that Secret and ConfigMap and update only the ConfigMap,
 and Helm itself never renders or stores the private key. To rotate the CA,
-delete the Secret, run `helm upgrade`, then restart the proxy Deployment and
+delete the Secret, run `helm upgrade`, then restart the proxy StatefulSet and
 the runner Deployments.
 
 To manage the CA yourself instead, for example to keep it across reinstalls,
@@ -552,12 +552,14 @@ oci-accelerator-ca`. The chart never creates, changes or deletes a Secret you
 name. Its hook Job only reads it, before install and every upgrade, to copy the
 certificate into the runners' ConfigMap, so install and upgrade fail until the
 Secret exists. After replacing the Secret, run `helm upgrade` to copy the new
-certificate, then restart the proxy Deployment and the runner Deployments.
+certificate, then restart the proxy StatefulSet and the runner Deployments.
 
 The chart installs:
 
-- A single-replica Deployment running the proxy, and a Service that the Docker
-  daemons use as their HTTPS proxy.
+- A StatefulSet running `ociAccelerator.replicas` proxies (default 1), and a
+  ClusterIP Service that the Docker daemons use as their HTTPS proxy.
+- A headless Service providing stable per-Pod DNS names for the StatefulSet,
+  also used for discovery when peering is enabled.
 - A NetworkPolicy admitting only this release's runner Pods
   (`networkPolicy.enabled`). Enforcement requires a network plugin that
   supports NetworkPolicy.
@@ -565,9 +567,25 @@ The chart installs:
 Each daemon sends all of its HTTPS traffic through the proxy. Only
 `registries` are cached; other hosts are tunnelled through it unchanged. List
 hosts the proxy cannot reach, such as in-cluster registries, in `noProxy`.
-Pulls fail while the proxy is unavailable. Upgrades start the new proxy before
-stopping the old one, but pulls fail if its node is lost until a replacement
-starts. Job containers don't inherit the daemon's proxy settings.
+Pulls fail while the proxy is unavailable. Job containers don't inherit the
+daemon's proxy settings.
+
+Multiple replicas work with or without peering. Without peering, each proxy
+fills its cache independently from origin, even if another proxy has the
+content. The Service distributes connections, not individual image layers;
+long-lived connections can keep using the same replica. Proxies prefer
+spreading across nodes without requiring a separate node for each replica.
+Cache size and resource requests apply **per replica**.
+
+Use at least two replicas to keep a proxy available during StatefulSet rolling
+updates, which replace one Pod at a time without surging. A single replica has
+an availability gap during updates or node replacement. In-flight pulls through
+a terminating proxy can still fail, even with multiple replicas.
+
+**Upgrading from 0.16:** the accelerator changes from a Deployment to a
+StatefulSet, discarding the old workload's cache and potentially interrupting
+pulls. Schedule this one-time transition outside active builds. The proxy
+Service and CA stay the same, so runners need no configuration change or restart.
 
 #### Peering
 
@@ -582,42 +600,36 @@ ociAccelerator:
     enabled: true
 ```
 
-This replaces the single-replica Deployment with a StatefulSet. Runners keep
-using the same proxy Service on port 3128. A separate headless Service provides
-stable per-Pod DNS names on port 7443; the chart seeds each proxy with all the
+Runners keep using the same proxy Service on port 3128. The StatefulSet's
+headless Service also exposes port 7443; the chart seeds each proxy with all the
 replicas' names, including its own, which the accelerator ignores. Seeds are
 DNS names, not snapshots of Pod IPs, so replacements can rediscover each other.
 Pods start in parallel, and peer DNS is published before readiness. No API
-access or discovery sidecar is needed. More than one replica requires peering.
+access or discovery sidecar is needed.
 
 Peers use mutual TLS with the release's existing CA and private key. The
 NetworkPolicy allows port 7443 only between this release's accelerator Pods;
-runner access stays limited to port 3128. Proxies prefer spreading across nodes
-without requiring a separate node for each replica. Keep the existing CA-key
+runner access stays limited to port 3128. Keep the existing CA-key
 placement precautions below for every proxy node.
 
 Each replica has its own `emptyDir` cache and peer state. Both survive container
 restarts, but Pod replacement loses its cache and creates a new peer identity.
-Cache size and resource requests apply **per replica**. Peering is not sharding
-or proactive replication: popular content can be duplicated across caches, and
-losing every proxy Pod loses all cached content. A peer miss or unavailable
-peer falls back to origin; the requesting proxy still obtains upstream registry
-authorization before fetching peer content. Mutable tag responses are not shared.
+Peering is not sharding or proactive replication: popular content can be
+duplicated across caches, and losing every proxy Pod loses all cached content.
+A peer miss or unavailable peer falls back to origin; the requesting proxy
+still obtains upstream registry authorization before fetching peer content.
+Mutable tag responses are not shared.
 
-Use at least two replicas to keep a proxy available during StatefulSet rolling
-updates, which replace one Pod at a time without surging. In-flight pulls through
-a terminating proxy can still fail. Changing the replica count changes the seed
-list and rolls the fleet. Discovery and cache inventory refresh are asynchronous,
-so a new proxy can initially fetch from origin before peer hints are available.
+With peering enabled, changing the replica count changes the seed list and
+rolls the fleet. Discovery and cache inventory refresh are asynchronous, so a
+new proxy can initially fetch from origin before peer hints are available.
 
-Switching peering on or off changes workload kind, discards the old workload's
-cache, and can interrupt pulls during the Helm upgrade. Schedule that transition
-outside active builds; it is not a zero-downtime migration. The proxy Service and
-CA stay the same, so runner Pods need no configuration change or restart. With
-peering enabled, CA rotation instructions referring to the proxy Deployment
-apply to its StatefulSet instead. The 40-second Pod termination grace covers the
-default proxy and peer drains; keep any `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT`
-override below half that budget, leaving time for cleanup.
+Switching peering on or off rolls the existing StatefulSet, replacing each
+Pod's cache and peer identity without changing workload kind, governing Service,
+runner endpoint or CA. Runner Pods need no configuration change or restart.
+The 40-second Pod termination grace covers the default proxy and peer drains;
+keep any `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` override below half that budget,
+leaving time for cleanup.
 
 #### Cache storage and trust
 
@@ -646,7 +658,7 @@ node references, whatever `items` the Pod mounts, so a job that escapes to its
 node can read those Secrets. The private key is mounted only in the proxy, and
 held briefly by the hook Job that generates or copies it.
 Pods read the CA at startup, so after replacing it restart the
-proxy Deployment and the runner Deployments. Other `OCI_ACCELERATOR_*` settings can
+proxy StatefulSet and the runner Deployments. Other `OCI_ACCELERATOR_*` settings can
 be passed through `ociAccelerator.extraEnv`; see the accelerator's
 [deployment guide](https://github.com/buildkite/oci-accelerator/blob/main/docs/deployment.md#configuration).
 
