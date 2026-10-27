@@ -560,9 +560,12 @@ fi
 	--set ociAccelerator.replicas=3 --set ociAccelerator.networkPolicy.enabled=true >/dev/null
 "${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
 # A peer's TCP connection reaches the TLS listener; a runner cannot reach it.
+# Use the Pod IP to isolate policy enforcement from DNS availability. The
+# earlier transfer checks already exercise DNS-seeded peer discovery.
+peer_ip=$("${KUBECTL[@]}" get pod "${ACCEL_NAME}-2" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.status.podIP}')
 "${KUBECTL[@]}" exec -n "${ACCEL_NAMESPACE}" "${ACCEL_NAME}-0" -c oci-accelerator -- \
-	nc -z -w 5 "${ACCEL_NAME}-2.${ACCEL_NAME}-peers" 7443
-if dockerd nc -z -w 5 "${ACCEL_NAME}-2.${ACCEL_NAME}-peers" 7443; then
+	nc -z -w 5 "${peer_ip}" 7443
+if dockerd nc -z -w 5 "${peer_ip}" 7443; then
 	echo "NetworkPolicy admitted a runner to the peer listener" >&2
 	exit 1
 fi
