@@ -491,6 +491,36 @@ container, set `docker.stepImages: false` on an entry. `standard` runners also
 ignore the default. Neither explicit nor default images are pulled per job:
 the daemon reuses cached tags, including across ephemeral agent replacements.
 
+### Docker daemon diagnostics
+
+Set `queues.<name>.docker.debug: true` to start that queue's Docker daemon
+with `--debug`. It defaults to `false`; `defaults.docker.debug` sets the
+inherited value for Docker queues. Changing it rolls that queue's runner Pods.
+
+```yaml
+queues:
+  docker-builds:
+    queue: docker-builds
+    runtime: sysbox
+    maxReplicas: 4
+    docker:
+      debug: true
+```
+
+Read the sidecar's logs with timestamps, using the runner Pod associated with
+the failing agent:
+
+```bash
+kubectl logs -n buildkite-runners <runner-pod> -c dockerd --timestamps
+```
+
+For an unresponsive daemon, request a goroutine dump in the same log without
+restarting it:
+
+```bash
+kubectl exec -n buildkite-runners <runner-pod> -c dockerd -- sh -c 'kill -USR1 "$(cat /var/run/docker.pid)"'
+```
+
 ### Image pull caching
 
 The `dind`, `kata` and `sysbox` Docker daemons can pull images through an

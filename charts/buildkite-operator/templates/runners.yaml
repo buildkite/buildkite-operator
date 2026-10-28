@@ -133,6 +133,9 @@ spec:
           args:
             - dockerd
             - --host=unix:///var/run/docker.sock
+            {{- if $r.docker.debug }}
+            - --debug
+            {{- end }}
             {{- if $r.docker.agentRuntimeImage }}
             # Docker image mounts require the containerd image store.
             - --feature=containerd-snapshotter=true

@@ -158,6 +158,21 @@ sysbox=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.lin
 assert_contains "${sysbox}" "runtimeClassName: sysbox-runc"
 assert_contains "${sysbox}" "hostUsers: false"
 assert_contains "${sysbox}" "- --storage-driver=overlay2"
+
+for runtime in dind kata sysbox; do
+  debug=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime="${runtime}" --set queues.linux.docker.debug=true)
+  assert_contains "${debug}" "- --debug"
+done
+inherited_debug=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox --set defaults.docker.debug=true)
+assert_contains "${inherited_debug}" "- --debug"
+for options in "" "--set defaults.docker.debug=true --set queues.linux.docker.debug=false"; do
+  # shellcheck disable=SC2086 # Exercise the CLI's individual --set arguments.
+  without_debug=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox ${options})
+  if [[ "${without_debug}" == *"- --debug"* ]]; then
+    echo "Docker debug logging must be disabled by default and overridable per queue" >&2
+    exit 1
+  fi
+done
 assert_contains "${sysbox}" 'value: "queue=linux,runtime=sysbox"'
 if [[ "${sysbox}" == *"name: supervisor"* ]]; then
 	echo "Persistent agents rendered the ephemeral-agent supervisor" >&2

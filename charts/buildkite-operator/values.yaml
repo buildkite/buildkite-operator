@@ -67,6 +67,8 @@ defaults:
   # Docker daemon used by the dind, kata and sysbox runtimes. With
   # ephemeralAgent, its resources also bound the agent containers it runs.
   docker:
+    # Verbose daemon logs in the dockerd container; enable per queue when diagnosing Docker.
+    debug: false
     image:
       repository: docker
       tag: 29.7.2-dind

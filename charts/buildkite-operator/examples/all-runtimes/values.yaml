@@ -2,7 +2,7 @@
 # ephemeral agents, scale to zero, tokens from existing Secrets, image pull
 # caching through two independent OCI accelerator replicas, which one entry
 # opts out of, and step images, which another opts out of, and a composed
-# agent runtime. Run
+# agent runtime and Docker daemon debug logging. Run
 # `make helm-examples` after changing this file or the chart to update
 # rendered.yaml and NOTES.txt.
 agentToken:
@@ -29,6 +29,7 @@ queues:
     minReplicas: 0
     maxReplicas: 4
     docker:
+      debug: true
       stepImages: false
 
   docker:
