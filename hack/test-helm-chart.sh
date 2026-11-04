@@ -694,6 +694,11 @@ for deployment in test-per test-eph; do
 	assert_contains "${credentials_runner}" "${copy_command}"
 	assert_contains "${credentials_runner}" $'secretName: "test-buildkite-operator-registry-credentials"\n            items:\n              - key: .dockerconfigjson\n                path: config.json'
 done
+# A long-lived ephemeral runner must see renewed projected credentials before
+# each agent starts, while preserving a writable Docker config for jobs.
+credential_supervisor=$(awk '/^        - name: supervisor$/,/^        - name: deletion-cost$/' <<<"$(document "${credentials}" Deployment test-eph)")
+assert_contains "${credential_supervisor}" $'- name: registry-credentials\n              mountPath: /registry-credentials\n              readOnly: true'
+assert_contains "${credentials}" 'cp /registry-credentials/config.json "$DOCKER_CONFIG/config.json" || return 1'
 rotated_credentials=$(render "${credential_args[@]}" --set-string 'registryCredentials.auths[1].password=rotated')
 if [[ $(grep 'checksum/registry-credentials:' <<<"${credentials_std}") == $(grep 'checksum/registry-credentials:' <<<"${rotated_credentials}") ]]; then
 	echo "Registry credential rotation did not change the Pod template" >&2

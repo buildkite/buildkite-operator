@@ -1,6 +1,6 @@
 # The README's queue examples in one release: every runtime, persistent and
-# ephemeral agents, scale to zero, tokens from existing Secrets, image pull
-# caching through two independent OCI accelerator replicas, which one entry
+# ephemeral agents, scale to zero, tokens and registry credentials from existing
+# Secrets, image pull caching through two independent OCI accelerator replicas, which one entry
 # opts out of, and step images, which another opts out of, and a composed
 # agent runtime. Run
 # `make helm-examples` after changing this file or the chart to update
@@ -12,6 +12,10 @@ agentToken:
 metricsToken:
   existingSecret:
     name: buildkite-metrics-token
+
+registryCredentials:
+  existingSecret:
+    name: runner-registry-credentials
 
 ociAccelerator:
   enabled: true
