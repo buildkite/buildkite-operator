@@ -226,6 +226,14 @@ spec:
               value: unix:///var/run/docker.sock
             - name: DOCKER_CONFIG
               value: {{ $dockerConfig }}
+            {{- with dig "limits" "cpu" "" $r.docker.resources }}
+            - name: RUNNER_CPU_LIMIT_MILLICORES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: dockerd
+                  resource: limits.cpu
+                  divisor: 1m
+            {{- end }}
             {{- if $stepImages }}
             - name: STEP_IMAGE_SCRIPT
               value: {{ $stepImageScript }}
@@ -256,6 +264,11 @@ spec:
               readOnly: true
             - name: docker-config
               mountPath: {{ $dockerConfig }}
+            {{- if $registryCredentials }}
+            - name: registry-credentials
+              mountPath: /registry-credentials
+              readOnly: true
+            {{- end }}
         {{- else }}
         - name: agent
           image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
@@ -303,6 +316,14 @@ spec:
               value: unix:///var/run/docker.sock
             - name: DOCKER_CONFIG
               value: {{ $dockerConfig }}
+            {{- with dig "limits" "cpu" "" $r.docker.resources }}
+            - name: RUNNER_CPU_LIMIT_MILLICORES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: dockerd
+                  resource: limits.cpu
+                  divisor: 1m
+            {{- end }}
             {{- end }}
             {{- if $stepImages }}
             # Selects the step's image or the configured default; see step-image.sh.

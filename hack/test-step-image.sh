@@ -207,6 +207,7 @@ step_containers() { inner ps --all --quiet --filter "label=buildkite.com/job-id=
 # and keeps post-checkout environment changes and cwd through the command.
 start_job image "${STEP_IMAGE}" 'set -x
 test -e /whole-job-image
+test "$(docker inspect --format "{{.HostConfig.CpuQuota}} {{.HostConfig.CpuPeriod}}" "buildkite-step-$BUILDKITE_JOB_ID")" = "0 0"
 test "$CHECKOUT_ADDED" = from-checkout
 test "$CHECKOUT_CHANGED" = after
 test "${CHECKOUT_REMOVED+x}" != x
@@ -228,6 +229,10 @@ in_agent test -e /buildkite/command-image || fail "Image job's command did not f
 [[ "$(in_agent cat /buildkite/post-checkout-image)" == image ]] || fail "Checkout hooks did not run in the image" "${logs}/image.log"
 [[ "$(in_agent cat /buildkite/pre-command-image)" == image ]] || fail "Command hooks did not run in the image" "${logs}/image.log"
 [[ -z "$(step_containers image)" ]] || fail "Image job left its container behind"
+
+start_job cpu "${STEP_IMAGE}" 'test "$(docker inspect --format "{{.HostConfig.CpuQuota}} {{.HostConfig.CpuPeriod}}" "buildkite-step-$BUILDKITE_JOB_ID")" = "150000 100000"' RUNNER_CPU_LIMIT_MILLICORES=1500
+status=$(finish_job cpu)
+[[ "${status}" == 0 ]] || fail "Image job did not inherit the runner CPU limit" "${logs}/cpu.log"
 
 # The actual Compose plugin command hook must see the same exports and cwd:
 # a relative config and checkout mount resolve only from command-dir. Its

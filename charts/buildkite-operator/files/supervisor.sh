@@ -78,6 +78,11 @@ clean_job_state() {
 }
 
 start_agent() {
+	# Kubernetes rotates ECR credentials while this pod remains alive. Refresh between
+	# jobs, before pulling the next runtime, without writing through a Secret mount.
+	if [ -f /registry-credentials/config.json ]; then
+		cp /registry-credentials/config.json "$DOCKER_CONFIG/config.json" || return 1
+	fi
 	for image in "$AGENT_IMAGE" "${AGENT_RUNTIME_IMAGE:-}"; do
 		[ -n "$image" ] || continue
 		if ! docker image inspect "$image" >/dev/null 2>&1; then
@@ -96,6 +101,12 @@ start_agent() {
 			--env "BUILDKITE_BOOTSTRAP_SCRIPT_PATH=/bin/sh $STEP_IMAGE_SCRIPT" \
 			--env BUILDKITE_JOB_CONTEXT_DIR=/buildkite/job-context \
 			--env DEFAULT_STEP_IMAGE
+	fi
+
+	if [ -n "${RUNNER_CPU_LIMIT_MILLICORES:-}" ]; then
+		set -- "$@" --cpu-period 100000 \
+			--cpu-quota "$((RUNNER_CPU_LIMIT_MILLICORES < 10 ? 1000 : RUNNER_CPU_LIMIT_MILLICORES * 100))" \
+			--env RUNNER_CPU_LIMIT_MILLICORES
 	fi
 
 	image="$AGENT_IMAGE"

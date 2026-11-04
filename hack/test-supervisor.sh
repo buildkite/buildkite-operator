@@ -89,6 +89,8 @@ fi
 	{ echo "Agent does not run jobs through the step-image script" >&2; exit 67; }
 [ "$DEFAULT_STEP_IMAGE" = test-step:default ] ||
 	{ echo "Agent did not inherit the default command image" >&2; exit 68; }
+[ "$RUNNER_CPU_LIMIT_MILLICORES" = 1500 ] ||
+	{ echo "Agent did not receive the step-image CPU limit" >&2; exit 72; }
 touch "$DOCKER_CONFIG/seen-$BUILDKITE_AGENT_NAME"
 mkdir -p /buildkite/builds
 touch "/buildkite/builds/$BUILDKITE_AGENT_NAME"
@@ -130,6 +132,7 @@ start_supervisor() {
 		--env "AGENT_IMAGE=$1" --env BUILDKITE_AGENT_TOKEN=unused \
 		--env "AGENT_RUNTIME_IMAGE=${TEST_AGENT_RUNTIME_IMAGE:-}" \
 		--env AGENT_TAGS=queue=test --env POD_NAME=runner-pod \
+		--env RUNNER_CPU_LIMIT_MILLICORES=1500 \
 		--env TERMINATION_GRACE_PERIOD_SECONDS=20 \
 		--env "STEP_IMAGE_SCRIPT=${STEP_IMAGE_SCRIPT}" \
 		--env DEFAULT_STEP_IMAGE=test-step:default \
@@ -139,6 +142,10 @@ start_supervisor test-agent:1
 
 wait_for "first agent" agent_running
 first=$(agent_name)
+[[ "$(inner inspect --format '{{.HostConfig.CpuQuota}} {{.HostConfig.CpuPeriod}}' buildkite-agent)" == "150000 100000" ]] || {
+	echo "Agent did not inherit the runner CPU limit" >&2
+	exit 1
+}
 [[ "${first}" == runner-pod-???? ]]
 wait_for "first agent's runtime checks" docker exec "${ID}-dockerd" test -e "${DOCKER_CONFIG_DIR}/seen-${first}"
 

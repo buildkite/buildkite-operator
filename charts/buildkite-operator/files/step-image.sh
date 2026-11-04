@@ -73,6 +73,11 @@ for name in $names; do
 done
 unset IFS
 
+if [ -n "${RUNNER_CPU_LIMIT_MILLICORES:-}" ]; then
+	set -- "$@" --cpu-period 100000 \
+		--cpu-quota "$((RUNNER_CPU_LIMIT_MILLICORES < 10 ? 1000 : RUNNER_CPU_LIMIT_MILLICORES * 100))"
+fi
+
 # The container gets the agent binary's directory, which the bootstrap
 # appends to PATH, and the same Docker daemon and client configuration as the
 # agent. Its stop signal is the one the bootstrap handles, not the image's.
