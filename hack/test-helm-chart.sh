@@ -212,6 +212,21 @@ ephemeral_kata=$(render --set-string agentToken.value="${TOKEN}" --set-string qu
 assert_contains "${ephemeral_kata}" "runtimeClassName: kata-qemu-runtime-rs"
 assert_contains "${ephemeral_kata}" "- name: supervisor"
 
+# Clearing inherited Docker limits must render without exposing a CPU limit,
+# for both the persistent agent and the ephemeral supervisor.
+for ephemeral_agent in false true; do
+	cpu_args=(--set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox \
+		--set queues.linux.ephemeralAgent="${ephemeral_agent}")
+	cpu_limited=$(document "$(render "${cpu_args[@]}" --set-string queues.linux.docker.resources.limits.cpu=1500m)" Deployment test-linux)
+	assert_contains "${cpu_limited}" $'- name: RUNNER_CPU_LIMIT_MILLICORES\n              valueFrom:\n                resourceFieldRef:\n                  containerName: dockerd\n                  resource: limits.cpu\n                  divisor: 1m'
+	cpu_unlimited=$(document "$(render "${cpu_args[@]}" --set queues.linux.docker.resources.limits=null)" Deployment test-linux)
+	assert_contains "${cpu_unlimited}" 'limits: null'
+	if [[ "${cpu_unlimited}" == *'RUNNER_CPU_LIMIT_MILLICORES'* ]]; then
+		echo "Runner with cleared Docker limits exposed a CPU limit" >&2
+		exit 1
+	fi
+done
+
 # Runtime composition is only meaningful for supervised Docker agents. Keep
 # the source image separate and select the image-mount-capable store explicitly.
 runtime_args=(--set-string agentToken.value="${TOKEN}" --set queues.linux.ephemeralAgent=true \
