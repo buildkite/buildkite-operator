@@ -67,7 +67,7 @@ fi
 assert_contains "${missing_auth}" "keda.sh/v1alpha1/TriggerAuthentication API is not available"
 
 direct=$(render --set-string agentToken.value="${TOKEN}")
-assert_contains "${direct}" "# Source: buildkite-operator/templates/runners.yaml"
+assert_contains "${direct}" "# Source: buildkite-operator-chart/templates/runners.yaml"
 assert_contains "${direct}" "kind: Deployment"
 assert_contains "${direct}" "kind: ScaledObject"
 assert_contains "${direct}" "kind: TriggerAuthentication"

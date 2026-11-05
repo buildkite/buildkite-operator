@@ -1,5 +1,5 @@
 ---
-# Source: buildkite-operator/templates/deletion-cost.yaml
+# Source: buildkite-operator-chart/templates/deletion-cost.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -9,11 +9,11 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
 automountServiceAccountToken: false
 
 ---
-# Source: buildkite-operator/templates/agent-token-secret.yaml
+# Source: buildkite-operator-chart/templates/agent-token-secret.yaml
 apiVersion: v1
 kind: Secret
 metadata:
@@ -23,14 +23,14 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
 type: Opaque
 stringData:
   token: "example-agent-token"
   authorization: "Token example-agent-token"
 
 ---
-# Source: buildkite-operator/templates/deletion-cost.yaml
+# Source: buildkite-operator-chart/templates/deletion-cost.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -40,7 +40,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
 data:
   deletion_cost.py: |-
     """Prefer removing idle agents during scale-in (best effort, not a drain).
@@ -133,7 +133,7 @@ data:
     
 
 ---
-# Source: buildkite-operator/templates/deletion-cost.yaml
+# Source: buildkite-operator-chart/templates/deletion-cost.yaml
 # Deployment Pods have generated names, so this Role cannot be limited to each
 # Pod patching only itself; deletionCost.admissionPolicy adds that limit.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -145,14 +145,14 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
 rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["patch"]
 
 ---
-# Source: buildkite-operator/templates/deletion-cost.yaml
+# Source: buildkite-operator-chart/templates/deletion-cost.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -162,7 +162,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -173,7 +173,7 @@ subjects:
     namespace: buildkite
 
 ---
-# Source: buildkite-operator/templates/runners.yaml
+# Source: buildkite-operator-chart/templates/runners.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -183,7 +183,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "linux"
 spec:
@@ -204,7 +204,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-0.18.0
+        helm.sh/chart: buildkite-operator-chart-0.19.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "linux"
       annotations:
@@ -314,7 +314,7 @@ spec:
                       path: ca.crt
 
 ---
-# Source: buildkite-operator/templates/scaling.yaml
+# Source: buildkite-operator-chart/templates/scaling.yaml
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -324,7 +324,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
     buildkite.com/runner-pool: "linux"
 spec:
   scaleTargetRef:
@@ -376,7 +376,7 @@ spec:
         name: buildkite-buildkite-operator-metrics
 
 ---
-# Source: buildkite-operator/templates/scaling.yaml
+# Source: buildkite-operator-chart/templates/scaling.yaml
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
 metadata:
@@ -386,7 +386,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
 spec:
   secretTargetRef:
     - parameter: apiKey
@@ -394,7 +394,7 @@ spec:
       key: authorization
 
 ---
-# Source: buildkite-operator/templates/deletion-cost.yaml
+# Source: buildkite-operator-chart/templates/deletion-cost.yaml
 # Every runner Pod's sidecar holds this ServiceAccount's token, so without this
 # policy anyone with one (such as a job that escapes to its node) could change
 # any Pod in the namespace, including its image. The kubelet binds each
@@ -409,7 +409,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -447,7 +447,7 @@ spec:
       message: The deletion-cost sidecar may only change the pod-deletion-cost and safe-to-evict annotations
 
 ---
-# Source: buildkite-operator/templates/deletion-cost.yaml
+# Source: buildkite-operator-chart/templates/deletion-cost.yaml
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
@@ -456,7 +456,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-0.18.0
+    helm.sh/chart: buildkite-operator-chart-0.19.0
 spec:
   policyName: buildkite-buildkite-buildkite-operator-deletion-cost
   validationActions: [Deny]
