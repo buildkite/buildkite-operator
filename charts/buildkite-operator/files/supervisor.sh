@@ -98,6 +98,12 @@ start_agent() {
 			--env DEFAULT_STEP_IMAGE
 	fi
 
+	if [ -n "${RUNNER_CPU_LIMIT_MILLICORES:-}" ]; then
+		set -- "$@" --cpu-period 100000 \
+			--cpu-quota "$((RUNNER_CPU_LIMIT_MILLICORES < 10 ? 1000 : RUNNER_CPU_LIMIT_MILLICORES * 100))" \
+			--env RUNNER_CPU_LIMIT_MILLICORES
+	fi
+
 	image="$AGENT_IMAGE"
 	agent_binary=/usr/local/bin/buildkite-agent
 	agent_command="$agent_binary"
