@@ -226,7 +226,7 @@ spec:
               value: unix:///var/run/docker.sock
             - name: DOCKER_CONFIG
               value: {{ $dockerConfig }}
-            {{- with dig "limits" "cpu" "" $r.docker.resources }}
+            {{- with ($r.docker.resources.limits | default dict).cpu }}
             - name: RUNNER_CPU_LIMIT_MILLICORES
               valueFrom:
                 resourceFieldRef:
@@ -311,7 +311,7 @@ spec:
               value: unix:///var/run/docker.sock
             - name: DOCKER_CONFIG
               value: {{ $dockerConfig }}
-            {{- with dig "limits" "cpu" "" $r.docker.resources }}
+            {{- with ($r.docker.resources.limits | default dict).cpu }}
             - name: RUNNER_CPU_LIMIT_MILLICORES
               valueFrom:
                 resourceFieldRef:
