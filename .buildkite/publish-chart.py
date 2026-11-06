@@ -82,6 +82,9 @@ def publish():
         root = Path(directory)
         env = dict(os.environ, HELM_REGISTRY_CONFIG=str(root / "registry.json"))
 
+        # Keep Helm from saving credentials in the agent's native credential store.
+        (root / "registry.json").write_text(json.dumps({"auths": {REGISTRY: {}}}))
+
         # Sign Helm in without putting the password in command arguments.
         subprocess.run(
             ["helm", "registry", "login", REGISTRY, "--username", username, "--password-stdin"],

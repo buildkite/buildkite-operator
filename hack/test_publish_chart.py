@@ -1,10 +1,14 @@
+import base64
 import contextlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
+import threading
 import unittest
 from unittest import mock
 import urllib.error
@@ -93,6 +97,56 @@ class PublishChartTest(unittest.TestCase):
         self.assertNotIn("test-private-password", self.output.getvalue())
         self.assertTrue(self.credentials)
         self.assertTrue(all(not path.parent.exists() for path in self.credentials))
+
+    def test_login_keeps_credentials_out_of_native_helpers(self):
+        class Registry(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "helper-called"
+            for name in ("pass", "docker-credential-pass", "docker-credential-secretservice"):
+                helper = root / name
+                helper.write_text('#!/bin/sh\nprintf called > "$HELPER_OUTPUT"\nexit 1\n')
+                helper.chmod(0o700)
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Registry)
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                def command(args, **kwargs):
+                    if args[1:3] != ["registry", "login"]:
+                        return self.command(args, **kwargs)
+                    config = Path(kwargs["env"]["HELM_REGISTRY_CONFIG"])
+                    self.credentials.append(config)
+                    env = dict(kwargs["env"], PATH=f"{root}:{os.environ['PATH']}",
+                               DOCKER_CONFIG=str(root / "docker"), HELPER_OUTPUT=str(marker))
+                    result = REAL_RUN(
+                        [*args[:3], f"127.0.0.1:{server.server_port}", *args[4:], "--plain-http"],
+                        input=kwargs["input"], text=True, capture_output=True, env=env,
+                    )
+                    self.assertFalse(marker.exists(), "Helm invoked a persistent credential helper")
+                    result.check_returncode()
+                    auth = json.loads(config.read_text())["auths"][f"127.0.0.1:{server.server_port}"]["auth"]
+                    self.assertEqual(
+                        base64.b64decode(auth).decode(), "publisher:test-private-password",
+                    )
+                    return result
+
+                with mock.patch.object(publish_chart.subprocess, "run", side_effect=command):
+                    publish_chart.publish()
+                self.assertTrue(all(not path.parent.exists() for path in self.credentials))
+                self.assertFalse(marker.exists())
+            finally:
+                server.shutdown()
+                server.server_close()
+                worker.join()
 
     def test_reject_invalid_tags_and_mismatched_version_before_reading_secrets(self):
         for tag in ("", "v0.18.0", "chart-v01.2.3", "chart-v0.18.0-rc.1", "chart-v999.0.0"):
