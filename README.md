@@ -760,7 +760,7 @@ Remove the pin once CI provides that kernel capability.
 
 ## Chart releases
 
-Buildkite publishes tagged chart releases to the private Docker Hub repository
+Buildkite publishes tagged chart releases to the public Docker Hub repository
 `buildkite/buildkite-operator-chart`, using the OCI registry at
 `registry-1.docker.io`. No GitHub Actions workflow is required. Publication waits
 for all pipeline checks on the tagged commit to pass, including the chart E2E
@@ -770,10 +770,9 @@ test.
 
 - Enable **Build tags** in the Buildkite pipeline's GitHub settings. Ensure
   branch filters and pipeline-level conditionals allow tag builds.
-- Create `buildkite/buildkite-operator-chart` in Docker Hub with **Private** visibility
-  before the first push. Do not rely on automatic repository creation for
-  privacy. Grant the appropriate teams read access. Use a dedicated chart
-  repository, not a container-image repository with overlapping version tags.
+- Use the public Docker Hub repository `buildkite/buildkite-operator-chart`.
+  Keep chart releases in this dedicated repository, not a container-image
+  repository with overlapping version tags.
 - Create a Buildkite Secret named `DOCKERHUB_TOKEN` in the
   agent cluster. Use a Docker Hub organization access token for `buildkite`
   with **Read & Write** access to `buildkite-operator-chart`, without delete
@@ -814,17 +813,12 @@ will refuse to overwrite it: inspect the package and digest before proceeding,
 and publish a new chart version if a correction is needed. Do not delete a
 release just to make a retry succeed.
 
-### Installing a private release
+### Installing a release
 
-Authenticate with a Docker Hub personal access token with **Read-only**
-permission and an account with access to the repository. Supply it through your
-secret manager as `DOCKERHUB_TOKEN`, with its owner's Docker ID as
-`DOCKERHUB_USERNAME`:
+The chart repository is public; no Docker Hub credentials or registry login
+are required to install a release:
 
 ```bash
-printf '%s' "$DOCKERHUB_TOKEN" | helm registry login registry-1.docker.io \
-  --username "$DOCKERHUB_USERNAME" --password-stdin
-
 helm upgrade --install buildkite-operator \
   oci://registry-1.docker.io/buildkite/buildkite-operator-chart \
   --version 0.19.0 \
@@ -834,9 +828,9 @@ helm upgrade --install buildkite-operator \
 
 The values file must provide the queue configuration and agent token Secret
 references described in [Quickstart](#quickstart), and KEDA must already be
-installed. Registry login authorizes downloading the chart, not pulling its
-container images. For digest-pinned installs, replace the chart URL with the
-`oci://…@sha256:…` reference from the release log and omit `--version`.
+installed. Any private container images used by your configuration still need
+their own pull credentials. For digest-pinned installs, replace the chart URL
+with the `oci://…@sha256:…` reference from the release log and omit `--version`.
 
 Run `python3 hack/test_publish_chart.py` to test release handling locally. It
 uses real Helm chart packaging with simulated registry and credential services;
