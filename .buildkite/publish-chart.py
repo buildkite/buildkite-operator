@@ -39,11 +39,10 @@ def publish():
     if chart_version != version:
         raise ValueError(f"Tag version {version} does not match Chart.yaml version {chart_version}")
 
-    # Read the Docker Hub publishing credentials from Buildkite Secrets.
-    username = subprocess.run(
-        ["buildkite-agent", "secret", "get", "DOCKERHUB_USERNAME"],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
+    # Sign in as the Buildkite organization on Docker Hub.
+    username = "buildkite"
+
+    # Read the Docker Hub organization token from Buildkite Secrets.
     password = subprocess.run(
         ["buildkite-agent", "secret", "get", "DOCKERHUB_TOKEN"],
         check=True, capture_output=True, text=True,

@@ -46,9 +46,10 @@ class PublishChartTest(unittest.TestCase):
     def command(self, args, **kwargs):
         if args[0] == "buildkite-agent":
             self.secret_reads.append(args[-1])
-            value = {"DOCKERHUB_USERNAME": "publisher", "DOCKERHUB_TOKEN": "test-private-password"}[args[-1]]
+            value = {"DOCKERHUB_TOKEN": "test-private-password"}[args[-1]]
             return subprocess.CompletedProcess(args, 0, stdout=value + "\n")
         if args[1:3] == ["registry", "login"]:
+            self.assertEqual(args[args.index("--username") + 1], "buildkite")
             self.assertEqual(kwargs["input"], "test-private-password")
             self.assertNotIn("test-private-password", " ".join(args))
             config = Path(kwargs["env"]["HELM_REGISTRY_CONFIG"])
@@ -75,7 +76,7 @@ class PublishChartTest(unittest.TestCase):
                              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:buildkite/buildkite-operator-chart:pull,push")
             self.assertEqual(
                 request.get_header("Authorization"),
-                "Basic cHVibGlzaGVyOnRlc3QtcHJpdmF0ZS1wYXNzd29yZA==",
+                "Basic " + base64.b64encode(b"buildkite:test-private-password").decode(),
             )
             status = self.token_status
             result = {"token": "test-registry-token"}
@@ -92,6 +93,7 @@ class PublishChartTest(unittest.TestCase):
 
     def test_publish_and_verify_real_chart_package(self):
         publish_chart.publish()
+        self.assertEqual(self.secret_reads, ["DOCKERHUB_TOKEN"])
         self.assertEqual(len(self.registry), 1)
         self.assertIn(f"Verified oci://registry-1.docker.io/buildkite/buildkite-operator-chart@{DIGEST}", self.output.getvalue())
         self.assertNotIn("test-private-password", self.output.getvalue())
@@ -135,7 +137,7 @@ class PublishChartTest(unittest.TestCase):
                     result.check_returncode()
                     auth = json.loads(config.read_text())["auths"][f"127.0.0.1:{server.server_port}"]["auth"]
                     self.assertEqual(
-                        base64.b64decode(auth).decode(), "publisher:test-private-password",
+                        base64.b64decode(auth).decode(), "buildkite:test-private-password",
                     )
                     return result
 

@@ -772,13 +772,13 @@ test.
   branch filters and pipeline-level conditionals allow tag builds.
 - Create `buildkite/buildkite-operator-chart` in Docker Hub with **Private** visibility
   before the first push. Do not rely on automatic repository creation for
-  privacy. Grant the publishing account read/write access and the appropriate
-  teams read access. Use a dedicated chart repository, not a container-image
-  repository with overlapping version tags.
-- Create Buildkite Secrets named `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` in
-  the agent cluster. Use the publishing account's Docker ID and a Docker Hub
-  personal access token with **Read & Write** permission, without delete access.
-  Do not put the token in pipeline YAML or repository files.
+  privacy. Grant the appropriate teams read access. Use a dedicated chart
+  repository, not a container-image repository with overlapping version tags.
+- Create a Buildkite Secret named `DOCKERHUB_TOKEN` in the
+  agent cluster. Use a Docker Hub organization access token for `buildkite`
+  with **Read & Write** access to `buildkite-operator-chart`, without delete
+  access. The publisher uses the fixed username `buildkite`; no username secret
+  is needed. Do not put the token in pipeline YAML or repository files.
 - Restrict secrets to this pipeline and trusted build contexts using
   [agent access policies](https://buildkite.com/docs/pipelines/security/secrets/buildkite-secrets/access-policies).
   These policies support pipeline and branch claims, not step-key or tag claims;
