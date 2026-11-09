@@ -19,44 +19,50 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 {{- end }}
 
 {{/*
-Validates every queue entry and returns them as a JSON list of
+Validates every runner pool entry and returns them as a JSON list of
 {name, resourceName, settings}, sorted by name. settings is the entry merged
 over .Values.defaults, with the entry taking precedence.
+
+queues was renamed to runnerPools. Without the check below, upgrading with old
+values would silently render no runner pools and delete every runner.
 */}}
-{{- define "buildkite-operator.queueEntries" -}}
+{{- define "buildkite-operator.runnerPoolEntries" -}}
 {{- $root := . }}
+{{- if hasKey .Values "queues" }}
+{{- fail "queues was renamed to runnerPools in chart 0.20.0; move its entries under runnerPools" }}
+{{- end }}
 {{- $entries := list }}
 {{- $byQueue := dict }}
-{{- range $name := keys (.Values.queues | default dict) | sortAlpha }}
-{{- $entry := get $root.Values.queues $name }}
+{{- range $name := keys (.Values.runnerPools | default dict) | sortAlpha }}
+{{- $entry := get $root.Values.runnerPools $name }}
 {{- if kindIs "invalid" $entry }}
 {{- continue }}
 {{- end }}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name) }}
-{{- fail (printf "queues.%s: names must be lowercase letters, digits and hyphens, starting and ending with a letter or digit" $name) }}
+{{- fail (printf "runnerPools.%s: names must be lowercase letters, digits and hyphens, starting and ending with a letter or digit" $name) }}
 {{- end }}
 {{- $settings := mergeOverwrite (deepCopy ($root.Values.defaults | default dict)) (deepCopy $entry) }}
 {{- $resourceName := printf "%s-%s" $root.Release.Name $name }}
 {{- if gt (len $resourceName) 50 }}
-{{- fail (printf "queues.%s: release and queue names combined (%s) must be at most 50 characters" $name $resourceName) }}
+{{- fail (printf "runnerPools.%s: release and runner pool names combined (%s) must be at most 50 characters" $name $resourceName) }}
 {{- end }}
 {{- $queue := $settings.queue | default "" }}
 {{- if not $queue }}
-{{- fail (printf "queues.%s.queue is required" $name) }}
+{{- fail (printf "runnerPools.%s.queue is required" $name) }}
 {{- end }}
 {{- if hasKey $byQueue $queue }}
-{{- fail (printf "queues.%s and queues.%s both use Buildkite queue %q; each queue may appear only once" (get $byQueue $queue) $name $queue) }}
+{{- fail (printf "runnerPools.%s and runnerPools.%s both use Buildkite queue %q; each queue may appear only once" (get $byQueue $queue) $name $queue) }}
 {{- end }}
 {{- $_ := set $byQueue $queue $name }}
 {{- $maxReplicas := int ($settings.maxReplicas | default 0) }}
 {{- if lt $maxReplicas 1 }}
-{{- fail (printf "queues.%s.maxReplicas must be at least 1" $name) }}
+{{- fail (printf "runnerPools.%s.maxReplicas must be at least 1" $name) }}
 {{- end }}
 {{- if gt (int $settings.minReplicas) $maxReplicas }}
-{{- fail (printf "queues.%s.minReplicas must be less than or equal to maxReplicas" $name) }}
+{{- fail (printf "runnerPools.%s.minReplicas must be less than or equal to maxReplicas" $name) }}
 {{- end }}
 {{- if and $settings.docker.agentRuntimeImage (not (and $settings.ephemeralAgent (has $settings.runtime (list "dind" "kata" "sysbox")))) }}
-{{- fail (printf "queues.%s.docker.agentRuntimeImage requires ephemeralAgent and a dind, kata or sysbox runtime" $name) }}
+{{- fail (printf "runnerPools.%s.docker.agentRuntimeImage requires ephemeralAgent and a dind, kata or sysbox runtime" $name) }}
 {{- end }}
 {{- $entries = append $entries (dict "name" $name "resourceName" $resourceName "settings" $settings) }}
 {{- end }}
@@ -88,7 +94,7 @@ over .Values.defaults, with the entry taking precedence.
 {{- end }}
 
 {{/*
-Returns "true" when a queue entry's Docker daemon pulls through the OCI
+Returns "true" when a runner pool's Docker daemon pulls through the OCI
 accelerator. Called with (dict "root" $ "settings" <entry settings>).
 */}}
 {{- define "buildkite-operator.usesOciAccelerator" -}}
@@ -98,12 +104,12 @@ true
 {{- end }}
 
 {{/*
-Returns "true" when any queue entry pulls through the OCI accelerator, so the
+Returns "true" when any runner pool pulls through the OCI accelerator, so the
 release installs it.
 */}}
 {{- define "buildkite-operator.ociAcceleratorUsed" -}}
 {{- $root := . }}
-{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- range $entry := include "buildkite-operator.runnerPoolEntries" . | fromJsonArray }}
 {{- if include "buildkite-operator.usesOciAccelerator" (dict "root" $root "settings" $entry.settings) }}
 {{- print "true" }}
 {{- break }}

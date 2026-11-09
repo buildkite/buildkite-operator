@@ -15,9 +15,9 @@ STEP_IMAGE="step-image-test:job"
 rendered=$("${HELM}" template test "${CHART_DIR}" \
 	--api-versions keda.sh/v1alpha1/ScaledObject \
 	--api-versions keda.sh/v1alpha1/TriggerAuthentication \
-	--set-string queues.test.queue=test \
-	--set queues.test.maxReplicas=1 \
-	--set-string queues.test.runtime=dind \
+	--set-string runnerPools.test.queue=test \
+	--set runnerPools.test.maxReplicas=1 \
+	--set-string runnerPools.test.runtime=dind \
 	--set-string agentToken.value=unused)
 image_for() { grep -A1 -- "- name: $1\$" <<<"${rendered}" | sed -n 's/^ *image: "\(.*\)"$/\1/p'; }
 DIND_IMAGE=$(image_for dockerd)

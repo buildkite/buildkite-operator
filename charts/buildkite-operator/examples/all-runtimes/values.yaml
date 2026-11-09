@@ -1,10 +1,9 @@
-# The README's queue examples in one release: every runtime, persistent and
-# ephemeral agents, scale to zero, tokens from existing Secrets, image pull
-# caching through two independent OCI accelerator replicas, which one entry
+# The README's runner pool examples in one release: every runtime, persistent
+# and ephemeral agents, scale to zero, tokens from existing Secrets, image pull
+# caching through two independent OCI accelerator replicas, which one pool
 # opts out of, and step images, which another opts out of, and a composed
-# agent runtime. Run
-# `make helm-examples` after changing this file or the chart to update
-# rendered.yaml and NOTES.txt.
+# agent runtime. Run `make helm-examples` after changing this file or the
+# chart to update rendered.yaml and NOTES.txt.
 agentToken:
   existingSecret:
     name: buildkite-agent-token
@@ -17,7 +16,7 @@ ociAccelerator:
   enabled: true
   replicas: 2
 
-queues:
+runnerPools:
   linux:
     queue: linux
     ephemeralAgent: true

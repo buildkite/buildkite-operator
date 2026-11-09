@@ -1,10 +1,10 @@
-{{- $entries := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- $entries := include "buildkite-operator.runnerPoolEntries" . | fromJsonArray }}
 {{- if $entries }}
 {{- if and .Values.agentToken.value .Values.agentToken.existingSecret.name }}
 {{- fail "set only one of agentToken.value or agentToken.existingSecret.name" }}
 {{- end }}
 {{- if and (not .Values.agentToken.value) (not .Values.agentToken.existingSecret.name) }}
-{{- fail "agentToken.value or agentToken.existingSecret.name is required when queues are configured" }}
+{{- fail "agentToken.value or agentToken.existingSecret.name is required when runner pools are configured" }}
 {{- end }}
 {{- if and .Values.metricsToken.value .Values.metricsToken.existingSecret.name }}
 {{- fail "set only one of metricsToken.value or metricsToken.existingSecret.name" }}

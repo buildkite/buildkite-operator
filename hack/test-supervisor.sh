@@ -12,10 +12,10 @@ SCRIPT="${CHART_DIR}/files/supervisor.sh"
 rendered=$("${HELM}" template test "${CHART_DIR}" \
 	--api-versions keda.sh/v1alpha1/ScaledObject \
 	--api-versions keda.sh/v1alpha1/TriggerAuthentication \
-	--set-string queues.test.queue=test \
-	--set queues.test.maxReplicas=1 \
-	--set-string queues.test.runtime=sysbox \
-	--set queues.test.ephemeralAgent=true \
+	--set-string runnerPools.test.queue=test \
+	--set runnerPools.test.maxReplicas=1 \
+	--set-string runnerPools.test.runtime=sysbox \
+	--set runnerPools.test.ephemeralAgent=true \
 	--set-string defaults.docker.defaultStepImage=test-step:default \
 	--set-string agentToken.value=unused)
 image_for() { grep -A1 -- "- name: $1\$" <<<"${rendered}" | sed -n 's/^ *image: "\(.*\)"$/\1/p'; }

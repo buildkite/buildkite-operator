@@ -1,4 +1,4 @@
-Buildkite runners are installed in buildkite. KEDA scales each queue from Buildkite queue metrics:
+Buildkite runners are installed in buildkite. KEDA scales each runner pool from Buildkite queue metrics:
 
   docker: queue docker, dind, persistent agents, 1-4 runners (Deployment buildkite-docker)
   docker-builds: queue docker-builds, sysbox, persistent agents, 0-4 runners (Deployment buildkite-docker-builds)
@@ -13,7 +13,7 @@ If runner Pods don't start, check the ReplicaSet events for "RuntimeClass not fo
 
 dind and kata runner Pods include a privileged Docker daemon, so the namespace must allow privileged Pods (Pod Security Admission level "privileged"). If runner Pods don't appear, check the ReplicaSet events for "violates PodSecurity".
 
-WARNING: dind needs nothing installed, but its privileged Docker daemon has host-level access to its node. It is not isolation: only run trusted jobs on dind queues.
+WARNING: dind needs nothing installed, but its privileged Docker daemon has host-level access to its node. It is not isolation: only run trusted jobs on dind runner pools.
 
 Docker daemons for docker, docker-builds pull through the OCI accelerator, caching registry-1.docker.io, ghcr.io, public.ecr.aws:
 
@@ -23,4 +23,4 @@ Proxy replicas: 2. Each StatefulSet Pod has an ephemeral cache; replacing all Po
 
 Peering is disabled, so each proxy fills its cache independently from origin, even if another proxy has the content.
 
-The chart generated the proxy's CA in Secret buildkite-buildkite-operator-oci-accelerator-ca, and runners trust its certificate in ConfigMap buildkite-buildkite-operator-oci-accelerator-ca-cert. Both are deleted on uninstall. To rotate the CA, delete the Secret and run helm upgrade, then restart the proxy StatefulSet and those queues' Deployments.
+The chart generated the proxy's CA in Secret buildkite-buildkite-operator-oci-accelerator-ca, and runners trust its certificate in ConfigMap buildkite-buildkite-operator-oci-accelerator-ca-cert. Both are deleted on uninstall. To rotate the CA, delete the Secret and run helm upgrade, then restart the proxy StatefulSet and those runner pools' Deployments.
