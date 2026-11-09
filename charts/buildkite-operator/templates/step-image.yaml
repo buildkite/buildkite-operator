@@ -1,5 +1,5 @@
 {{- $stepImages := false }}
-{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- range $entry := include "buildkite-operator.runnerPoolEntries" . | fromJsonArray }}
 {{- if and (has $entry.settings.runtime (list "dind" "kata" "sysbox")) $entry.settings.docker.stepImages }}
 {{- $stepImages = true }}
 {{- end }}

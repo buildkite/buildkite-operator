@@ -14,8 +14,8 @@ render() {
 	"${HELM}" template test "${CHART_DIR}" \
 		--namespace buildkite-runners \
 		"${KEDA_API_VERSIONS[@]}" \
-		--set-string queues.linux.queue=linux \
-		--set queues.linux.maxReplicas=4 \
+		--set-string runnerPools.linux.queue=linux \
+		--set runnerPools.linux.maxReplicas=4 \
 		"$@"
 }
 
@@ -48,8 +48,8 @@ document() {
 }
 
 if missing_keda=$("${HELM}" template test "${CHART_DIR}" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=4 \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=4 \
 	--set-string agentToken.value="${TOKEN}" 2>&1); then
 	echo "Expected rendering without KEDA APIs to fail" >&2
 	exit 1
@@ -58,8 +58,8 @@ assert_contains "${missing_keda}" "KEDA is required"
 
 if missing_auth=$("${HELM}" template test "${CHART_DIR}" \
 	--api-versions keda.sh/v1alpha1/ScaledObject \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=4 \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=4 \
 	--set-string agentToken.value="${TOKEN}" 2>&1); then
 	echo "Expected rendering without the TriggerAuthentication API to fail" >&2
 	exit 1
@@ -146,7 +146,7 @@ if [[ "${existing}" == *"kind: Secret"* ]]; then
 	exit 1
 fi
 
-kata=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=kata)
+kata=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=kata)
 assert_contains "${kata}" "runtimeClassName: kata-qemu-runtime-rs"
 assert_contains "${kata}" "privileged: true"
 assert_contains "${kata}" 'value: "queue=linux,runtime=kata"'
@@ -154,7 +154,7 @@ assert_contains "${kata}" "- name: deletion-cost-code"
 assert_contains "${kata}" "- name: docker-data"
 assert_contains "${kata}" 'cluster-autoscaler.kubernetes.io/safe-to-evict: "false"'
 
-sysbox=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox)
+sysbox=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=sysbox)
 assert_contains "${sysbox}" "runtimeClassName: sysbox-runc"
 assert_contains "${sysbox}" "hostUsers: false"
 assert_contains "${sysbox}" "- --storage-driver=overlay2"
@@ -166,7 +166,7 @@ fi
 
 # dind runs the same Docker daemon sidecar, privileged and without a
 # RuntimeClass, node selector or toleration, so it schedules on any node.
-dind=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind)
+dind=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=dind)
 dind_runner=$(document "${dind}" Deployment test-linux)
 assert_contains "${dind_runner}" "- name: dockerd"
 assert_contains "${dind_runner}" $'securityContext:\n            privileged: true'
@@ -181,7 +181,7 @@ for unexpected in "runtimeClassName:" "nodeSelector:" "tolerations:" "hostUsers:
 		exit 1
 	fi
 done
-ephemeral_dind=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind --set queues.linux.ephemeralAgent=true)
+ephemeral_dind=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=dind --set runnerPools.linux.ephemeralAgent=true)
 ephemeral_dind_runner=$(document "${ephemeral_dind}" Deployment test-linux)
 assert_contains "${ephemeral_dind_runner}" "- name: supervisor"
 assert_contains "${ephemeral_dind_runner}" "- name: dockerd"
@@ -195,7 +195,7 @@ fi
 	exit 1
 }
 
-ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox --set queues.linux.ephemeralAgent=true)
+ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=sysbox --set runnerPools.linux.ephemeralAgent=true)
 assert_contains "${ephemeral}" "- name: supervisor"
 assert_contains "${ephemeral}" 'command: ["/bin/sh", "/opt/ephemeral-agent/supervisor.sh"]'
 assert_contains "${ephemeral}" "name: test-buildkite-operator-ephemeral-agent"
@@ -208,18 +208,18 @@ if [[ "${ephemeral}" == *"- name: agent"* || "${ephemeral}" == *"checksum/epheme
 	echo "Ephemeral sysbox agents also rendered an agent container" >&2
 	exit 1
 fi
-ephemeral_kata=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=kata --set queues.linux.ephemeralAgent=true)
+ephemeral_kata=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=kata --set runnerPools.linux.ephemeralAgent=true)
 assert_contains "${ephemeral_kata}" "runtimeClassName: kata-qemu-runtime-rs"
 assert_contains "${ephemeral_kata}" "- name: supervisor"
 
 # Clearing inherited Docker limits must render without exposing a CPU limit,
 # for both the persistent agent and the ephemeral supervisor.
 for ephemeral_agent in false true; do
-	cpu_args=(--set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=sysbox \
-		--set queues.linux.ephemeralAgent="${ephemeral_agent}")
-	cpu_limited=$(document "$(render "${cpu_args[@]}" --set-string queues.linux.docker.resources.limits.cpu=1500m)" Deployment test-linux)
+	cpu_args=(--set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=sysbox \
+		--set runnerPools.linux.ephemeralAgent="${ephemeral_agent}")
+	cpu_limited=$(document "$(render "${cpu_args[@]}" --set-string runnerPools.linux.docker.resources.limits.cpu=1500m)" Deployment test-linux)
 	assert_contains "${cpu_limited}" $'- name: RUNNER_CPU_LIMIT_MILLICORES\n              valueFrom:\n                resourceFieldRef:\n                  containerName: dockerd\n                  resource: limits.cpu\n                  divisor: 1m'
-	cpu_unlimited=$(document "$(render "${cpu_args[@]}" --set queues.linux.docker.resources.limits=null)" Deployment test-linux)
+	cpu_unlimited=$(document "$(render "${cpu_args[@]}" --set runnerPools.linux.docker.resources.limits=null)" Deployment test-linux)
 	assert_contains "${cpu_unlimited}" 'limits: null'
 	if [[ "${cpu_unlimited}" == *'RUNNER_CPU_LIMIT_MILLICORES'* ]]; then
 		echo "Runner with cleared Docker limits exposed a CPU limit" >&2
@@ -229,11 +229,11 @@ done
 
 # Runtime composition is only meaningful for supervised Docker agents. Keep
 # the source image separate and select the image-mount-capable store explicitly.
-runtime_args=(--set-string agentToken.value="${TOKEN}" --set queues.linux.ephemeralAgent=true \
-	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=4 \
+runtime_args=(--set-string agentToken.value="${TOKEN}" --set runnerPools.linux.ephemeralAgent=true \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=4 \
 	--set-string defaults.docker.agentRuntimeImage=example/runtime:noble)
 for runtime in dind kata sysbox; do
-	composed=$(document "$(render "${runtime_args[@]}" --set-string queues.linux.runtime="${runtime}")" Deployment test-linux)
+	composed=$(document "$(render "${runtime_args[@]}" --set-string runnerPools.linux.runtime="${runtime}")" Deployment test-linux)
 	assert_contains "${composed}" $'- name: AGENT_RUNTIME_IMAGE\n              value: "example/runtime:noble"'
 	assert_contains "${composed}" $'- name: AGENT_IMAGE\n              value: "buildkite/agent:4"'
 	assert_contains "${composed}" '- --feature=containerd-snapshotter=true'
@@ -242,24 +242,24 @@ for runtime in dind kata sysbox; do
 		exit 1
 	fi
 done
-runtime_override=$(render "${runtime_args[@]}" --set-string queues.linux.runtime=dind \
-	--set-string queues.linux.docker.agentRuntimeImage=example/queue:ubuntu --set queues.linux.docker.stepImages=false)
+runtime_override=$(render "${runtime_args[@]}" --set-string runnerPools.linux.runtime=dind \
+	--set-string runnerPools.linux.docker.agentRuntimeImage=example/queue:ubuntu --set runnerPools.linux.docker.stepImages=false)
 assert_contains "$(document "${runtime_override}" Deployment test-linux)" $'- name: AGENT_RUNTIME_IMAGE\n              value: "example/queue:ubuntu"'
-runtime_cleared=$(document "$(render "${runtime_args[@]}" --set-string queues.linux.runtime=sysbox \
-	--set-string queues.linux.docker.agentRuntimeImage=)" Deployment test-linux)
+runtime_cleared=$(document "$(render "${runtime_args[@]}" --set-string runnerPools.linux.runtime=sysbox \
+	--set-string runnerPools.linux.docker.agentRuntimeImage=)" Deployment test-linux)
 assert_contains "${runtime_cleared}" '- --storage-driver=overlay2'
 if [[ "${runtime_cleared}${ephemeral_dind_runner}" == *'AGENT_RUNTIME_IMAGE'* ]]; then
 	echo "An unset runtime image changed the supervisor environment" >&2
 	exit 1
 fi
-assert_fails 'agentRuntimeImage requires ephemeralAgent' "${runtime_args[@]}" --set-string queues.linux.runtime=standard
-assert_fails 'agentRuntimeImage requires ephemeralAgent' "${runtime_args[@]}" --set-string queues.linux.runtime=dind --set queues.linux.ephemeralAgent=false
+assert_fails 'agentRuntimeImage requires ephemeralAgent' "${runtime_args[@]}" --set-string runnerPools.linux.runtime=standard
+assert_fails 'agentRuntimeImage requires ephemeralAgent' "${runtime_args[@]}" --set-string runnerPools.linux.runtime=dind --set runnerPools.linux.ephemeralAgent=false
 assert_fails 'agentRuntimeImage' --set defaults.docker.agentRuntimeImage=42
 
 # Standard ephemeral agents restart in a loop inside the agent container, which
 # keeps the agent's own resources.
-ephemeral_standard=$(render --set-string agentToken.value="${TOKEN}" --set queues.linux.ephemeralAgent=true \
-	--set-string queues.linux.resources.limits.memory=2Gi)
+ephemeral_standard=$(render --set-string agentToken.value="${TOKEN}" --set runnerPools.linux.ephemeralAgent=true \
+	--set-string runnerPools.linux.resources.limits.memory=2Gi)
 standard_runner=$(document "${ephemeral_standard}" Deployment test-linux)
 assert_contains "${standard_runner}" "- name: agent"
 assert_contains "${standard_runner}" 'command: ["/bin/sh", "/opt/ephemeral-agent/ephemeral-agent.sh"]'
@@ -285,7 +285,7 @@ done
 inherited=$(render --set-string agentToken.value="${TOKEN}" --set defaults.ephemeralAgent=true)
 assert_contains "${inherited}" 'command: ["/bin/sh", "/opt/ephemeral-agent/ephemeral-agent.sh"]'
 
-# Queue entries inherit defaults and override any field. Shared resources are
+# Runner pools inherit defaults and override any field. Shared resources are
 # rendered once; each entry gets its own Deployment and ScaledObject.
 multi=$("${HELM}" template test "${CHART_DIR}" \
 	--namespace buildkite-runners \
@@ -293,22 +293,22 @@ multi=$("${HELM}" template test "${CHART_DIR}" \
 	--set-string agentToken.value="${TOKEN}" \
 	--set defaults.minReplicas=2 \
 	--set defaults.scaleDownStabilizationWindowSeconds=120 \
-	--set-string queues.linux-kata.queue=linux \
-	--set-string queues.linux-kata.runtime=kata \
-	--set queues.linux-kata.maxReplicas=10 \
-	--set-string queues.build-sysbox.queue=build \
-	--set-string queues.build-sysbox.runtime=sysbox \
-	--set queues.build-sysbox.ephemeralAgent=true \
-	--set queues.build-sysbox.minReplicas=0 \
-	--set queues.build-sysbox.maxReplicas=4 \
-	--set queues.build-sysbox.scaleDownStabilizationWindowSeconds=0 \
-	--set-string queues.build-sysbox.docker.resources.limits.memory=16Gi)
+	--set-string runnerPools.linux-kata.queue=linux \
+	--set-string runnerPools.linux-kata.runtime=kata \
+	--set runnerPools.linux-kata.maxReplicas=10 \
+	--set-string runnerPools.build-sysbox.queue=build \
+	--set-string runnerPools.build-sysbox.runtime=sysbox \
+	--set runnerPools.build-sysbox.ephemeralAgent=true \
+	--set runnerPools.build-sysbox.minReplicas=0 \
+	--set runnerPools.build-sysbox.maxReplicas=4 \
+	--set runnerPools.build-sysbox.scaleDownStabilizationWindowSeconds=0 \
+	--set-string runnerPools.build-sysbox.docker.resources.limits.memory=16Gi)
 count_kind() { grep -c "^kind: $2\$" <<<"$1" || true; }
 for kind in Secret TriggerAuthentication ServiceAccount Role RoleBinding ValidatingAdmissionPolicy ValidatingAdmissionPolicyBinding; do
 	[[ $(count_kind "${multi}" "${kind}") -eq 1 ]] || { echo "Expected one shared ${kind}" >&2; exit 1; }
 done
 [[ $(count_kind "${multi}" Deployment) -eq 2 && $(count_kind "${multi}" ScaledObject) -eq 2 ]] || {
-	echo "Expected one Deployment and ScaledObject per queue entry" >&2
+	echo "Expected one Deployment and ScaledObject per runner pool" >&2
 	exit 1
 }
 kata_runner=$(document "${multi}" Deployment test-linux-kata)
@@ -352,7 +352,7 @@ if [[ "${kata}" == *"oci-accelerator"* ]]; then
 	echo "OCI accelerator rendered while disabled" >&2
 	exit 1
 fi
-accel=$(render "${accel_args[@]}" --set-string queues.linux.runtime=sysbox \
+accel=$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=sysbox \
 	--set ociAccelerator.noProxy='{registry.internal:5000}' \
 	--set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_CACHE_MAX_FILLS=32)
 [[ $(count_kind "${accel}" Service) -eq 2 && $(count_kind "${accel}" NetworkPolicy) -eq 1 ]] || {
@@ -387,7 +387,7 @@ assert_contains "${accel_proxy}" $'replicas: 1\n  serviceName: test-buildkite-op
 assert_contains "${accel_proxy}" 'whenUnsatisfiable: ScheduleAnyway'
 assert_contains "${accel_proxy}" $'requests:\n              cpu: 500m\n              ephemeral-storage: 20Gi\n              memory: 512Mi'
 # A request set in resources is kept, and limits are untouched.
-accel_storage=$(document "$(render "${accel_args[@]}" --set-string queues.linux.runtime=kata \
+accel_storage=$(document "$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=kata \
 	--set-string ociAccelerator.cache.size=8Gi --set ociAccelerator.cache.maxBytes=7516192768 \
 	--set-string ociAccelerator.resources.requests.ephemeral-storage=12Gi)" StatefulSet test-buildkite-operator-oci-accelerator)
 assert_contains "${accel_storage}" "sizeLimit: 8Gi"
@@ -396,7 +396,7 @@ assert_contains "${accel_storage}" $'limits:\n              memory: 2Gi'
 assert_contains "${accel_proxy}" $'path: ca.key\n'
 assert_contains "$(document "${accel}" NetworkPolicy test-buildkite-operator-oci-accelerator)" "app.kubernetes.io/component: runner"
 # Peering keeps the runner endpoint but gives each proxy its own stable address.
-peering=$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind \
+peering=$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=dind \
 	--set ociAccelerator.peering.enabled=true --set ociAccelerator.replicas=3)
 peer_proxy=$(document "${peering}" StatefulSet test-buildkite-operator-oci-accelerator)
 assert_contains "${peer_proxy}" $'replicas: 3\n  serviceName: test-buildkite-operator-oci-accelerator-peers\n  podManagementPolicy: Parallel'
@@ -420,7 +420,7 @@ if [[ -n "$(document "${peering}" Deployment test-buildkite-operator-oci-acceler
 	exit 1
 fi
 # Independent replicas use the same Services, without peer listeners or ingress.
-independent=$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind --set ociAccelerator.replicas=2)
+independent=$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=dind --set ociAccelerator.replicas=2)
 assert_contains "$(document "${independent}" StatefulSet test-buildkite-operator-oci-accelerator)" \
 	$'replicas: 2\n  serviceName: test-buildkite-operator-oci-accelerator-peers'
 assert_contains "$(document "${independent}" Service test-buildkite-operator-oci-accelerator)" 'type: ClusterIP'
@@ -433,7 +433,7 @@ if [[ "${independent}" == *"OCI_ACCELERATOR_PEER_"* || "${independent_headless}"
 fi
 assert_fails "'/ociAccelerator/replicas': minimum:" "${accel_args[@]}" --set ociAccelerator.replicas=0
 assert_fails "'/ociAccelerator/replicas': maximum:" "${accel_args[@]}" --set ociAccelerator.replicas=1025
-accel_dind=$(document "$(render "${accel_args[@]}" --set-string queues.linux.runtime=dind)" Deployment test-linux)
+accel_dind=$(document "$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=dind)" Deployment test-linux)
 assert_contains "${accel_dind}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
 assert_contains "${accel_dind}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
 assert_contains "${accel_dind}" "${ca_cert_volume}"
@@ -441,14 +441,14 @@ if [[ "${accel_dind}" == *'"oci-ca"'* || "${accel_dind}" == *'"ca.key"'* ]]; the
 	echo "dind runner Pods referenced the OCI accelerator CA Secret" >&2
 	exit 1
 fi
-no_policy=$(render "${accel_args[@]}" --set-string queues.linux.runtime=kata --set ociAccelerator.networkPolicy.enabled=false)
+no_policy=$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=kata --set ociAccelerator.networkPolicy.enabled=false)
 [[ $(count_kind "${no_policy}" NetworkPolicy) -eq 0 ]] || { echo "NetworkPolicy rendered while disabled" >&2; exit 1; }
 # Entries without a Docker daemon or that opt out pull directly, and with no
 # entry using it the accelerator is not installed.
 accel_opt_out=$("${HELM}" template test "${CHART_DIR}" "${KEDA_API_VERSIONS[@]}" "${accel_args[@]}" \
-	--set-string queues.std.queue=std --set queues.std.maxReplicas=1 \
-	--set-string queues.kata.queue=kata --set-string queues.kata.runtime=kata --set queues.kata.maxReplicas=1 \
-	--set queues.kata.docker.ociAccelerator=false)
+	--set-string runnerPools.std.queue=std --set runnerPools.std.maxReplicas=1 \
+	--set-string runnerPools.kata.queue=kata --set-string runnerPools.kata.runtime=kata --set runnerPools.kata.maxReplicas=1 \
+	--set runnerPools.kata.docker.ociAccelerator=false)
 if [[ "${accel_opt_out}" == *"oci-accelerator"* || "${accel_opt_out}" == *"https-proxy"* ]]; then
 	echo "OCI accelerator rendered with no entry using it" >&2
 	exit 1
@@ -483,7 +483,7 @@ assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CA_DIR\n              value: 
 # Without an existing Secret, hook Jobs generate the CA with init-ca before
 # install and upgrade, and delete its Secret and ConfigMap after uninstall.
 generated=$(render --set-string agentToken.value="${TOKEN}" --set ociAccelerator.enabled=true \
-	--set-string queues.linux.runtime=dind)
+	--set-string runnerPools.linux.runtime=dind)
 generated_secret="test-buildkite-operator-oci-accelerator-ca"
 assert_contains "$(document "${generated}" StatefulSet test-buildkite-operator-oci-accelerator)" "secretName: \"${generated_secret}\""
 generated_runner=$(document "${generated}" Deployment test-linux)
@@ -523,16 +523,16 @@ if [[ "${accel_opt_out}" == *"ca-create"* ]]; then
 	exit 1
 fi
 assert_fails "ociAccelerator.noProxy must not include ghcr.io:443" \
-	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 --set-string queues.linux.runtime=kata \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 --set-string runnerPools.linux.runtime=kata \
 	"${accel_args[@]}" --set ociAccelerator.noProxy='{ghcr.io:443}'
 assert_fails "ociAccelerator.extraEnv.OCI_ACCELERATOR_LISTEN is managed by the chart" \
-	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 --set-string queues.linux.runtime=kata \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 --set-string runnerPools.linux.runtime=kata \
 	"${accel_args[@]}" --set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_LISTEN=0.0.0.0:1
 assert_fails "ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_LISTEN is managed by the chart" \
-	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 --set-string queues.linux.runtime=kata \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 --set-string runnerPools.linux.runtime=kata \
 	"${accel_args[@]}" --set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:7443
 assert_fails "does not match pattern" \
-	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 \
 	"${accel_args[@]}" --set ociAccelerator.registries='{https://ghcr.io}'
 
 # Docker runners always share a writable Docker client configuration for the
@@ -603,26 +603,26 @@ fi
 for runtime in dind kata sysbox; do
 	for ephemeral in false true; do
 		with_default=$(render --set-string agentToken.value="${TOKEN}" \
-			--set-string queues.linux.runtime="${runtime}" --set queues.linux.ephemeralAgent="${ephemeral}" \
+			--set-string runnerPools.linux.runtime="${runtime}" --set runnerPools.linux.ephemeralAgent="${ephemeral}" \
 			--set-string defaults.docker.defaultStepImage=example/default:noble)
 		assert_contains "$(document "${with_default}" Deployment test-linux)" \
 			$'- name: DEFAULT_STEP_IMAGE\n              value: "example/default:noble"'
 	done
 done
-queue_image_args=(--set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
+queue_image_args=(--set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=dind \
 	--set-string defaults.docker.defaultStepImage=example/default:noble)
-overridden=$(render "${queue_image_args[@]}" --set-string queues.linux.docker.defaultStepImage=example/queue:alpine)
+overridden=$(render "${queue_image_args[@]}" --set-string runnerPools.linux.docker.defaultStepImage=example/queue:alpine)
 assert_contains "$(document "${overridden}" Deployment test-linux)" \
 	$'- name: DEFAULT_STEP_IMAGE\n              value: "example/queue:alpine"'
-cleared=$(render "${queue_image_args[@]}" --set-string queues.linux.docker.defaultStepImage=)
+cleared=$(render "${queue_image_args[@]}" --set-string runnerPools.linux.docker.defaultStepImage=)
 assert_contains "$(document "${cleared}" Deployment test-linux)" \
 	$'- name: DEFAULT_STEP_IMAGE\n              value: ""'
 assert_fails "defaultStepImage" --set-string agentToken.value="${TOKEN}" \
 	--set defaults.docker.defaultStepImage=42
-no_step_images=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
-	--set queues.linux.docker.stepImages=false --set-string defaults.docker.defaultStepImage=example/default:noble)
-no_step_images_ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
-	--set queues.linux.ephemeralAgent=true --set queues.linux.docker.stepImages=false \
+no_step_images=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=dind \
+	--set runnerPools.linux.docker.stepImages=false --set-string defaults.docker.defaultStepImage=example/default:noble)
+no_step_images_ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=dind \
+	--set runnerPools.linux.ephemeralAgent=true --set runnerPools.linux.docker.stepImages=false \
 	--set-string defaults.docker.defaultStepImage=example/default:noble)
 standard_with_default=$(render --set-string agentToken.value="${TOKEN}" \
 	--set-string defaults.docker.defaultStepImage=example/default:noble)
@@ -653,10 +653,10 @@ credential_args=(
 )
 credentials=$("${HELM}" template test "${CHART_DIR}" --namespace buildkite-runners "${KEDA_API_VERSIONS[@]}" \
 	"${credential_args[@]}" --set ociAccelerator.enabled=true \
-	--set-string queues.std.queue=std --set queues.std.maxReplicas=1 \
-	--set-string queues.per.queue=per --set-string queues.per.runtime=dind --set queues.per.maxReplicas=1 \
-	--set-string queues.eph.queue=eph --set-string queues.eph.runtime=sysbox --set queues.eph.ephemeralAgent=true \
-	--set queues.eph.maxReplicas=1)
+	--set-string runnerPools.std.queue=std --set runnerPools.std.maxReplicas=1 \
+	--set-string runnerPools.per.queue=per --set-string runnerPools.per.runtime=dind --set runnerPools.per.maxReplicas=1 \
+	--set-string runnerPools.eph.queue=eph --set-string runnerPools.eph.runtime=sysbox --set runnerPools.eph.ephemeralAgent=true \
+	--set runnerPools.eph.maxReplicas=1)
 credentials_secret=$(document "${credentials}" Secret test-buildkite-operator-registry-credentials)
 assert_contains "${credentials_secret}" "type: kubernetes.io/dockerconfigjson"
 dockerconfigjson=$(sed -n 's/^  \.dockerconfigjson: //p' <<<"${credentials_secret}" | base64 --decode)
@@ -693,7 +693,7 @@ for job in create delete; do
 		$'imagePullSecrets:\n        - name: "test-buildkite-operator-registry-credentials-hook"'
 done
 # Without hook Jobs, there is no hook copy.
-if [[ "$(render "${credential_args[@]}" --set-string queues.linux.runtime=dind)" == *"registry-credentials-hook"* ]]; then
+if [[ "$(render "${credential_args[@]}" --set-string runnerPools.linux.runtime=dind)" == *"registry-credentials-hook"* ]]; then
 	echo "Hook registry credentials Secret rendered without hook Jobs" >&2
 	exit 1
 fi
@@ -714,7 +714,7 @@ if [[ $(grep 'checksum/registry-credentials:' <<<"${credentials_std}") == $(grep
 	echo "Registry credential rotation did not change the Pod template" >&2
 	exit 1
 fi
-existing_credentials=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=kata \
+existing_credentials=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=kata \
 	--set-string registryCredentials.existingSecret.name=hub-pull)
 assert_contains "${existing_credentials}" $'imagePullSecrets:\n        - name: "hub-pull"'
 assert_contains "${existing_credentials}" $'secretName: "hub-pull"\n            items:\n              - key: .dockerconfigjson'
@@ -724,7 +724,7 @@ if [[ "${existing_credentials}" == *"checksum/registry-credentials:"* || "${exis
 	exit 1
 fi
 # An existing Secret is created before install, so hooks use it directly.
-existing_credentials_hooks=$(render --set-string agentToken.value="${TOKEN}" --set-string queues.linux.runtime=dind \
+existing_credentials_hooks=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=dind \
 	--set ociAccelerator.enabled=true --set-string registryCredentials.existingSecret.name=hub-pull)
 assert_contains "$(document "${existing_credentials_hooks}" Job test-buildkite-operator-oci-accelerator-ca-create)" \
 	$'imagePullSecrets:\n        - name: "hub-pull"'
@@ -733,13 +733,13 @@ if [[ "${existing_credentials_hooks}" == *"registry-credentials-hook"* || "${exi
 	exit 1
 fi
 assert_fails "set only one of registryCredentials.auths or registryCredentials.existingSecret.name" \
-	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 \
 	"${credential_args[@]}" --set-string registryCredentials.existingSecret.name=hub-pull
 assert_fails "registryCredentials.auths lists registry ghcr.io more than once" \
-	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 \
 	"${credential_args[@]}" --set-string 'registryCredentials.auths[0].registry=ghcr.io'
 assert_fails "missing property 'password'" \
-	--set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1 \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 \
 	--set-string agentToken.value="${TOKEN}" \
 	--set-string 'registryCredentials.auths[0].registry=ghcr.io' \
 	--set-string 'registryCredentials.auths[0].username=gh-user'
@@ -749,10 +749,10 @@ assert_fails "missing property 'password'" \
 numeric=$("${HELM}" template test "${CHART_DIR}" \
 	"${KEDA_API_VERSIONS[@]}" \
 	--set-string agentToken.value="${TOKEN}" \
-	--set-string queues.123.queue=linux \
-	--set queues.123.maxReplicas=1 \
-	--set-string queues.true.queue=build \
-	--set queues.true.maxReplicas=1)
+	--set-string runnerPools.123.queue=linux \
+	--set runnerPools.123.maxReplicas=1 \
+	--set-string runnerPools.true.queue=build \
+	--set runnerPools.true.maxReplicas=1)
 [[ $(grep -c 'buildkite.com/runner-pool: "123"$' <<<"${numeric}") -eq 4 ]] || {
 	echo "Numeric entry name was not quoted in every runner-pool label" >&2
 	exit 1
@@ -762,17 +762,17 @@ numeric=$("${HELM}" template test "${CHART_DIR}" \
 	exit 1
 }
 
-# A later values file can override or remove a single queue entry.
+# A later values file can override or remove a single runner pool.
 values_dir=$(mktemp -d)
 trap 'rm -rf "${values_dir}"' EXIT
 cat >"${values_dir}/base.yaml" <<EOF
 agentToken: {value: ${TOKEN}}
-queues:
+runnerPools:
   linux-kata: {queue: linux, runtime: kata, maxReplicas: 10}
   build-sysbox: {queue: build, runtime: sysbox, ephemeralAgent: true, maxReplicas: 4}
 EOF
 cat >"${values_dir}/override.yaml" <<EOF
-queues:
+runnerPools:
   linux-kata: {maxReplicas: 25, scaleDownStabilizationWindowSeconds: 300}
   build-sysbox: null
 EOF
@@ -785,7 +785,7 @@ assert_contains "${overridden}" $'scaleDown:\n          stabilizationWindowSecon
 assert_contains "${overridden}" "runtimeClassName: kata-qemu-runtime-rs" # Untouched settings are kept.
 [[ $(count_kind "${overridden}" Deployment) -eq 1 ]] || { echo "Null entry was not removed" >&2; exit 1; }
 if [[ "${overridden}" == *"name: test-buildkite-operator-ephemeral-agent"* ]]; then
-	echo "Ephemeral agent ConfigMap rendered with no ephemeral queue" >&2
+	echo "Ephemeral agent ConfigMap rendered with no ephemeral runner pool" >&2
 	exit 1
 fi
 
@@ -803,7 +803,7 @@ assert_contains "${runtime_notes}" "sysbox needs RuntimeClass sysbox-runc and no
 assert_contains "${runtime_notes}" '"RuntimeClass not found"'
 assert_contains "${runtime_notes}" "build-sysbox: queue build, sysbox, ephemeral agents, 1-4 runners"
 accel_notes=$(notes -f "${values_dir}/base.yaml" --set ociAccelerator.enabled=true \
-	--set-string ociAccelerator.ca.existingSecret.name=oci-ca --set queues.build-sysbox.docker.ociAccelerator=false)
+	--set-string ociAccelerator.ca.existingSecret.name=oci-ca --set runnerPools.build-sysbox.docker.ociAccelerator=false)
 assert_contains "${accel_notes}" "Docker daemons for linux-kata pull through the OCI accelerator"
 assert_contains "${accel_notes}" "kubectl logs statefulset/test-buildkite-operator-oci-accelerator"
 assert_contains "${accel_notes}" "use at least two replicas for availability during updates"
@@ -814,98 +814,104 @@ assert_contains "${peer_notes}" "kubectl logs statefulset/test-buildkite-operato
 assert_contains "${peer_notes}" "Proxy replicas: 3"
 assert_contains "${peer_notes}" "Peers use stable DNS seeds"
 assert_contains "${peer_notes}" "restart the proxy StatefulSet"
-unused_accel_notes=$(notes --set ociAccelerator.enabled=true --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)
-assert_contains "${unused_accel_notes}" "no dind, kata or sysbox queue entry uses it"
-standard_notes=$(notes --set-string queues.linux.queue=linux --set queues.linux.maxReplicas=1)
+unused_accel_notes=$(notes --set ociAccelerator.enabled=true --set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1)
+assert_contains "${unused_accel_notes}" "no dind, kata or sysbox runner pool uses it"
+standard_notes=$(notes --set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1)
 assert_contains "${standard_notes}" "linux: queue linux, standard, persistent agents, 1-1 runners"
 if [[ "${standard_notes}" == *"RuntimeClass"* || "${standard_notes}" == *"privileged"* ]]; then
 	echo "NOTES listed runtime prerequisites for a standard-only release" >&2
 	exit 1
 fi
 assert_contains "${runtime_notes}" 'kata runner Pods include a privileged Docker daemon, so the namespace must allow privileged Pods (Pod Security Admission level "privileged")'
-dind_notes=$(notes --set-string queues.docker.queue=docker --set queues.docker.maxReplicas=1 --set-string queues.docker.runtime=dind)
+dind_notes=$(notes --set-string runnerPools.docker.queue=docker --set runnerPools.docker.maxReplicas=1 --set-string runnerPools.docker.runtime=dind)
 assert_contains "${dind_notes}" "docker: queue docker, dind, persistent agents"
 assert_contains "${dind_notes}" "dind runner Pods include a privileged Docker daemon"
 assert_contains "${dind_notes}" "WARNING: dind needs nothing installed"
-assert_contains "${dind_notes}" "only run trusted jobs on dind queues"
+assert_contains "${dind_notes}" "only run trusted jobs on dind runner pools"
 if [[ "${dind_notes}" == *"RuntimeClass"* ]]; then
 	echo "NOTES listed RuntimeClass prerequisites for a dind-only release" >&2
 	exit 1
 fi
 
-# With no queues, nothing is rendered and neither a token nor KEDA is needed.
+# With no runner pools, nothing is rendered and neither a token nor KEDA is
+# needed.
 empty=$("${HELM}" template test "${CHART_DIR}")
 if [[ "${empty}" == *"kind:"* ]]; then
-	echo "Chart rendered resources with no queues configured" >&2
+	echo "Chart rendered resources with no runner pools configured" >&2
 	exit 1
 fi
 
-assert_fails "queues.linux.queue is required" \
-	--set queues.linux.maxReplicas=1 \
+assert_fails "runnerPools.linux.queue is required" \
+	--set runnerPools.linux.maxReplicas=1 \
 	--set-string agentToken.value="${TOKEN}"
-assert_fails "queues.linux.maxReplicas must be at least 1" \
-	--set-string queues.linux.queue=linux \
+assert_fails "runnerPools.linux.maxReplicas must be at least 1" \
+	--set-string runnerPools.linux.queue=linux \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "agentToken.value or agentToken.existingSecret.name is required" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1
-assert_fails "queues.linux.minReplicas must be less than or equal" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1 \
-	--set queues.linux.minReplicas=2 \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=1
+assert_fails "runnerPools.linux.minReplicas must be less than or equal" \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=1 \
+	--set runnerPools.linux.minReplicas=2 \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "metricsToken.value or metricsToken.existingSecret.name is required" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1 \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=1 \
 	--set-string agentToken.existingSecret.name=agent-token
 assert_fails "additional properties 'enabled' not allowed" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1 \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=1 \
 	--set deletionCost.enabled=false \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "does not match pattern" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1 \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=1 \
 	--set-string deletionCost.image.digest=latest \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "value must be one of 'standard', 'dind', 'kata', 'sysbox'" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1 \
-	--set-string queues.linux.runtime=gvisor \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=1 \
+	--set-string runnerPools.linux.runtime=gvisor \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "maximum: got 3,601, want 3,600" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1 \
-	--set queues.linux.scaleDownStabilizationWindowSeconds=3601 \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=1 \
+	--set runnerPools.linux.scaleDownStabilizationWindowSeconds=3601 \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "does not match pattern" \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=1 \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=1 \
 	--set-string supervisor.image.digest=latest \
 	--set-string agentToken.value="${TOKEN}"
 
-assert_fails 'queues.a and queues.b both use Buildkite queue "linux"' \
-	--set-string queues.a.queue=linux \
-	--set queues.a.maxReplicas=1 \
-	--set-string queues.b.queue=linux \
-	--set queues.b.maxReplicas=1 \
+assert_fails 'runnerPools.a and runnerPools.b both use Buildkite queue "linux"' \
+	--set-string runnerPools.a.queue=linux \
+	--set runnerPools.a.maxReplicas=1 \
+	--set-string runnerPools.b.queue=linux \
+	--set runnerPools.b.maxReplicas=1 \
 	--set-string agentToken.value="${TOKEN}"
-assert_fails "queues.Linux_Pool: names must be lowercase" \
-	--set-string queues.Linux_Pool.queue=linux \
-	--set queues.Linux_Pool.maxReplicas=1 \
+assert_fails "runnerPools.Linux_Pool: names must be lowercase" \
+	--set-string runnerPools.Linux_Pool.queue=linux \
+	--set runnerPools.Linux_Pool.maxReplicas=1 \
 	--set-string agentToken.value="${TOKEN}"
 assert_fails "must be at most 50 characters" \
-	--set-string queues.an-extremely-long-queue-entry-name-for-testing.queue=linux \
-	--set queues.an-extremely-long-queue-entry-name-for-testing.maxReplicas=1 \
+	--set-string runnerPools.an-extremely-long-runner-pool-name-for-testing.queue=linux \
+	--set runnerPools.an-extremely-long-runner-pool-name-for-testing.maxReplicas=1 \
 	--set-string agentToken.value="${TOKEN}"
-assert_fails "additional properties 'replicas' not allowed" \
+# Values from before the rename must fail rather than render no runner pools.
+assert_fails "queues was renamed to runnerPools" \
 	--set-string queues.linux.queue=linux \
 	--set queues.linux.maxReplicas=1 \
-	--set queues.linux.replicas=3 \
+	--set-string agentToken.value="${TOKEN}"
+assert_fails "additional properties 'replicas' not allowed" \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=1 \
+	--set runnerPools.linux.replicas=3 \
 	--set-string agentToken.value="${TOKEN}"
 
 "${HELM}" lint "${CHART_DIR}" \
 	--set keda.validateInstallation=false \
-	--set-string queues.linux.queue=linux \
-	--set queues.linux.maxReplicas=4 \
+	--set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=4 \
 	--set-string agentToken.value="${TOKEN}"

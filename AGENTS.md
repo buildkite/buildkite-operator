@@ -100,11 +100,11 @@ out of date, and the pre-commit hook (`make install-hooks`) stops such commits.
 
 The examples are the smallest set of values files whose rendered output covers
 every significant branch in the chart: each runtime, persistent and ephemeral
-agents, chart-managed and existing token Secrets, and several queues sharing
-one release. Significant branching is a value that adds, removes or reshapes
-resources, containers, volumes or scheduling; values that only change a scalar
-in place, such as replica counts or image tags, don't count. When a change
-adds or removes significant branching, re-evaluate the examples:
+agents, chart-managed and existing token Secrets, and several runner pools
+sharing one release. Significant branching is a value that adds, removes or
+reshapes resources, containers, volumes or scheduling; values that only change
+a scalar in place, such as replica counts or image tags, don't count. When a
+change adds or removes significant branching, re-evaluate the examples:
 
 - **Added branch:** make sure some example renders it. Extend an existing
   example's `values.yaml` where that stays readable. Otherwise add a new

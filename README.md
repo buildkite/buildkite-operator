@@ -28,9 +28,9 @@ or which KEDA version serves those APIs.
 
 ## Quickstart
 
-Add an entry under `queues` for each Buildkite queue, with its maximum runner
-count, and provide the cluster agent token. The entry name (`linux` below) is
-used in resource names:
+Add a runner pool under `runnerPools` for each Buildkite queue, with its maximum
+runner count, and provide the cluster agent token. The pool name (`linux` below)
+is used in resource names:
 
 ```bash
 export BUILDKITE_AGENT_TOKEN='<agent-token>'
@@ -38,8 +38,8 @@ export BUILDKITE_AGENT_TOKEN='<agent-token>'
 helm upgrade --install buildkite-operator ./charts/buildkite-operator \
   --namespace buildkite-operator-system \
   --create-namespace \
-  --set-string queues.linux.queue=<queue> \
-  --set queues.linux.maxReplicas=<maximum> \
+  --set-string runnerPools.linux.queue=<queue> \
+  --set runnerPools.linux.maxReplicas=<maximum> \
   --set-string agentToken.value="$BUILDKITE_AGENT_TOKEN"
 ```
 
@@ -51,8 +51,8 @@ reference them instead:
 helm upgrade --install buildkite-operator ./charts/buildkite-operator \
   --namespace buildkite-operator-system \
   --create-namespace \
-  --set-string queues.linux.queue=<queue> \
-  --set queues.linux.maxReplicas=<maximum> \
+  --set-string runnerPools.linux.queue=<queue> \
+  --set runnerPools.linux.maxReplicas=<maximum> \
   --set-string agentToken.existingSecret.name=<agent-secret> \
   --set-string metricsToken.existingSecret.name=<metrics-secret>
 ```
@@ -60,17 +60,17 @@ helm upgrade --install buildkite-operator ./charts/buildkite-operator \
 The metrics Secret key must contain the complete `Authorization` value in the
 form `Token <cluster-agent-token>`.
 
-## Queues
+## Runner pools
 
-Each entry under `queues` serves one Buildkite queue and inherits every setting
-from `defaults`, overriding any of them. For example, a values file serving a
-Kata queue and a Sysbox queue with ephemeral agents:
+Each runner pool under `runnerPools` serves one Buildkite queue and inherits
+every setting from `defaults`, overriding any of them. For example, a values
+file serving a Kata pool and a Sysbox pool with ephemeral agents:
 
 ```yaml
 defaults:
   minReplicas: 1
 
-queues:
+runnerPools:
   linux-kata:
     queue: linux
     runtime: kata
@@ -87,19 +87,25 @@ queues:
           memory: 16Gi
 ```
 
-Every entry needs `queue` and `maxReplicas`. Entry names are lowercase letters,
-digits and hyphens. Each Buildkite queue may appear in only one entry, because
-KEDA scales an entry on its queue's whole job count. Because `queues` is a map,
-a later values file can change one entry (`linux-kata: {maxReplicas: 25}`) or
-remove it (`build-sysbox: null`) without restating the others. With no
-entries, the chart installs nothing.
+Every pool needs `queue` and `maxReplicas`. Pool names are lowercase letters,
+digits and hyphens. Each Buildkite queue may appear in only one pool, because
+KEDA scales a pool on its queue's whole job count. Because `runnerPools` is a
+map, a later values file can change one pool (`linux-kata: {maxReplicas: 25}`)
+or remove it (`build-sysbox: null`) without restating the others. With no
+pools, the chart installs nothing.
 
-Each entry gets a runner pool: a `Deployment` whose Pods are labelled
-`buildkite.com/runner-pool: <entry>`, and a `ScaledObject` that scales it, both
-named `<release>-<entry>`. The token Secret, KEDA `TriggerAuthentication`, and
-deletion-cost permissions and scripts are shared by all entries in a release.
+Each pool is a `Deployment` whose Pods are labelled
+`buildkite.com/runner-pool: <pool>`, and a `ScaledObject` that scales it, both
+named `<release>-<pool>`. The token Secret, KEDA `TriggerAuthentication`, and
+deletion-cost permissions and scripts are shared by all pools in a release.
 Queues in a different Buildkite cluster need a different token, so they use a
 separate release.
+
+Chart versions before 0.20.0 called this map `queues`. Rename the key to
+`runnerPools` in your values when upgrading; the entries inside are unchanged,
+and so are the resource names. The chart fails rather than install with
+`queues` still set, since ignoring it would remove every runner. With
+`--reuse-values`, also pass `--set queues=null` to drop the stored key.
 
 | Setting | Default | Description |
 | --- | --- | --- |
@@ -109,7 +115,7 @@ separate release.
 | `runtime` | `standard` | `standard`, `dind`, `kata` or `sysbox`; see [Runner isolation](#runner-isolation). |
 | `ephemeralAgent` | `false` | Replace the agent after every job, with a clean workspace. The Pod persists. See [Ephemeral agents](#ephemeral-agents). |
 | `terminationGracePeriodSeconds` | `3600` | Longest time an agent may take to drain its job. |
-| `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales an entry with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
+| `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales a pool with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
 | `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
 | `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `dind`, `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. With `standard` and `ephemeralAgent`, the image also needs `/bin/sh`. |
 | `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `dind`, `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. `docker.ociAccelerator` (default `true`) pulls through the [OCI accelerator](#image-pull-caching) when it is enabled. `docker.stepImages` (default `true`) runs steps that set `image:` in that image; see [Step images](#step-images). |
@@ -121,7 +127,7 @@ in a plain Pod with no Docker daemon. The container keeps running, so files
 outside the workspace carry over between jobs:
 
 ```yaml
-queues:
+runnerPools:
   linux:
     queue: linux
     ephemeralAgent: true
@@ -133,7 +139,7 @@ unprivileged Docker daemon, so containers, volumes, checkouts and caches carry
 over between jobs. The pool scales to zero when the queue is idle:
 
 ```yaml
-queues:
+runnerPools:
   docker-builds:
     queue: docker-builds
     runtime: sysbox
@@ -147,7 +153,7 @@ Docker daemon, on any node; see [Privileged Docker-in-Docker](#privileged-docker
 before using it:
 
 ```yaml
-queues:
+runnerPools:
   docker:
     queue: docker
     runtime: dind
@@ -159,7 +165,7 @@ VM-isolated Pod. Afterwards its containers, networks, volumes and workspace are
 removed, while Docker's image and build caches are kept:
 
 ```yaml
-queues:
+runnerPools:
   untrusted:
     queue: untrusted
     runtime: kata
@@ -167,13 +173,13 @@ queues:
     maxReplicas: 6
 ```
 
-To turn a pool off, comment out or delete its entry, or set it to `null` in a
+To turn a pool off, comment out or delete it, or set it to `null` in a
 later values file, for example `helm upgrade ... -f values.yaml -f off.yaml`
 with:
 
 ```yaml
 # off.yaml
-queues:
+runnerPools:
   untrusted: null
 ```
 
@@ -183,13 +189,13 @@ without idle runners, set `minReplicas: 0` instead.
 
 ## Autoscaling
 
-KEDA polls Buildkite's Agent Metrics API. For each queue entry it scales for
+KEDA polls Buildkite's Agent Metrics API. For each runner pool it scales for
 `scheduled + running` jobs, keeps one runner warm by default, and scales up to
-the entry's `maxReplicas`. While jobs are scheduled or running, the HPA
+the pool's `maxReplicas`. While jobs are scheduled or running, the HPA
 removes runners only after the lower count has persisted for
 `scaleDownStabilizationWindowSeconds`, because jobs blocked on `depends_on` are
 not counted until their dependencies finish. Once the queue has no scheduled or
-running jobs, an entry with `minReplicas: 0` scales to zero after
+running jobs, a pool with `minReplicas: 0` scales to zero after
 `cooldownPeriod` instead.
 
 KEDA's HPA chooses scale-in victims without confirming that a selected agent is
@@ -254,7 +260,7 @@ such as `kubectl drain` or spot interruptions, ignore the annotation.
 
 ## Runner isolation
 
-Set `runtime` in `defaults` or on a queue entry to choose its isolation profile:
+Set `runtime` in `defaults` or on a runner pool to choose its isolation profile:
 
 | Value | Runner Pod |
 | --- | --- |
@@ -323,7 +329,7 @@ need Docker. The Pod runs the same Docker daemon sidecar as `kata` and
 > [!WARNING]
 > A privileged container has host-level access to its node: it can see host
 > devices, load kernel modules and escape to the host. `dind` is not isolation.
-> Only run trusted jobs on `dind` queues, and don't share their nodes with
+> Only run trusted jobs on `dind` runner pools, and don't share their nodes with
 > workloads those jobs must not reach.
 
 The namespace must allow privileged Pods. With Pod Security Admission, label it
@@ -408,7 +414,7 @@ job there. If the runtime is already the desired job image, leave
 `docker.stepImages: false` also keeps the whole job in this runtime, but ignores
 explicit step images too.
 
-Override `docker.agentRuntimeImage` per queue; `""` clears an inherited runtime.
+Override `docker.agentRuntimeImage` per pool; `""` clears an inherited runtime.
 An empty default preserves the existing behavior. Nonempty values are rejected
 for persistent agents or `standard` runners rather than silently ignored.
 
@@ -443,7 +449,7 @@ defaults:
 ```
 
 An explicit nonempty step `image:` takes precedence. Override
-`docker.defaultStepImage` per queue, or set it to `""` there to clear the default.
+`docker.defaultStepImage` per pool, or set it to `""` there to clear the default.
 With neither a step image nor a default, the usual bootstrap runs unchanged.
 This does not change `defaults.image`, the agent-binary source. For either a
 step image or the configured default, a container started in the Pod's Docker
@@ -663,9 +669,9 @@ be passed through `ociAccelerator.extraEnv`; see the accelerator's
 [deployment guide](https://github.com/buildkite/oci-accelerator/blob/main/docs/deployment.md#configuration).
 
 The proxy's node holds the CA private key that every accelerated daemon
-trusts, including those of `kata` and `sysbox` queues running untrusted jobs.
+trusts, including those of `kata` and `sysbox` pools running untrusted jobs.
 A `dind` job can escape to its node and read the Secrets mounted in other Pods
-there, so a release with `dind` queues should keep the proxy off nodes `dind`
+there, so a release with `dind` pools should keep the proxy off nodes `dind`
 runners can reach. The chart adds no node selector for `dind`, so place the
 proxy with `ociAccelerator.nodeSelector` and `tolerations`, for example on
 nodes tainted for `kata` or `sysbox`, or on dedicated system nodes. The hook
@@ -676,7 +682,7 @@ to change the proxy Pod's image; see [Scale-in preference](#scale-in-preference)
 ### Registry credentials
 
 To pull private images, or to avoid Docker Hub's anonymous rate limits, give
-the release registry credentials. They apply to every Pod and queue entry:
+the release registry credentials. They apply to every Pod and runner pool:
 
 ```yaml
 registryCredentials:
@@ -722,7 +728,7 @@ container it starts. It lasts as long as the Pod and is shared by all of its
 jobs, persistent or ephemeral, so a job's own `docker login` and buildx state
 carry over to later jobs on that Pod. Credentials are copied in when the Pod
 starts. Any job can read them, so use tokens with only the access the
-queues' jobs need.
+pools' jobs need.
 
 Changing chart-managed credentials rolls the runner and proxy Pods. After
 changing an existing Secret, restart those Deployments yourself. Pulls through
@@ -826,7 +832,7 @@ helm upgrade --install buildkite-operator \
   --values values.yaml
 ```
 
-The values file must provide the queue configuration and agent token Secret
+The values file must provide the runner pools and agent token Secret
 references described in [Quickstart](#quickstart), and KEDA must already be
 installed. Any private container images used by your configuration still need
 their own pull credentials. For digest-pinned installs, replace the chart URL

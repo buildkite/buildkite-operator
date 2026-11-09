@@ -1,5 +1,5 @@
 {{- $ephemeralAgent := false }}
-{{- range $entry := include "buildkite-operator.queueEntries" . | fromJsonArray }}{{ if $entry.settings.ephemeralAgent }}{{ $ephemeralAgent = true }}{{ end }}{{ end }}
+{{- range $entry := include "buildkite-operator.runnerPoolEntries" . | fromJsonArray }}{{ if $entry.settings.ephemeralAgent }}{{ $ephemeralAgent = true }}{{ end }}{{ end }}
 {{- if $ephemeralAgent }}
 # supervisor.sh runs dind, kata and sysbox ephemeral agents; ephemeral-agent.sh
 # runs standard ones.

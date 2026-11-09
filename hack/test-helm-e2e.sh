@@ -15,7 +15,7 @@ HELM_CLUSTER=("${HELM}" --kubeconfig "${KUBECONFIG}" --kube-context "${KUBE_CONT
 KUBECTL=(kubectl --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}")
 NAMESPACE="buildkite-runners"
 RELEASE="buildkite-runners"
-# The first release serves four queues to verify entries stay independent.
+# The first release serves four runner pools to verify they stay independent.
 RUNNERS="${RELEASE}-e2e"
 OTHER_RUNNERS="${RELEASE}-e2e-other"
 EPHEMERAL_RUNNERS="${RELEASE}-e2e-ephemeral"
@@ -37,7 +37,7 @@ ACCEL_IMAGE=$("${HELM}" show values "${CHART_DIR}" | awk '
 KEDA_NAMESPACE="keda"
 KEDA_RELEASE="keda"
 
-# Installs a release with one queue entry per remaining argument, each named
+# Installs a release with one runner pool per remaining argument, each named
 # after and serving the queue of the same name. Arguments after -- are passed
 # to Helm.
 install_runner_chart() {
@@ -46,7 +46,7 @@ install_runner_chart() {
 	shift 2
 	local args=()
 	while [[ $# -gt 0 && "$1" != -- ]]; do
-		args+=(--set-string "queues.$1.queue=$1" --set "queues.$1.maxReplicas=1")
+		args+=(--set-string "runnerPools.$1.queue=$1" --set "runnerPools.$1.maxReplicas=1")
 		shift
 	done
 	[[ $# -gt 0 ]] && shift
@@ -140,14 +140,14 @@ fi
 # The dind queue's Docker daemon requests far less than the chart's default so
 # it fits on the single Kind node.
 install_runner_chart "${RELEASE}" "${NAMESPACE}" e2e e2e-other e2e-ephemeral e2e-dind -- \
-	--set-string queues.e2e-dind.runtime=dind \
-	--set-string queues.e2e-dind.docker.resources.requests.cpu=100m \
-	--set-string queues.e2e-dind.docker.resources.requests.memory=256Mi \
-	--set-string queues.e2e-dind.docker.resources.requests.ephemeral-storage=1Gi \
-	--set queues.e2e-ephemeral.ephemeralAgent=true \
-	--set-string queues.e2e-ephemeral.image.repository=busybox \
-	--set-string queues.e2e-ephemeral.image.tag=1.37 \
-	--set queues.e2e-ephemeral.terminationGracePeriodSeconds=30
+	--set-string runnerPools.e2e-dind.runtime=dind \
+	--set-string runnerPools.e2e-dind.docker.resources.requests.cpu=100m \
+	--set-string runnerPools.e2e-dind.docker.resources.requests.memory=256Mi \
+	--set-string runnerPools.e2e-dind.docker.resources.requests.ephemeral-storage=1Gi \
+	--set runnerPools.e2e-ephemeral.ephemeralAgent=true \
+	--set-string runnerPools.e2e-ephemeral.image.repository=busybox \
+	--set-string runnerPools.e2e-ephemeral.image.tag=1.37 \
+	--set runnerPools.e2e-ephemeral.terminationGracePeriodSeconds=30
 # The chart has no hook for extra volumes, so mount the stand-in agent where
 # the chart runs buildkite-agent. This rolls out a second Pod.
 "${KUBECTL[@]}" patch deployment/"${EPHEMERAL_RUNNERS}" -n "${NAMESPACE}" --patch '
@@ -177,7 +177,7 @@ install_runner_chart "${SECOND_RELEASE}" "${SECOND_NAMESPACE}" e2e-secondary
 "${KUBECTL[@]}" get scaledobject/"${SECOND_RUNNERS}" -n "${SECOND_NAMESPACE}" >/dev/null
 "${KUBECTL[@]}" get triggerauthentication/"${SECOND_RELEASE}-buildkite-operator-metrics" -n "${SECOND_NAMESPACE}" >/dev/null
 
-# Each queue entry's Deployment owns exactly its own runner Pod.
+# Each runner pool's Deployment owns exactly its own runner Pod.
 pod=""
 other_pod=""
 for _ in $(seq 1 60); do
@@ -189,7 +189,7 @@ for _ in $(seq 1 60); do
 	sleep 1
 done
 if [[ -z "${pod}" || -z "${other_pod}" ]]; then
-	echo "Each queue entry's Deployment did not create a runner Pod" >&2
+	echo "Each runner pool's Deployment did not create a runner Pod" >&2
 	exit 1
 fi
 [[ $(wc -l <<<"${pod}") -eq 1 && $(wc -l <<<"${other_pod}") -eq 1 ]]
@@ -283,7 +283,7 @@ for _ in $(seq 1 60); do
 	[[ -n "${ephemeral_pod}" ]] && break
 	sleep 1
 done
-[[ -n "${ephemeral_pod}" ]] || { echo "The ephemeral queue entry did not create a runner Pod" >&2; exit 1; }
+[[ -n "${ephemeral_pod}" ]] || { echo "The ephemeral runner pool did not create a runner Pod" >&2; exit 1; }
 "${KUBECTL[@]}" rollout status deployment/"${EPHEMERAL_RUNNERS}" -n "${NAMESPACE}" --timeout=2m
 # Wait for the Pod from before the patch to go.
 for _ in $(seq 1 60); do
@@ -350,7 +350,7 @@ for _ in $(seq 1 60); do
 	[[ -n "${dind_pod}" ]] && break
 	sleep 1
 done
-[[ -n "${dind_pod}" ]] || { echo "The dind queue entry did not create a runner Pod" >&2; exit 1; }
+[[ -n "${dind_pod}" ]] || { echo "The dind runner pool did not create a runner Pod" >&2; exit 1; }
 "${KUBECTL[@]}" wait --for=condition=Initialized "${dind_pod}" -n "${NAMESPACE}" --timeout=3m || {
 	"${KUBECTL[@]}" describe "${dind_pod}" -n "${NAMESPACE}" >&2 || true
 	"${KUBECTL[@]}" logs "${dind_pod}" -n "${NAMESPACE}" -c dockerd >&2 || true
@@ -403,9 +403,9 @@ fi
 	--set-string defaults.docker.resources.requests.memory=256Mi \
 	--set-string defaults.docker.resources.requests.ephemeral-storage=1Gi \
 	--set-string agentToken.value=not-a-real-agent-token \
-	--set-string queues.accel.queue=accel \
-	--set-string queues.accel.runtime=dind \
-	--set queues.accel.maxReplicas=1 \
+	--set-string runnerPools.accel.queue=accel \
+	--set-string runnerPools.accel.runtime=dind \
+	--set runnerPools.accel.maxReplicas=1 \
 	--set ociAccelerator.enabled=true \
 	--set ociAccelerator.networkPolicy.enabled=false \
 	--set-string ociAccelerator.cache.size=1Gi \

@@ -1,4 +1,4 @@
-{{- if include "buildkite-operator.queueEntries" . | fromJsonArray }}
+{{- if include "buildkite-operator.runnerPoolEntries" . | fromJsonArray }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
