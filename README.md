@@ -104,8 +104,10 @@ separate release.
 Chart versions before 0.20.0 called this map `queues`. Rename the key to
 `runnerPools` in your values when upgrading; the entries inside are unchanged,
 and so are the resource names. The chart fails rather than install with
-`queues` still set, since ignoring it would remove every runner. With
-`--reuse-values`, also pass `--set queues=null` to drop the stored key.
+`queues` still set, since ignoring it would remove every runner. Upgrade with
+your complete migrated values file and `--reset-values`. `--reuse-values`
+can't migrate: Helm restores the release's stored `queues` even when you pass
+`--set queues=null`.
 
 | Setting | Default | Description |
 | --- | --- | --- |
@@ -797,7 +799,7 @@ test.
 ### Publishing
 
 Merge the chart changes and version bump first, then tag that commit
-`chart-v<version>`, for example `chart-v0.19.0` for `version: 0.19.0` in
+`chart-v<version>`, for example `chart-v0.20.0` for `version: 0.20.0` in
 `charts/buildkite-operator/Chart.yaml`, and push the tag. Only stable
 `major.minor.patch` releases are supported; `appVersion` is not used as the
 release version.
@@ -827,7 +829,7 @@ are required to install a release:
 ```bash
 helm upgrade --install buildkite-operator \
   oci://registry-1.docker.io/buildkite/buildkite-operator-chart \
-  --version 0.19.0 \
+  --version 0.20.0 \
   --namespace buildkite-operator-system --create-namespace \
   --values values.yaml
 ```
