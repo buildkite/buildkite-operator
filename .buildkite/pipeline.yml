@@ -27,6 +27,7 @@ steps:
       - export PATH="$$HOME/.local/bin:$$PATH"
       - mise install
       - mise exec -- make test-helm
+      - mise exec -- python3 hack/test_publish_chart.py
       - mise exec -- make helm-examples
       - git diff --exit-code
       - test -z "$(git status --porcelain)"
@@ -54,3 +55,16 @@ steps:
       - mise install
       - mise exec -- make test-helm-e2e
       - test -z "$(git status --porcelain)"
+
+  - wait
+
+  - label: ":package: publish chart to Docker Hub"
+    key: publish-chart
+    if: build.tag =~ /^chart-v/ && build.pull_request.id == null
+    concurrency: 1
+    concurrency_group: buildkite-operator/chart-publish
+    command:
+      - curl -fsSL https://mise.run | sh
+      - export PATH="$$HOME/.local/bin:$$PATH"
+      - mise install
+      - mise exec -- python3 .buildkite/publish-chart.py

@@ -758,6 +758,84 @@ engines to recognise allowed connections' replies. This changes only the test
 cluster's CNI; the chart's NetworkPolicy and peer-isolation checks are unchanged.
 Remove the pin once CI provides that kernel capability.
 
+## Chart releases
+
+Buildkite publishes tagged chart releases to the public Docker Hub repository
+`buildkite/buildkite-operator-chart`, using the OCI registry at
+`registry-1.docker.io`. No GitHub Actions workflow is required. Publication waits
+for all pipeline checks on the tagged commit to pass, including the chart E2E
+test.
+
+### One-time setup
+
+- Enable **Build tags** in the Buildkite pipeline's GitHub settings. Ensure
+  branch filters and pipeline-level conditionals allow tag builds.
+- Use the public Docker Hub repository `buildkite/buildkite-operator-chart`.
+  Keep chart releases in this dedicated repository, not a container-image
+  repository with overlapping version tags.
+- Create a Buildkite Secret named `DOCKERHUB_TOKEN` in the
+  agent cluster. Use a Docker Hub organization access token for `buildkite`
+  with **Read & Write** access to `buildkite-operator-chart`, without delete
+  access. The publisher uses the fixed username `buildkite`; no username secret
+  is needed. Do not put the token in pipeline YAML or repository files.
+- Restrict secrets to this pipeline and trusted build contexts using
+  [agent access policies](https://buildkite.com/docs/pipelines/security/secrets/buildkite-secrets/access-policies).
+  These policies support pipeline and branch claims, not step-key or tag claims;
+  the release step's `if` condition is not a secret access boundary. Do not grant
+  publishing credentials to untrusted pull request builds. If they share this
+  pipeline, isolate release access with an appropriately restricted agent queue
+  or separate release pipeline before enabling the secrets.
+- Protect `chart-v*` tags in GitHub so only trusted maintainers can create,
+  change, or delete them: tagged repository code runs with publishing access.
+
+### Publishing
+
+Merge the chart changes and version bump first, then tag that commit
+`chart-v<version>`, for example `chart-v0.19.0` for `version: 0.19.0` in
+`charts/buildkite-operator/Chart.yaml`, and push the tag. Only stable
+`major.minor.patch` releases are supported; `appVersion` is not used as the
+release version.
+
+The release script, `.buildkite/publish-chart.py`, rejects mismatched versions
+and existing published versions.
+Registry authentication and network errors fail the release rather than being
+treated as a missing version. Buildkite serializes publishing jobs so two builds
+cannot pass the existing-version check concurrently. Docker Hub tags are mutable
+by default; do not overwrite releases with other publishing tools.
+
+The script packages the chart, pushes it, then pulls it by its published OCI
+digest and compares the downloaded package with the original. The build log
+records the digest and verification result. Helm's login credentials and chart
+packages are kept in a temporary directory removed when the script exits.
+
+If a job fails after pushing, the version may already be published. Retrying
+will refuse to overwrite it: inspect the package and digest before proceeding,
+and publish a new chart version if a correction is needed. Do not delete a
+release just to make a retry succeed.
+
+### Installing a release
+
+The chart repository is public; no Docker Hub credentials or registry login
+are required to install a release:
+
+```bash
+helm upgrade --install buildkite-operator \
+  oci://registry-1.docker.io/buildkite/buildkite-operator-chart \
+  --version 0.19.0 \
+  --namespace buildkite-operator-system --create-namespace \
+  --values values.yaml
+```
+
+The values file must provide the queue configuration and agent token Secret
+references described in [Quickstart](#quickstart), and KEDA must already be
+installed. Any private container images used by your configuration still need
+their own pull credentials. For digest-pinned installs, replace the chart URL
+with the `oci://…@sha256:…` reference from the release log and omit `--version`.
+
+Run `python3 hack/test_publish_chart.py` to test release handling locally. It
+uses real Helm chart packaging with simulated registry and credential services;
+it does not retrieve secrets or publish to Docker Hub.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
