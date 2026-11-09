@@ -1,9 +1,9 @@
 # buildkite-operator
 
 This repository includes a standalone Helm chart for autoscaling Buildkite
-runners on Kubernetes. One release can serve several Buildkite queues; each gets
-its own runner pool (a `Deployment` of agent Pods) and KEDA scaling, sharing one
-token Secret.
+runners on Kubernetes. One release can serve several Buildkite queues. Each gets
+its own runner pool (a `Deployment` of agent Pods) and KEDA scaling, and they
+share one token Secret.
 
 ## Prerequisite
 
@@ -102,7 +102,7 @@ Queues in a different Buildkite cluster need a different token, so they use a
 separate release.
 
 Chart versions before 0.20.0 called this map `queues`. Rename the key to
-`runnerPools` in your values when upgrading; the entries inside are unchanged,
+`runnerPools` in your values when upgrading. The entries inside are unchanged,
 and so are the resource names. The chart fails rather than install with
 `queues` still set, since ignoring it would remove every runner. Upgrade with
 your complete migrated values file and `--reset-values`. Without a values file,
@@ -115,13 +115,13 @@ stored `queues` even when you pass `--set queues=null`.
 | `queue` | required | Buildkite queue key the agents serve and scale on. |
 | `maxReplicas` | required | Upper bound on runners. |
 | `minReplicas` | `1` | Runners kept when the queue is idle. |
-| `runtime` | `standard` | `standard`, `dind`, `kata` or `sysbox`; see [Runner isolation](#runner-isolation). |
+| `runtime` | `standard` | `standard`, `dind`, `kata` or `sysbox`. See [Runner isolation](#runner-isolation). |
 | `ephemeralAgent` | `false` | Replace the agent after every job, with a clean workspace. The Pod persists. See [Ephemeral agents](#ephemeral-agents). |
 | `terminationGracePeriodSeconds` | `3600` | Longest time an agent may take to drain its job. |
 | `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales a pool with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
 | `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
 | `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `dind`, `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. With `standard` and `ephemeralAgent`, the image also needs `/bin/sh`. |
-| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `dind`, `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. `docker.ociAccelerator` (default `true`) pulls through the [OCI accelerator](#image-pull-caching) when it is enabled. `docker.stepImages` (default `true`) runs steps that set `image:` in that image; see [Step images](#step-images). |
+| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `dind`, `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. `docker.ociAccelerator` (default `true`) pulls through the [OCI accelerator](#image-pull-caching) when it is enabled. `docker.stepImages` (default `true`) runs steps that set `image:` in that image. See [Step images](#step-images). |
 
 ### Examples
 
@@ -152,8 +152,8 @@ runnerPools:
 
 Persistent Docker-in-Docker agents, for trusted jobs on clusters that can't
 run Kata or Sysbox. Each Pod runs one long-lived agent next to a privileged
-Docker daemon, on any node; see [Privileged Docker-in-Docker](#privileged-docker-in-docker)
-before using it:
+Docker daemon, on any node. See
+[Privileged Docker-in-Docker](#privileged-docker-in-docker) before using it:
 
 ```yaml
 runnerPools:
@@ -187,7 +187,7 @@ runnerPools:
 ```
 
 Helm then removes the pool's `Deployment` and `ScaledObject`, and its agents
-drain their current jobs. `maxReplicas` must be at least 1; to keep a pool
+drain their current jobs. `maxReplicas` must be at least 1. To keep a pool
 without idle runners, set `minReplicas: 0` instead.
 
 ## Autoscaling
@@ -239,9 +239,9 @@ finalizers, owner references and every other annotation must stay the same.
 
 The policy and binding are cluster-scoped, so installing the chart needs
 permission to create them, and Kubernetes 1.30 or later. If you can't grant
-that, set `deletionCost.admissionPolicy.enabled: false`; the sidecar then works
-the same, but its token can change any Pod in the namespace, so install the
-chart in a namespace dedicated to runners.
+that, set `deletionCost.admissionPolicy.enabled: false`. The sidecar then
+works the same, but its token can change any Pod in the namespace, so install
+the chart in a namespace dedicated to runners.
 
 ### Node autoscaling
 
@@ -268,14 +268,14 @@ Set `runtime` in `defaults` or on a runner pool to choose its isolation profile:
 | Value | Runner Pod |
 | --- | --- |
 | `standard` (default) | A Buildkite agent in a regular Kubernetes Pod, with no Docker daemon. |
-| `dind` | An agent and privileged Docker native sidecar in a regular Pod on any node. Not isolation; see [Privileged Docker-in-Docker](#privileged-docker-in-docker). |
+| `dind` | An agent and privileged Docker native sidecar in a regular Pod on any node. Not isolation. See [Privileged Docker-in-Docker](#privileged-docker-in-docker). |
 | `kata` | An agent and privileged Docker native sidecar inside the `kata-qemu-runtime-rs` VM RuntimeClass. |
 | `sysbox` | An agent and unprivileged Docker native sidecar using the `sysbox-runc` RuntimeClass and Kubernetes user namespaces. |
 
 Different entries in one release can use different profiles. `standard` and
 `dind` need nothing installed. Kata and Sysbox are host runtimes, so the chart
-deliberately does not install them or modify containerd. Like KEDA, they are cluster-wide installs, done
-once per cluster before installing the chart:
+deliberately does not install them or modify containerd. Like KEDA, they are
+cluster-wide installs, done once per cluster before installing the chart:
 
 | `runtime` | RuntimeClass | Installer | Nodes |
 | --- | --- | --- | --- |
@@ -283,7 +283,7 @@ once per cluster before installing the chart:
 | `sysbox` | `sysbox-runc` | [sysbox-deploy-k8s](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md) | Kubernetes user namespaces support, labelled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=sysbox` |
 
 Each installer must target the runtime's nodes and tolerate their
-`experiments.buildkite.com/runtime=<kata|sysbox>:NoSchedule` taint; neither
+`experiments.buildkite.com/runtime=<kata|sysbox>:NoSchedule` taint. Neither
 does by default. With node autoscaling, the installer must also run on newly
 added nodes before runners are scheduled there. For kata-deploy, add to its
 Helm values:
@@ -297,8 +297,8 @@ tolerations:
 
 For Sysbox, label the nodes `sysbox-install=yes` as upstream requires, and
 patch the `sysbox-deploy-k8s` DaemonSet, for example as a Kustomize patch.
-The tolerations list replaces upstream's, so keep its `sysbox-runtime=not-running`
-toleration:
+The tolerations list replaces upstream's, so keep its
+`sysbox-runtime=not-running` toleration:
 
 ```yaml
 spec:
@@ -311,7 +311,7 @@ spec:
         - {key: experiments.buildkite.com/runtime, operator: Equal, value: sysbox, effect: NoSchedule}
 ```
 
-The `dind`, `kata` and `sysbox` profiles require Kubernetes native sidecars;
+The `dind`, `kata` and `sysbox` profiles require Kubernetes native sidecars.
 Sysbox additionally requires Kubernetes user namespaces. Their Docker data and
 workspace are Pod-local and are discarded when an agent Pod is removed.
 
@@ -340,13 +340,13 @@ for the `privileged` level, for example
 `kubectl label namespace <namespace> pod-security.kubernetes.io/enforce=privileged`.
 `kata` runners need the same, because their Docker daemon is privileged inside
 the VM. The chart adds no node selector or toleration for `dind`, so its Pods
-can land on any node; dedicated nodes for `dind` runners aren't configurable
+can land on any node. Dedicated nodes for `dind` runners aren't configurable
 yet.
 
 ### Ephemeral agents
 
 `ephemeralAgent` controls the Buildkite agent, not the Pod. Runner Pods always
-persist across jobs; only autoscaling adds or removes them.
+persist across jobs. Only autoscaling adds or removes them.
 
 By default (`ephemeralAgent: false`) agents are persistent: one agent registers
 when its Pod starts and runs job after job, so whatever a job leaves behind is
@@ -379,7 +379,7 @@ What is reset between jobs:
 | `standard` | The agent process and its registration, and the contents of `/buildkite/builds` (checkouts) and `/buildkite/plugins`. | The Pod and its node, and the agent container with the rest of its filesystem: `/tmp`, the home directory, packages or tools a job installed, caches outside `/buildkite`, and any processes a job left running. |
 | `dind`, `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches, and the Docker client configuration (`DOCKER_CONFIG`, including logins). |
 
-Ephemeral agents keep successive jobs' state apart; they are not a security
+Ephemeral agents keep successive jobs' state apart, but they are not a security
 boundary between them. Anything a job can reach that persists, such as files
 outside the workspace in a `standard` container or the Pod's Docker image
 cache, remains available to later jobs.
@@ -399,36 +399,38 @@ defaults:
 
 `image` remains the agent-binary source (`buildkite/agent:4` by default). Docker
 mounts its filesystem read-only at `/opt/buildkite-agent-source` inside the
-runtime; it is not overlaid on the runtime's root. Startup copies only the agent
-binary to `/buildkite/bin/buildkite-agent` and runs that copy. The shared path is
-first on `PATH` and is the agent's `BUILDKITE_BIN_PATH`, so Docker/Compose plugins
-and step containers can bind-mount it without inheriting the source-image mount.
-No extraction container or custom combined image is needed; the existing
-between-job workspace cleanup is unchanged.
+runtime, rather than overlaying it on the runtime's root. Startup copies only
+the agent binary to `/buildkite/bin/buildkite-agent` and runs that copy. The
+shared path is first on `PATH` and is the agent's `BUILDKITE_BIN_PATH`, so
+Docker/Compose plugins and step containers can bind-mount it without
+inheriting the source-image mount. No extraction container or custom combined
+image is needed, and the existing between-job workspace cleanup is unchanged.
 
 The runtime must match the source binary's architecture and provide `/bin/sh`,
-`cp`, a writable workspace and whatever tools/hooks the jobs require. Source-image
-configuration and hooks are not copied. With step images enabled it also needs
-the Docker CLI and `setsid`; Docker/Compose plugins need their usual tooling.
-Without a selected step image, the whole job runs in this runtime, including
-initial hooks. A selected explicit/default step image instead runs the whole
-job there. If the runtime is already the desired job image, leave
-`defaultStepImage` empty to avoid a redundant container. Setting
-`docker.stepImages: false` also keeps the whole job in this runtime, but ignores
-explicit step images too.
+`cp`, a writable workspace and whatever tools/hooks the jobs require.
+Source-image configuration and hooks are not copied. With step images enabled
+it also needs the Docker CLI and `setsid`. Docker/Compose plugins need their
+usual tooling. Without a selected step image, the whole job runs in this
+runtime, including initial hooks. A selected explicit/default step image
+instead runs the whole job there. If the runtime is already the desired job
+image, leave `defaultStepImage` empty to avoid a redundant container. Setting
+`docker.stepImages: false` also keeps the whole job in this runtime, but
+ignores explicit step images too.
 
-Override `docker.agentRuntimeImage` per pool; `""` clears an inherited runtime.
-An empty default preserves the existing behavior. Nonempty values are rejected
-for persistent agents or `standard` runners rather than silently ignored.
+Override `docker.agentRuntimeImage` per pool, or set it to `""` to clear an
+inherited runtime. An empty default preserves the existing behavior. Nonempty
+values are rejected for persistent agents or `standard` runners rather than
+silently ignored.
 
 Requires Docker Engine/CLI 29+ and the containerd image store for `type=image`
-mounts. The opt-in explicitly enables that store; for Sysbox this replaces the
+mounts. The opt-in explicitly enables that store. For Sysbox this replaces the
 usual classic `overlay2` selection. It does not migrate an existing daemon's
 images: a runner Pod replacement starts with a fresh emptyDir image cache. The
 supervisor refuses an incompatible store instead of falling back to an overlay
 or extraction helper. CI exercises isolated Docker image mounts, not Sysbox or
-Kata host/runtime compatibility; validate those before rolling out an opted-in
-pool. The feature is not enabled in any deployed values by this chart change.
+Kata host/runtime compatibility, so validate those before rolling out an
+opted-in pool. The feature is not enabled in any deployed values by this chart
+change.
 
 Both source and runtime are pulled only when missing, reusing cached mutable
 tags between agents, not requesting per-job freshness. Coordinate active jobs
@@ -452,14 +454,14 @@ defaults:
 ```
 
 An explicit nonempty step `image:` takes precedence. Override
-`docker.defaultStepImage` per pool, or set it to `""` there to clear the default.
-With neither a step image nor a default, the usual bootstrap runs unchanged.
-This does not change `defaults.image`, the agent-binary source. For either a
-step image or the configured default, a container started in the Pod's Docker
-daemon runs one full `buildkite-agent bootstrap`: plugins, checkout, hooks and
-commands. Hook-added, changed and unset environment variables, and changes to
-the working directory, stay in the same executor through the command phase.
-This does not fix the agent's own environment semantics: agent 4.8 can
+`docker.defaultStepImage` per pool, or set it to `""` there to clear the
+default. With neither a step image nor a default, the usual bootstrap runs
+unchanged. This does not change `defaults.image`, the agent-binary source. For
+either a step image or the configured default, a container started in the Pod's
+Docker daemon runs one full `buildkite-agent bootstrap`: plugins, checkout,
+hooks and commands. Hook-added, changed and unset environment variables, and
+changes to the working directory, stay in the same executor through the command
+phase. This does not fix the agent's own environment semantics: agent 4.8 can
 reintroduce a hook-unset variable if it was inherited at bootstrap startup,
 because its subprocess layer merges the original OS environment back in.
 Variables created by an earlier hook and later unset are not affected.
@@ -470,7 +472,7 @@ whole-job environments. Supply Git and all initial hook/checkout tools in the
 selected image (for example AWS CLI for AWS plugin environment hooks).
 Agent-image tools, global hooks, home-directory files and configuration are not
 automatically copied into it. Private step images must be pullable using the
-existing Docker client configuration before their own hooks can run; a login
+existing Docker client configuration before their own hooks can run. A login
 performed by a job hook is too late to pull that job's image.
 
 The container mounts the `/buildkite` workspace at the same path, so it sees
@@ -518,11 +520,11 @@ ociAccelerator:
   registries: [registry-1.docker.io, ghcr.io, public.ecr.aws]
 ```
 
-Every `dind`, `kata` and `sysbox` entry then uses it. Set `docker.ociAccelerator: false`
-on an entry to pull directly.
+Every `dind`, `kata` and `sysbox` entry then uses it. Set
+`docker.ociAccelerator: false` on an entry to pull directly.
 
 The proxy signs registry certificates with its own root CA, which it loads from
-a Secret in the release namespace; it never generates one itself. Runner Pods
+a Secret in the release namespace. It never generates one itself. Runner Pods
 trust only the CA's certificate, which they mount from a separate ConfigMap,
 `<release>-buildkite-operator-oci-accelerator-ca-cert`, so only the proxy
 references the Secret holding the private key. By default the chart generates
@@ -532,7 +534,7 @@ the CA. Before install and every upgrade, a hook Job runs the accelerator's
 exists, so the CA is created once and then kept. The same Job then copies the
 certificate from the Secret into the ConfigMap, creating or updating it, so
 upgrading a release installed before the ConfigMap existed creates it. A second
-hook Job deletes the ConfigMap and the Secret after `helm uninstall`;
+hook Job deletes the ConfigMap and the Secret after `helm uninstall`, but
 `helm uninstall --no-hooks` leaves them behind. The hook Jobs run with a
 short-lived ServiceAccount that may create Secrets and ConfigMaps, but may
 read or delete only that Secret and ConfigMap and update only the ConfigMap,
@@ -574,15 +576,15 @@ The chart installs:
   supports NetworkPolicy.
 
 Each daemon sends all of its HTTPS traffic through the proxy. Only
-`registries` are cached; other hosts are tunnelled through it unchanged. List
+`registries` are cached. Other hosts are tunnelled through it unchanged. List
 hosts the proxy cannot reach, such as in-cluster registries, in `noProxy`.
 Pulls fail while the proxy is unavailable. Job containers don't inherit the
 daemon's proxy settings.
 
 Multiple replicas work with or without peering. Without peering, each proxy
 fills its cache independently from origin, even if another proxy has the
-content. The Service distributes connections, not individual image layers;
-long-lived connections can keep using the same replica. Proxies prefer
+content. The Service distributes connections, not individual image layers,
+so long-lived connections can keep using the same replica. Proxies prefer
 spreading across nodes without requiring a separate node for each replica.
 Cache size and resource requests apply **per replica**.
 
@@ -594,7 +596,8 @@ a terminating proxy can still fail, even with multiple replicas.
 **Upgrading from 0.16:** the accelerator changes from a Deployment to a
 StatefulSet, discarding the old workload's cache and potentially interrupting
 pulls. Schedule this one-time transition outside active builds. The proxy
-Service and CA stay the same, so runners need no configuration change or restart.
+Service and CA stay the same, so runners need no configuration change or
+restart.
 
 #### Peering
 
@@ -610,22 +613,22 @@ ociAccelerator:
 ```
 
 Runners keep using the same proxy Service on port 3128. The StatefulSet's
-headless Service also exposes port 7443; the chart seeds each proxy with all the
+headless Service also exposes port 7443. The chart seeds each proxy with all the
 replicas' names, including its own, which the accelerator ignores. Seeds are
 DNS names, not snapshots of Pod IPs, so replacements can rediscover each other.
 Pods start in parallel, and peer DNS is published before readiness. No API
 access or discovery sidecar is needed.
 
 Peers use mutual TLS with the release's existing CA and private key. The
-NetworkPolicy allows port 7443 only between this release's accelerator Pods;
-runner access stays limited to port 3128. Keep the existing CA-key
+NetworkPolicy allows port 7443 only between this release's accelerator Pods,
+and runner access stays limited to port 3128. Keep the existing CA-key
 placement precautions below for every proxy node.
 
 Each replica has its own `emptyDir` cache and peer state. Both survive container
 restarts, but Pod replacement loses its cache and creates a new peer identity.
 Peering is not sharding or proactive replication: popular content can be
 duplicated across caches, and losing every proxy Pod loses all cached content.
-A peer miss or unavailable peer falls back to origin; the requesting proxy
+A peer miss or unavailable peer falls back to origin. The requesting proxy
 still obtains upstream registry authorization before fetching peer content.
 Mutable tag responses are not shared.
 
@@ -636,8 +639,8 @@ new proxy can initially fetch from origin before peer hints are available.
 Switching peering on or off rolls the existing StatefulSet, replacing each
 Pod's cache and peer identity without changing workload kind, governing Service,
 runner endpoint or CA. Runner Pods need no configuration change or restart.
-The 40-second Pod termination grace covers the default proxy and peer drains;
-keep any `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` override below half that budget,
+The 40-second Pod termination grace covers the default proxy and peer drains.
+Keep any `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` override below half that budget,
 leaving time for cleanup.
 
 #### Cache storage and trust
@@ -665,10 +668,10 @@ reference only the certificate's ConfigMap, never the CA Secret. This matters
 because a node's kubelet can read every key of any Secret that a Pod on the
 node references, whatever `items` the Pod mounts, so a job that escapes to its
 node can read those Secrets. The private key is mounted only in the proxy, and
-held briefly by the hook Job that generates or copies it.
-Pods read the CA at startup, so after replacing it restart the
-proxy StatefulSet and the runner Deployments. Other `OCI_ACCELERATOR_*` settings can
-be passed through `ociAccelerator.extraEnv`; see the accelerator's
+held briefly by the hook Job that generates or copies it. Pods read the CA at
+startup, so after replacing it restart the proxy StatefulSet and the runner
+Deployments. Other `OCI_ACCELERATOR_*` settings can be passed through
+`ociAccelerator.extraEnv`. See the accelerator's
 [deployment guide](https://github.com/buildkite/oci-accelerator/blob/main/docs/deployment.md#configuration).
 
 The proxy's node holds the CA private key that every accelerated daemon
@@ -680,7 +683,8 @@ proxy with `ociAccelerator.nodeSelector` and `tolerations`, for example on
 nodes tainted for `kata` or `sysbox`, or on dedicated system nodes. The hook
 Jobs that generate, copy and delete the CA use the same placement. Without the
 deletion-cost admission policy, such a job could instead use a runner's token
-to change the proxy Pod's image; see [Scale-in preference](#scale-in-preference).
+to change the proxy Pod's image. See
+[Scale-in preference](#scale-in-preference).
 
 ### Registry credentials
 
@@ -701,7 +705,8 @@ registryCredentials:
 The chart stores them in one `kubernetes.io/dockerconfigjson` Secret,
 `<release>-buildkite-operator-registry-credentials`. Values set this way are
 also kept in Helm's release Secret. To manage the Secret yourself instead,
-create it in the release namespace and set `registryCredentials.existingSecret.name`:
+create it in the release namespace and set
+`registryCredentials.existingSecret.name`:
 
 ```bash
 kubectl create secret docker-registry registry-credentials \
@@ -721,7 +726,7 @@ The credentials are used in two places:
   just before them and deletes once they finish.
 - `dind`, `kata` and `sysbox` runners copy them into the Docker client
   configuration that jobs use. Docker daemons don't hold credentials
-  themselves; the `docker` CLI sends them with each pull, run and build.
+  themselves. The `docker` CLI sends them with each pull, run and build.
   `standard` runners have no Docker daemon, so they only get `imagePullSecrets`.
 
 Every `dind`, `kata` and `sysbox` runner Pod has a writable Docker client
@@ -764,16 +769,16 @@ may clear the current kubeconfig context.
 The chart E2E test temporarily pins Kind 0.30's Kindnet image by digest because
 CI's kernel lacks `CONFIG_NETFILTER_NETLINK_GLUE_CT`, required by newer policy
 engines to recognise allowed connections' replies. This changes only the test
-cluster's CNI; the chart's NetworkPolicy and peer-isolation checks are unchanged.
-Remove the pin once CI provides that kernel capability.
+cluster's CNI. The chart's NetworkPolicy and peer-isolation checks are
+unchanged. Remove the pin once CI provides that kernel capability.
 
 ## Chart releases
 
 Buildkite publishes tagged chart releases to the public Docker Hub repository
 `buildkite/buildkite-operator-chart`, using the OCI registry at
-`registry-1.docker.io`. No GitHub Actions workflow is required. Publication waits
-for all pipeline checks on the tagged commit to pass, including the chart E2E
-test.
+`registry-1.docker.io`. No GitHub Actions workflow is required. Publication
+waits for all pipeline checks on the tagged commit to pass, including the chart
+E2E test.
 
 ### One-time setup
 
@@ -782,18 +787,19 @@ test.
 - Use the public Docker Hub repository `buildkite/buildkite-operator-chart`.
   Keep chart releases in this dedicated repository, not a container-image
   repository with overlapping version tags.
-- Create a Buildkite Secret named `DOCKERHUB_TOKEN` in the
-  agent cluster. Use a Docker Hub organization access token for `buildkite`
-  with **Read & Write** access to `buildkite-operator-chart`, without delete
-  access. The publisher uses the fixed username `buildkite`; no username secret
-  is needed. Do not put the token in pipeline YAML or repository files.
+- Create a Buildkite Secret named `DOCKERHUB_TOKEN` in the agent cluster. Use a
+  Docker Hub organization access token for `buildkite` with **Read & Write**
+  access to `buildkite-operator-chart`, without delete access. The publisher
+  uses the fixed username `buildkite`, so no username secret is needed. Do not
+  put the token in pipeline YAML or repository files.
 - Restrict secrets to this pipeline and trusted build contexts using
   [agent access policies](https://buildkite.com/docs/pipelines/security/secrets/buildkite-secrets/access-policies).
-  These policies support pipeline and branch claims, not step-key or tag claims;
-  the release step's `if` condition is not a secret access boundary. Do not grant
-  publishing credentials to untrusted pull request builds. If they share this
-  pipeline, isolate release access with an appropriately restricted agent queue
-  or separate release pipeline before enabling the secrets.
+  These policies support pipeline and branch claims, not step-key or tag
+  claims. The release step's `if` condition is not a secret access boundary.
+  Do not grant publishing credentials to untrusted pull request builds. If
+  they share this pipeline, isolate release access with an appropriately
+  restricted agent queue or separate release pipeline before enabling the
+  secrets.
 - Protect `chart-v*` tags in GitHub so only trusted maintainers can create,
   change, or delete them: tagged repository code runs with publishing access.
 
@@ -802,15 +808,15 @@ test.
 Merge the chart changes and version bump first, then tag that commit
 `chart-v<version>`, for example `chart-v0.20.0` for `version: 0.20.0` in
 `charts/buildkite-operator/Chart.yaml`, and push the tag. Only stable
-`major.minor.patch` releases are supported; `appVersion` is not used as the
+`major.minor.patch` releases are supported. `appVersion` is not used as the
 release version.
 
 The release script, `.buildkite/publish-chart.py`, rejects mismatched versions
-and existing published versions.
-Registry authentication and network errors fail the release rather than being
-treated as a missing version. Buildkite serializes publishing jobs so two builds
-cannot pass the existing-version check concurrently. Docker Hub tags are mutable
-by default; do not overwrite releases with other publishing tools.
+and existing published versions. Registry authentication and network errors
+fail the release rather than being treated as a missing version. Buildkite
+serializes publishing jobs so two builds cannot pass the existing-version check
+concurrently. Docker Hub tags are mutable by default, so do not overwrite
+releases with other publishing tools.
 
 The script packages the chart, pushes it, then pulls it by its published OCI
 digest and compares the downloaded package with the original. The build log
@@ -824,8 +830,8 @@ release just to make a retry succeed.
 
 ### Installing a release
 
-The chart repository is public; no Docker Hub credentials or registry login
-are required to install a release:
+The chart repository is public, so you don't need Docker Hub credentials or a
+registry login to install a release:
 
 ```bash
 helm upgrade --install buildkite-operator \
@@ -842,8 +848,8 @@ their own pull credentials. For digest-pinned installs, replace the chart URL
 with the `oci://…@sha256:…` reference from the release log and omit `--version`.
 
 Run `python3 hack/test_publish_chart.py` to test release handling locally. It
-uses real Helm chart packaging with simulated registry and credential services;
-it does not retrieve secrets or publish to Docker Hub.
+uses real Helm chart packaging with simulated registry and credential services.
+It does not retrieve secrets or publish to Docker Hub.
 
 ## License
 
