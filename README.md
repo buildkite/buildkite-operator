@@ -105,9 +105,10 @@ Chart versions before 0.20.0 called this map `queues`. Rename the key to
 `runnerPools` in your values when upgrading; the entries inside are unchanged,
 and so are the resource names. The chart fails rather than install with
 `queues` still set, since ignoring it would remove every runner. Upgrade with
-your complete migrated values file and `--reset-values`. `--reuse-values`
-can't migrate: Helm restores the release's stored `queues` even when you pass
-`--set queues=null`.
+your complete migrated values file and `--reset-values`. Without a values file,
+use `--reset-then-reuse-values --set queues=null` and set each pool under
+`runnerPools`. `--reuse-values` can't migrate: Helm restores the release's
+stored `queues` even when you pass `--set queues=null`.
 
 | Setting | Default | Description |
 | --- | --- | --- |
