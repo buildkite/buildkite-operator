@@ -63,9 +63,9 @@ token Secrets yourself. See
 
 ## Runner pools
 
-Each runner pool under `runnerPools` serves one Buildkite queue and inherits
-every setting from `defaults`, overriding any of them. For example, a values
-file serving a Kata pool and a Sysbox pool with ephemeral agents:
+Each runner pool serves one Buildkite queue and inherits every setting from
+`defaults`, overriding any of them. For example, a values file serving a Kata
+pool and a Sysbox pool with ephemeral agents:
 
 ```yaml
 defaults:
@@ -76,6 +76,7 @@ runnerPools:
     queue: linux
     runtime: kata
     maxReplicas: 10
+
   build-sysbox:
     queue: build
     runtime: sysbox
@@ -88,47 +89,61 @@ runnerPools:
           memory: 16Gi
 ```
 
-Every pool needs `queue` and `maxReplicas`. Pool names are lowercase letters,
-digits and hyphens. Each Buildkite queue may appear in only one pool, because
-KEDA scales a pool on its queue's whole job count. Because `runnerPools` is a
-map, a later values file can change one pool (`linux-kata: {maxReplicas: 25}`)
-or remove it (`build-sysbox: null`) without restating the others. With no
-pools, the chart installs nothing.
+Pool rules:
 
-Each pool is a `Deployment` whose Pods are labeled
-`buildkite.com/runner-pool: <pool>`, and a `ScaledObject` that scales it, both
-named `<release>-<pool>`. The token Secret, KEDA `TriggerAuthentication`, and
-deletion-cost permissions and scripts are shared by all pools in a release.
-Queues in a different Buildkite cluster need a different token, so they use a
+- Every pool needs `queue` and `maxReplicas`.
+- Pool names use lowercase letters, digits and hyphens, and start and end with
+  a letter or digit.
+- The release and pool names combined can be at most 50 characters.
+- Each Buildkite queue can appear in only one pool, because KEDA scales a pool
+  on its queue's whole job count.
+- With no pools, the chart installs nothing.
+
+Because `runnerPools` is a map, a later values file can change one pool
+(`linux-kata: {maxReplicas: 25}`) or remove it (`build-sysbox: null`) without
+restating the others.
+
+Each pool gets a `Deployment` and a `ScaledObject`, both named
+`<release>-<pool>`. Its Pods are labeled `buildkite.com/runner-pool: <pool>`.
+All pools in a release share the token Secret, the KEDA
+`TriggerAuthentication`, and the deletion-cost permissions and scripts. Queues
+in a different Buildkite cluster need a different token, so put them in a
 separate release.
 
-Chart versions before 0.20.0 called this map `queues`. Rename the key to
-`runnerPools` in your values when upgrading. The entries inside are unchanged,
-and so are the resource names. The chart fails rather than install with
-`queues` still set, since ignoring it would remove every runner. Upgrade with
-your complete migrated values file and `--reset-values`. Without a values file,
-use `--reset-then-reuse-values --set queues=null` and set each pool under
-`runnerPools`. `--reuse-values` can't migrate: Helm restores the release's
-stored `queues` even when you pass `--set queues=null`.
+| Setting | Description |
+| --- | --- |
+| `queue` | (required) Buildkite queue key the agents serve and scale on. |
+| `maxReplicas` | (required) Upper bound on runners. |
+| `minReplicas` | (default `1`) Runners kept when the queue is idle. |
+| `runtime` | (default `standard`) `standard`, `dind`, `kata` or `sysbox`. See [Runner isolation](#runner-isolation). |
+| `ephemeralAgent` | (default `false`) Replace the agent after every job, with a clean workspace. The Pod persists. See [Ephemeral agents](#ephemeral-agents). |
+| `terminationGracePeriodSeconds` | (default `3600`) Longest time an agent may take to drain its job. |
+| `pollingInterval` | (default `10`) Seconds between KEDA's checks of the queue. |
+| `cooldownPeriod` | (default `60`) Seconds the queue must be fully idle before KEDA scales a pool with `minReplicas: 0` to zero. See [Autoscaling](#autoscaling). |
+| `scaleDownStabilizationWindowSeconds` | (default `60`) Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. |
+| `image` | (default `buildkite/agent:4`) Agent image. With `standard` and `ephemeralAgent`, it also needs `/bin/sh`. |
+| `resources` | (default none) Kubernetes `requests` and `limits` for the agent container. With `dind`, `kata` or `sysbox` and `ephemeralAgent`, agents run inside the Docker daemon, so use [`docker.resources`](#docker-settings) instead. |
+| `docker` | Docker daemon settings for `dind`, `kata` and `sysbox`. See [Docker settings](#docker-settings). |
 
-| Setting | Default | Description |
-| --- | --- | --- |
-| `queue` | required | Buildkite queue key the agents serve and scale on. |
-| `maxReplicas` | required | Upper bound on runners. |
-| `minReplicas` | `1` | Runners kept when the queue is idle. |
-| `runtime` | `standard` | `standard`, `dind`, `kata` or `sysbox`. See [Runner isolation](#runner-isolation). |
-| `ephemeralAgent` | `false` | Replace the agent after every job, with a clean workspace. The Pod persists. See [Ephemeral agents](#ephemeral-agents). |
-| `terminationGracePeriodSeconds` | `3600` | Longest time an agent may take to drain its job. |
-| `pollingInterval`, `cooldownPeriod` | `10`, `60` | KEDA polling interval, and how long the queue must be fully idle before KEDA scales a pool with `minReplicas: 0` to zero, in seconds. KEDA removes every remaining runner at once, without waiting for `scaleDownStabilizationWindowSeconds`. To keep an idle pool longer, raise `cooldownPeriod`. |
-| `scaleDownStabilizationWindowSeconds` | `60` | Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. Covers dips between dependent steps. |
-| `image`, `resources` | `buildkite/agent:4` | Agent image, and requests and limits for the agent container. With `dind`, `kata` or `sysbox` and `ephemeralAgent`, `resources` is ignored: agents run as containers inside the Docker daemon and share its `docker.resources` budget. With `standard` and `ephemeralAgent`, the image also needs `/bin/sh`. |
-| `docker` | `docker:29.7.2-dind` | Docker daemon image, resources and storage for `dind`, `kata` and `sysbox`. With `ephemeralAgent`, `docker.resources` also bounds the agent containers. `docker.ociAccelerator` (default `true`) pulls through the [OCI accelerator](#image-pull-caching) when it is enabled. `docker.stepImages` (default `true`) runs steps that set `image:` in that image. See [Step images](#step-images). |
+### Docker settings
+
+`dind`, `kata` and `sysbox` runners also take Docker daemon settings under
+`docker`:
+
+| Setting | Description |
+| --- | --- |
+| `docker.image` | (default `docker:29.7.2-dind`) Docker daemon image. |
+| `docker.resources` | (default 2 CPUs, 4Gi memory and 15Gi disk requested, limited to 4 CPUs, 8Gi and 50Gi) Kubernetes `requests` and `limits` for the Docker daemon. With `ephemeralAgent`, they also bound the agent containers. |
+| `docker.storage.data` | (default `40Gi`) Size limit of the `emptyDir` for Docker's data in `/var/lib/docker`. |
+| `docker.storage.workspace` | (default `10Gi`) Size limit of the `emptyDir` for the `/buildkite` workspace. |
+| `docker.ociAccelerator` | (default `true`) Pull through the [OCI accelerator](#image-pull-caching) when it is enabled. |
+| `docker.stepImages` | (default `true`) Run steps that set `image:` in that image. See [Step images](#step-images). |
+| `docker.defaultStepImage` | (default none) Image for steps without `image:`. See [Step images](#step-images). |
+| `docker.agentRuntimeImage` | (default none) Separate runtime image for ephemeral agents. See [Agent runtime image](#agent-runtime-image). |
 
 ### Examples
 
-Ephemeral standard agents. Every job gets a fresh agent and an empty workspace
-in a plain Pod with no Docker daemon. The container keeps running, so files
-outside the workspace carry over between jobs:
+#### Ephemeral standard agents
 
 ```yaml
 runnerPools:
@@ -138,9 +153,12 @@ runnerPools:
     maxReplicas: 10
 ```
 
-Persistent Sysbox agents. Each Pod runs one long-lived agent next to an
-unprivileged Docker daemon, so containers, volumes, checkouts and caches carry
-over between jobs. The pool scales to zero when the queue is idle:
+- Each Pod runs a fresh agent for every job, with no Docker daemon.
+- Between jobs: the workspace is emptied, but files outside it carry over
+  because the container keeps running.
+- Use it for jobs that don't need Docker.
+
+#### Persistent Sysbox agents
 
 ```yaml
 runnerPools:
@@ -151,10 +169,11 @@ runnerPools:
     maxReplicas: 4
 ```
 
-Persistent Docker-in-Docker agents, for trusted jobs on clusters that can't
-run Kata or Sysbox. Each Pod runs one long-lived agent next to a privileged
-Docker daemon, on any node. See
-[Privileged Docker-in-Docker](#privileged-docker-in-docker) before using it:
+- Each Pod runs one long-lived agent next to an unprivileged Docker daemon.
+- Between jobs: containers, volumes, checkouts and caches carry over.
+- The pool scales to zero when the queue is idle.
+
+#### Persistent Docker-in-Docker agents
 
 ```yaml
 runnerPools:
@@ -164,9 +183,13 @@ runnerPools:
     maxReplicas: 4
 ```
 
-Ephemeral Kata agents. Each job runs in a fresh agent container inside a
-VM-isolated Pod. Afterwards its containers, networks, volumes and workspace are
-removed, while Docker's image and build caches are kept:
+- Each Pod runs one long-lived agent next to a privileged Docker daemon, on any
+  node.
+- Between jobs: containers, volumes, checkouts and caches carry over.
+- Use it only for trusted jobs on clusters that can't run Kata or Sysbox, and
+  read [Privileged Docker-in-Docker](#privileged-docker-in-docker) first.
+
+#### Ephemeral Kata agents
 
 ```yaml
 runnerPools:
@@ -177,9 +200,13 @@ runnerPools:
     maxReplicas: 6
 ```
 
-To turn a pool off, comment out or delete it, or set it to `null` in a
-later values file, for example `helm upgrade ... -f values.yaml -f off.yaml`
-with:
+- Each Pod runs a fresh agent container for every job, in a Docker daemon
+  inside a VM.
+- Between jobs: containers, networks, volumes and the workspace are removed,
+  but Docker's image and build caches carry over.
+- Use it for untrusted jobs, since each Pod runs in its own VM.
+
+#### Turning a pool off
 
 ```yaml
 # off.yaml
@@ -187,9 +214,13 @@ runnerPools:
   untrusted: null
 ```
 
-Helm then removes the pool's `Deployment` and `ScaledObject`, and its agents
-drain their current jobs. `maxReplicas` must be at least 1. To keep a pool
-without idle runners, set `minReplicas: 0` instead.
+- Apply it in a later values file, for example
+  `helm upgrade ... -f values.yaml -f off.yaml`, or comment out or delete the
+  pool instead.
+- Helm removes the pool's `Deployment` and `ScaledObject`, and its agents drain
+  their current jobs.
+- To keep a pool without idle runners, set `minReplicas: 0` instead, since
+  `maxReplicas` must be at least 1.
 
 ## Autoscaling
 
@@ -200,7 +231,8 @@ removes runners only after the lower count has persisted for
 `scaleDownStabilizationWindowSeconds`, because jobs blocked on `depends_on` are
 not counted until their dependencies finish. Once the queue has no scheduled or
 running jobs, a pool with `minReplicas: 0` scales to zero after
-`cooldownPeriod` instead.
+`cooldownPeriod` instead, removing every remaining runner at once without
+waiting for `scaleDownStabilizationWindowSeconds`.
 
 KEDA's HPA chooses scale-in victims without confirming that a selected agent is
 idle. The agent drains a running job on its first SIGTERM, bounded by
