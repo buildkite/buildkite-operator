@@ -53,6 +53,15 @@ defaults:
   # Longest time an agent may take to drain its job once a runner is removed.
   terminationGracePeriodSeconds: 3600
 
+  # Rolling update budgets, as nonnegative counts or percentage strings.
+  # Increase maxSurge for faster rollouts when the cluster has spare capacity.
+  # maxUnavailable allows available runner capacity to drop during a rollout.
+  # At least one must be nonzero. Terminating Pods can use extra resources
+  # while their agents drain jobs, beyond the maxSurge budget.
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
   # Separate so you can override only the tag, such as
   # --set defaults.image.tag=4.2.0. Needs /bin/sh, except for persistent
   # standard agents.

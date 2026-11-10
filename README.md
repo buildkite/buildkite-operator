@@ -614,12 +614,34 @@ Each runner pool takes these settings, directly or from `defaults`:
 | `runtime` | (default `standard`) `standard`, `dind`, `kata` or `sysbox`. See [Runtimes](#runtimes). |
 | `ephemeralAgent` | (default `false`) Replace the agent after every job, with a clean workspace. The Pod persists. See [Ephemeral agents](#ephemeral-agents). |
 | `terminationGracePeriodSeconds` | (default `3600`) Longest time an agent may take to drain its job. |
+| `rollingUpdate.maxUnavailable` | (default `0`) Maximum unavailable runner Pods during a rollout, as a nonnegative count or percentage string from `"0%"` to `"100%"`. |
+| `rollingUpdate.maxSurge` | (default `1`) Maximum extra non-terminating runner Pods above the desired replica count during a rollout, as a nonnegative count or percentage string. |
 | `pollingInterval` | (default `10`) Seconds between KEDA's checks of the queue. |
 | `cooldownPeriod` | (default `60`) Seconds the queue must be fully idle before KEDA scales a pool with `minReplicas: 0` to zero. See [Autoscaling](#autoscaling). |
 | `scaleDownStabilizationWindowSeconds` | (default `60`) Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. |
 | `image` | (default `buildkite/agent:4`) Agent image. It needs `/bin/sh`, except for persistent `standard` agents. |
 | `resources` | (default none) Kubernetes `requests` and `limits` for the agent container. With `dind`, `kata` or `sysbox` and `ephemeralAgent`, agents run inside the Docker daemon, so use [`docker.resources`](#docker-settings) instead. |
 | `docker` | Docker daemon settings for `dind`, `kata` and `sysbox`. See [Docker settings](#docker-settings). |
+
+For faster rollouts with spare cluster capacity, increase `maxSurge` while
+keeping `maxUnavailable: 0`. Set it for every pool or override one pool:
+
+```yaml
+defaults:
+  rollingUpdate:
+    maxSurge: 20
+
+runnerPools:
+  linux:
+    queue: linux
+    maxReplicas: 200
+    rollingUpdate:
+      maxSurge: 30
+```
+
+At least one budget must be nonzero. Raising `maxUnavailable` lets available
+runner capacity drop during the rollout. Terminating Pods can still consume
+resources while their agents drain jobs, beyond the `maxSurge` budget.
 
 ### Docker settings
 

@@ -41,8 +41,8 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
+      maxUnavailable: {{ $r.rollingUpdate.maxUnavailable }}
+      maxSurge: {{ $r.rollingUpdate.maxSurge }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "buildkite-operator.name" $ }}
