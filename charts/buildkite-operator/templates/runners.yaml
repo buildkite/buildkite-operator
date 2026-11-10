@@ -149,8 +149,8 @@ spec:
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
             {{- if $accelerated }}
-            # Docker Engine does not read certs.d for Docker Hub with the classic
-            # image store, so the daemon trusts the CA for every host instead.
+            # Trusts OCI Accelerator's CA for every host. See
+            # "OCI Accelerator CA" in docs/appendices.md.
             - name: SSL_CERT_DIR
               value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs
             {{- end }}
