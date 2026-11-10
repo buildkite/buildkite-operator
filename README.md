@@ -36,7 +36,8 @@ After installing KEDA:
 - To skip the check, set `keda.validateInstallation: false`.
 
 Some features need more: Kubernetes 1.30 or later for the
-[deletion-cost admission policy](#scale-in-preference), native sidecars for
+[deletion-cost admission policy](docs/wip_deployment.md#deletion-cost-admission-policy),
+native sidecars for
 the [`dind`, `kata` and `sysbox` runtimes](#runner-isolation), and Kata or
 Sysbox installed on the nodes for those runtimes.
 
@@ -224,21 +225,28 @@ runnerPools:
 
 ## Autoscaling
 
-KEDA polls Buildkite's Agent Metrics API. For each runner pool it scales for
-`scheduled + running` jobs, keeps one runner warm by default, and scales up to
-the pool's `maxReplicas`. While jobs are scheduled or running, the HPA
-removes runners only after the lower count has persisted for
-`scaleDownStabilizationWindowSeconds`, because jobs blocked on `depends_on` are
-not counted until their dependencies finish. Once the queue has no scheduled or
-running jobs, a pool with `minReplicas: 0` scales to zero after
-`cooldownPeriod` instead, removing every remaining runner at once without
-waiting for `scaleDownStabilizationWindowSeconds`.
+KEDA polls Buildkite's Agent Metrics API and sizes each runner pool to its
+queue's `scheduled + running` job count, between `minReplicas` (one by default)
+and `maxReplicas`.
 
-KEDA's HPA chooses scale-in victims without confirming that a selected agent is
-idle. The agent drains a running job on its first SIGTERM, bounded by
-`terminationGracePeriodSeconds`. The configured maximum bounds desired
-replicas, but terminating Pods may briefly overlap replacement capacity. KEDA
-stays installed when you uninstall a release of this chart, and several
+Scaling in happens in one of two ways:
+
+- While jobs are scheduled or running, the HPA removes runners only after the
+  lower count has lasted `scaleDownStabilizationWindowSeconds`.
+- Once the queue has no scheduled or running jobs, a pool with `minReplicas: 0`
+  scales to zero after `cooldownPeriod`, removing every remaining runner at
+  once.
+
+When a runner is removed:
+
+- Runner Pods with idle agents are removed first where possible. See
+  [Scale-in preference](#scale-in-preference).
+- The agent finishes its running job on its first SIGTERM, for up to
+  `terminationGracePeriodSeconds`.
+- Terminating Pods can briefly run alongside their replacements, so a pool can
+  have more than `maxReplicas` Pods for a short time.
+
+KEDA stays installed when you uninstall a release of this chart, and several
 releases in the cluster can share it.
 
 ### Scale-in preference
@@ -247,52 +255,45 @@ Each runner Pod includes a small sidecar that polls the agent's
 local `/status.json` endpoint every second. On each change between busy and
 idle it patches two annotations together, retrying until the patch succeeds:
 
-| Agent | `controller.kubernetes.io/pod-deletion-cost` | `cluster-autoscaler.kubernetes.io/safe-to-evict` |
-| --- | --- | --- |
-| Busy or unknown (including at startup) | `"100"` | `"false"` |
-| Idle | removed | `"true"` |
+| Agent | Annotations |
+| --- | --- |
+| Busy or unknown (including at startup) | `controller.kubernetes.io/pod-deletion-cost: "100"`<br>`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` |
+| Idle | `controller.kubernetes.io/pod-deletion-cost` removed<br>`cluster-autoscaler.kubernetes.io/safe-to-evict: "true"` |
 
-The deletion cost makes the ReplicaSet prefer removing idle agents. This is
-best-effort. Kubernetes can still select a busy Pod, and deletion cost does not
-protect against node drains or evictions. The sidecar is always enabled
-because it is part of the chart's autoscaling behavior, and its Python image is
-pinned by digest. The sidecar receives the only Kubernetes API token in the Pod.
+The deletion cost makes the ReplicaSet prefer removing runner Pods with idle
+agents. This is best-effort:
 
-Because Deployment Pod names are generated, the sidecar's Role can't be limited
-to its own Pod, so it lets the token patch every Pod in the release namespace.
-A job that escapes to its node can read the tokens of the Pods there, and could
-use one to change another runner Pod's image and take it over, or with the OCI
-accelerator enabled, the proxy's. The chart
-therefore also installs a `ValidatingAdmissionPolicy` and binding, both named
-`<namespace>-<release>-buildkite-operator-deletion-cost`. The kubelet binds
-each sidecar's token to its Pod, and the API server records the Pod's name in
-the token's user info. The policy uses this to allow the sidecar's patches only
-to its own Pod, and only to the two annotations above: the spec, labels,
-finalizers, owner references and every other annotation must stay the same.
+- Kubernetes can still remove a runner Pod whose agent is busy.
+- Deletion cost doesn't protect against node drains or evictions.
 
-The policy and binding are cluster-scoped, so installing the chart needs
-permission to create them, and Kubernetes 1.30 or later. If you can't grant
-that, set `deletionCost.admissionPolicy.enabled: false`. The sidecar then
-works the same, but its token can change any Pod in the namespace, so install
-the chart in a namespace dedicated to runners.
+The sidecar is always enabled, its Python image is pinned by digest, and it
+holds the only Kubernetes API token in the Pod. The chart limits what that
+token can change with an admission policy. See
+[Deletion-cost admission policy](docs/wip_deployment.md#deletion-cost-admission-policy).
 
 ### Node autoscaling
 
-When [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler)
-removes an underused node, it evicts the node's Pods and caps their graceful
-termination at its `--max-graceful-termination-sec` (600 seconds by default),
-well below the chart's default `terminationGracePeriodSeconds`. A busy agent's
-`safe-to-evict: "false"` stops Cluster Autoscaler from removing its node, so
-running jobs are not cut short.
+This applies if your cluster runs
+[Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler),
+which this chart doesn't install. Cluster Autoscaler removes underused nodes by
+evicting their Pods, and caps graceful termination at
+`--max-graceful-termination-sec` (600 seconds by default). That's well below
+the chart's default `terminationGracePeriodSeconds`, so the `safe-to-evict`
+annotation from [Scale-in preference](#scale-in-preference) steers it:
 
-Idle agents are marked `safe-to-evict: "true"` rather than left unannotated.
-`dind`, `kata` and `sysbox` runners use disk-backed `emptyDir` volumes for
-Docker data and the workspace, and Cluster Autoscaler's default
-`--skip-nodes-with-local-storage=true` would otherwise never remove their
-nodes. This is also best-effort: an agent that accepts a job after Cluster
-Autoscaler checks its node but before eviction is still bounded by
-`--max-graceful-termination-sec`. Node drains outside Cluster Autoscaler,
-such as `kubectl drain` or spot interruptions, ignore the annotation.
+- A busy runner Pod's `"false"` stops Cluster Autoscaler from removing its
+  node, so running jobs aren't cut short.
+- An idle runner Pod's `"true"` lets Cluster Autoscaler remove its node, which
+  its default `--skip-nodes-with-local-storage=true` would otherwise block for
+  `dind`, `kata` and `sysbox` runners with their disk-backed `emptyDir`
+  volumes.
+
+This is best-effort:
+
+- An agent that accepts a job after Cluster Autoscaler checks its node, but
+  before eviction, is still cut off after `--max-graceful-termination-sec`.
+- Node drains outside Cluster Autoscaler, such as `kubectl drain` or spot
+  interruptions, ignore the annotation.
 
 ## Runner isolation
 
@@ -717,7 +718,7 @@ nodes tainted for `kata` or `sysbox`, or on dedicated system nodes. The hook
 Jobs that generate, copy and delete the CA use the same placement. Without the
 deletion-cost admission policy, such a job could instead use a runner's token
 to change the proxy Pod's image. See
-[Scale-in preference](#scale-in-preference).
+[Deletion-cost admission policy](docs/wip_deployment.md#deletion-cost-admission-policy).
 
 ### Registry credentials
 
@@ -874,9 +875,10 @@ helm upgrade --install buildkite-operator \
   --values values.yaml
 ```
 
-The values file must provide the runner pools and agent token Secret
-references described in [Quickstart](#quickstart), and KEDA must already be
-installed. Any private container images used by your configuration still need
+The values file must provide the runner pools described in
+[Quickstart](#quickstart) and the token Secret references described in
+[Production secret management](docs/wip_deployment.md#production-secret-management),
+and KEDA must already be installed. Any private container images used by your configuration still need
 their own pull credentials. For digest-pinned installs, replace the chart URL
 with the `oci://…@sha256:…` reference from the release log and omit `--version`.
 
