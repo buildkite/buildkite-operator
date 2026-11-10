@@ -477,41 +477,52 @@ spec:
             - -c
             - mkdir -p /buildkite/bin && cp /usr/local/bin/buildkite-agent /buildkite/bin/ && export PATH="/buildkite/bin:$PATH" && exec /usr/local/bin/buildkite-agent start
           env:
+            # Ignore the agent image's config file, so these variables configure it.
             - name: BUILDKITE_AGENT_CONFIG
               value: /dev/null
+            # Auth token to register with Buildkite.
             - name: BUILDKITE_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: "buildkite-agent-token"
                   key: "token"
+            # Names the agent after its Pod, so each agent maps to one Pod.
             - name: BUILDKITE_AGENT_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # `queue=` routes the pool's jobs here. `runtime=` shows how they run.
             - name: BUILDKITE_AGENT_TAGS
               value: "queue=docker,runtime=dind"
+            # Serves the readiness probe and the deletion-cost sidecar's checks.
             - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
               value: 0.0.0.0:8080
+            # The agent checks out builds here. It won't start without a build path.
             - name: BUILDKITE_BUILD_PATH
               value: /buildkite/builds
             # The agent cannot check out plugins without a plugins path.
             - name: BUILDKITE_PLUGINS_PATH
               value: /buildkite/plugins
+            # Puts the Job API socket under /buildkite, where job containers see it.
             - name: BUILDKITE_SOCKETS_PATH
               value: /buildkite/sockets
+            # Points jobs' Docker commands at the dockerd sidecar.
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            # Jobs share one Docker client config, with the Pod's registry logins.
             - name: DOCKER_CONFIG
               value: /etc/buildkite-agent/docker
+            # Caps containers the daemon starts at its CPU limit.
             - name: RUNNER_CPU_LIMIT_MILLICORES
               valueFrom:
                 resourceFieldRef:
                   containerName: dockerd
                   resource: limits.cpu
                   divisor: 1m
-            # Selects the step's image or the configured default; see step-image.sh.
+            # Runs each job through step-image.sh, in its step's image if it has one.
             - name: BUILDKITE_BOOTSTRAP_SCRIPT_PATH
               value: "/bin/sh /opt/step-image/step-image.sh"
+            # Image for steps without image:. Empty runs them in the agent container.
             - name: DEFAULT_STEP_IMAGE
               value: ""
             # Puts the job's env files and timeout marker where step image

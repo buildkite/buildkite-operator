@@ -225,21 +225,27 @@ spec:
           command: ["/usr/local/bin/buildkite-agent"]
           args: ["start"]
           env:
+            # Ignore the agent image's config file, so these variables configure it.
             - name: BUILDKITE_AGENT_CONFIG
               value: /dev/null
+            # Auth token to register with Buildkite.
             - name: BUILDKITE_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: buildkite-buildkite-operator-agent-token
                   key: token
+            # Names the agent after its Pod, so each agent maps to one Pod.
             - name: BUILDKITE_AGENT_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # `queue=` routes the pool's jobs here. `runtime=` shows how they run.
             - name: BUILDKITE_AGENT_TAGS
               value: "queue=linux,runtime=standard"
+            # Serves the readiness probe and the deletion-cost sidecar's checks.
             - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
               value: 0.0.0.0:8080
+            # The agent checks out builds here. It won't start without a build path.
             - name: BUILDKITE_BUILD_PATH
               value: /buildkite/builds
             # The agent cannot check out plugins without a plugins path.
