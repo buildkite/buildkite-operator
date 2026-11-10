@@ -1,6 +1,6 @@
 apiVersion: v2
 name: buildkite-operator-chart
-description: Autoscaling Buildkite runners for Kubernetes
+description: Buildkite runner stack for Kubernetes
 type: application
 version: 0.20.0
 appVersion: "4"

@@ -1,11 +1,17 @@
 # buildkite-operator
 
-This repository includes a standalone Helm chart for autoscaling Buildkite
-runners on Kubernetes. One release can serve several Buildkite queues. Each gets
-its own runner pool (a `Deployment` of agent Pods) and KEDA scaling, and they
-share one token Secret.
+This repository contains a standalone Helm chart for running a Buildkite
+runner stack on Kubernetes. One chart release can serve several Buildkite
+queues. Each gets its own runner pool (a `Deployment` of runner Pods) and KEDA
+scaling, and they share one token Secret.
 
-## Prerequisite
+The stack includes:
+
+- Runner pools that KEDA [scales](#autoscaling) on each queue's job count.
+- A choice of [isolation runtimes](#runner-isolation) for each pool.
+- An optional [image pull cache](#image-pull-caching) shared by the runners.
+
+## Prerequisites
 
 Install the supported KEDA 2.20.0 release once in the cluster before installing
 this chart:
@@ -19,12 +25,18 @@ helm upgrade --install keda keda \
   --wait
 ```
 
-KEDA must be configured to watch the namespace where the runner chart is
-installed. The chart validates that the `ScaledObject` and
-`TriggerAuthentication` APIs are discoverable and otherwise fails with a KEDA
-prerequisite error. API discovery cannot confirm that KEDA's controller is
-healthy, that its namespace watch configuration includes the release namespace,
-or which KEDA version serves those APIs.
+If you've limited the namespaces KEDA watches (`watchNamespace`), include the
+one where you install this chart. When you configure at least one runner pool,
+the chart checks that the `ScaledObject` and `TriggerAuthentication` APIs are
+available, and fails with a KEDA prerequisite error if they aren't. To skip the
+check, set `keda.validateInstallation: false`. API discovery cannot confirm that
+KEDA's controller is healthy, that its namespace watch configuration includes
+the release namespace, or which KEDA version serves those APIs.
+
+Some features need more: Kubernetes 1.30 or later for the
+[deletion-cost admission policy](#scale-in-preference), native sidecars for
+the [`dind`, `kata` and `sysbox` runtimes](#runner-isolation), and Kata or
+Sysbox installed on the nodes for those runtimes.
 
 ## Quickstart
 
@@ -94,7 +106,7 @@ map, a later values file can change one pool (`linux-kata: {maxReplicas: 25}`)
 or remove it (`build-sysbox: null`) without restating the others. With no
 pools, the chart installs nothing.
 
-Each pool is a `Deployment` whose Pods are labelled
+Each pool is a `Deployment` whose Pods are labeled
 `buildkite.com/runner-pool: <pool>`, and a `ScaledObject` that scales it, both
 named `<release>-<pool>`. The token Secret, KEDA `TriggerAuthentication`, and
 deletion-cost permissions and scripts are shared by all pools in a release.
@@ -205,8 +217,8 @@ KEDA's HPA chooses scale-in victims without confirming that a selected agent is
 idle. The agent drains a running job on its first SIGTERM, bounded by
 `terminationGracePeriodSeconds`. The configured maximum bounds desired
 replicas, but terminating Pods may briefly overlap replacement capacity. KEDA
-remains installed when a runner chart release is uninstalled and can be shared
-by multiple runner releases in the cluster.
+stays installed when you uninstall a release of this chart, and several
+releases in the cluster can share it.
 
 ### Scale-in preference
 
@@ -279,8 +291,8 @@ cluster-wide installs, done once per cluster before installing the chart:
 
 | `runtime` | RuntimeClass | Installer | Nodes |
 | --- | --- | --- | --- |
-| `kata` | `kata-qemu-runtime-rs` | [kata-deploy](https://github.com/kata-containers/kata-containers/tree/main/tools/packaging/kata-deploy) | KVM-capable, labelled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=kata` |
-| `sysbox` | `sysbox-runc` | [sysbox-deploy-k8s](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md) | Kubernetes user namespaces support, labelled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=sysbox` |
+| `kata` | `kata-qemu-runtime-rs` | [kata-deploy](https://github.com/kata-containers/kata-containers/tree/main/tools/packaging/kata-deploy) | KVM-capable, labeled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=kata` |
+| `sysbox` | `sysbox-runc` | [sysbox-deploy-k8s](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md) | Kubernetes user namespaces support, labeled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=sysbox` |
 
 Each installer must target the runtime's nodes and tolerate their
 `experiments.buildkite.com/runtime=<kata|sysbox>:NoSchedule` taint. Neither
@@ -313,7 +325,7 @@ spec:
 
 The `dind`, `kata` and `sysbox` profiles require Kubernetes native sidecars.
 Sysbox additionally requires Kubernetes user namespaces. Their Docker data and
-workspace are Pod-local and are discarded when an agent Pod is removed.
+workspace are Pod-local and are discarded when a runner Pod is removed.
 
 The Docker daemon resolves bind-mount sources in its own container, which
 shares only the `/buildkite` workspace with the agent. Jobs can bind-mount
@@ -482,7 +494,7 @@ the Pod's Docker daemon and its Docker client configuration (`DOCKER_CONFIG`).
 The image is pulled if the daemon doesn't have it yet, so a tag the daemon
 already has isn't updated until the Pod is replaced. The container is removed
 when the job finishes and stopped when the job is cancelled. It is named
-`buildkite-step-<job ID>` and labelled `buildkite.com/job-id`.
+`buildkite-step-<job ID>` and labeled `buildkite.com/job-id`.
 
 The agent runtime needs the `docker` CLI and `setsid`, which `buildkite/agent`
 images have. The step's image must match the agent binary's architecture and
@@ -576,7 +588,7 @@ The chart installs:
   supports NetworkPolicy.
 
 Each daemon sends all of its HTTPS traffic through the proxy. Only
-`registries` are cached. Other hosts are tunnelled through it unchanged. List
+`registries` are cached. Other hosts are tunneled through it unchanged. List
 hosts the proxy cannot reach, such as in-cluster registries, in `noProxy`.
 Pulls fail while the proxy is unavailable. Job containers don't inherit the
 daemon's proxy settings.
@@ -768,7 +780,7 @@ may clear the current kubeconfig context.
 
 The chart E2E test temporarily pins Kind 0.30's Kindnet image by digest because
 CI's kernel lacks `CONFIG_NETFILTER_NETLINK_GLUE_CT`, required by newer policy
-engines to recognise allowed connections' replies. This changes only the test
+engines to recognize allowed connections' replies. This changes only the test
 cluster's CNI. The chart's NetworkPolicy and peer-isolation checks are
 unchanged. Remove the pin once CI provides that kernel capability.
 
