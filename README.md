@@ -63,6 +63,27 @@ Helm stores supplied values in its release data. For production, create the
 token Secrets yourself. See
 [Production secret management](docs/wip_deployment.md#production-secret-management).
 
+## Installing a published release
+
+The chart repository is public, so you don't need Docker Hub credentials to
+install a release:
+
+```bash
+helm upgrade --install buildkite-operator \
+  oci://registry-1.docker.io/buildkite/buildkite-operator-chart \
+  --version 0.20.0 \
+  --namespace buildkite-runner-stack --create-namespace \
+  --values values.yaml
+```
+
+- Your values file must provide the runner pools from
+  [Quickstart](#quickstart) and the token Secrets from
+  [Production secret management](docs/wip_deployment.md#production-secret-management).
+- KEDA must already be installed.
+- Private images in your configuration still need their own pull credentials.
+- To pin by digest, replace the chart URL with the `oci://…@sha256:…`
+  reference from the release log and omit `--version`.
+
 ## Runner pools
 
 Each runner pool serves one Buildkite queue and inherits every setting from
@@ -653,11 +674,10 @@ registryCredentials:
       password: ghp_...
 ```
 
-The chart stores them in one `kubernetes.io/dockerconfigjson` Secret,
-`<release>-buildkite-operator-registry-credentials`. Values set this way are
-also kept in Helm's release Secret. To manage the Secret yourself instead,
-create it in the release namespace and set
-`registryCredentials.existingSecret.name`:
+The chart stores them in a `kubernetes.io/dockerconfigjson` Secret,
+`<release>-buildkite-operator-registry-credentials`, and Helm also keeps them
+in its release Secret. To manage the Secret yourself, create it in the release
+namespace and set `registryCredentials.existingSecret.name`:
 
 ```bash
 kubectl create secret docker-registry registry-credentials \
@@ -667,142 +687,40 @@ kubectl create secret docker-registry registry-credentials \
   --docker-password=dckr_pat_...
 ```
 
-The credentials are used in two places:
+How the credentials are used:
 
-- The kubelet uses them as `imagePullSecrets` to pull the images of every Pod
-  the release runs: runners, the accelerator, and the CA hook Jobs. Hooks
-  run before the chart-managed Secret is created on install and after it is
-  deleted on uninstall, so the hook Jobs use a copy,
-  `<release>-buildkite-operator-registry-credentials-hook`, that Helm creates
-  just before them and deletes once they finish.
-- `dind`, `kata` and `sysbox` runners copy them into the Docker client
-  configuration that jobs use. Docker daemons don't hold credentials
-  themselves. The `docker` CLI sends them with each pull, run and build.
-  `standard` runners have no Docker daemon, so they only get `imagePullSecrets`.
+- The kubelet pulls every Pod the release runs with them as
+  `imagePullSecrets`: runners, the accelerator and the CA hook Jobs.
+- The hook Jobs use a temporary copy,
+  `<release>-buildkite-operator-registry-credentials-hook`, because they run
+  before the Secret exists on install and after it's deleted on uninstall.
+- `dind`, `kata` and `sysbox` runners also copy them into the Docker client
+  configuration, and the `docker` CLI sends them with each pull, run and build.
+- `standard` runners have no Docker daemon, so they only get
+  `imagePullSecrets`.
 
-Every `dind`, `kata` and `sysbox` runner Pod has a writable Docker client
-configuration directory, `/etc/buildkite-agent/docker`, set as `DOCKER_CONFIG`
-for the agent and, with ephemeral agents, for the supervisor and every agent
-container it starts. It lasts as long as the Pod and is shared by all of its
-jobs, persistent or ephemeral, so a job's own `docker login` and buildx state
-carry over to later jobs on that Pod. Credentials are copied in when the Pod
-starts. Any job can read them, so use tokens with only the access the
-pools' jobs need.
+On `dind`, `kata` and `sysbox` runners, the Docker client configuration:
 
-Changing chart-managed credentials rolls the runner and accelerator Pods. After
-changing an existing Secret, restart those Deployments yourself. Pulls through
-[OCI Accelerator](#image-pull-caching) use the credentials unchanged.
+- Lives in `/etc/buildkite-agent/docker`, set as `DOCKER_CONFIG` for the agent
+  and, with ephemeral agents, for the supervisor and every agent container.
+- Lasts as long as the Pod, so a job's own `docker login` and buildx state
+  carry over to later jobs on that Pod, persistent or ephemeral.
+- Gets the credentials copied in when the Pod starts.
+- Is readable by any job, so use tokens with only the access the pools' jobs
+  need.
 
-## Development
+When credentials change:
 
-```bash
-make test-helm        # lint and render the standalone chart
-make helm-examples    # update the chart's rendered examples
-make test-supervisor  # run the ephemeral-agent supervisor against Docker
-make test-step-image  # run step images against Docker
-make test-helm-e2e    # install and uninstall the chart in isolated Kind
-make lint             # golangci-lint
-make test             # Go tests and generated-file checks
-make install-hooks    # use the Git hooks in .githooks
-```
+- Changing chart-managed credentials rolls the runner and accelerator Pods.
+- After changing an existing Secret, restart the runner Deployments and the
+  accelerator StatefulSet yourself.
+- Pulls through [OCI Accelerator](#image-pull-caching) use the credentials
+  unchanged.
 
-Each directory under `charts/buildkite-operator/examples` pairs a
-`values.yaml` with the `rendered.yaml` that `helm template` produces from it
-and the `NOTES.txt` that `helm install` prints for it, so chart changes show up
-as manifest and install-notes diffs in review. The pre-commit hook
-installed by `make install-hooks` renders the staged chart and stops the commit
-if the staged examples don't match. Unstaged changes are ignored.
+## Contributing
 
-CI runs the checks, and also fails if the rendered examples are out of date.
-The end-to-end check deletes its isolated Kind cluster when it finishes, which
-may clear the current kubeconfig context.
-
-The chart E2E test temporarily pins Kind 0.30's Kindnet image by digest because
-CI's kernel lacks `CONFIG_NETFILTER_NETLINK_GLUE_CT`, required by newer policy
-engines to recognize allowed connections' replies. This changes only the test
-cluster's CNI. The chart's NetworkPolicy and peer-isolation checks are
-unchanged. Remove the pin once CI provides that kernel capability.
-
-## Chart releases
-
-Buildkite publishes tagged chart releases to the public Docker Hub repository
-`buildkite/buildkite-operator-chart`, using the OCI registry at
-`registry-1.docker.io`. No GitHub Actions workflow is required. Publication
-waits for all pipeline checks on the tagged commit to pass, including the chart
-E2E test.
-
-### One-time setup
-
-- Enable **Build tags** in the Buildkite pipeline's GitHub settings. Ensure
-  branch filters and pipeline-level conditionals allow tag builds.
-- Use the public Docker Hub repository `buildkite/buildkite-operator-chart`.
-  Keep chart releases in this dedicated repository, not a container-image
-  repository with overlapping version tags.
-- Create a Buildkite Secret named `DOCKERHUB_TOKEN` in the agent cluster. Use a
-  Docker Hub organization access token for `buildkite` with **Read & Write**
-  access to `buildkite-operator-chart`, without delete access. The publisher
-  uses the fixed username `buildkite`, so no username secret is needed. Do not
-  put the token in pipeline YAML or repository files.
-- Restrict secrets to this pipeline and trusted build contexts using
-  [agent access policies](https://buildkite.com/docs/pipelines/security/secrets/buildkite-secrets/access-policies).
-  These policies support pipeline and branch claims, not step-key or tag
-  claims. The release step's `if` condition is not a secret access boundary.
-  Do not grant publishing credentials to untrusted pull request builds. If
-  they share this pipeline, isolate release access with an appropriately
-  restricted agent queue or separate release pipeline before enabling the
-  secrets.
-- Protect `chart-v*` tags in GitHub so only trusted maintainers can create,
-  change, or delete them: tagged repository code runs with publishing access.
-
-### Publishing
-
-Merge the chart changes and version bump first, then tag that commit
-`chart-v<version>`, for example `chart-v0.20.0` for `version: 0.20.0` in
-`charts/buildkite-operator/Chart.yaml`, and push the tag. Only stable
-`major.minor.patch` releases are supported. `appVersion` is not used as the
-release version.
-
-The release script, `.buildkite/publish-chart.py`, rejects mismatched versions
-and existing published versions. Registry authentication and network errors
-fail the release rather than being treated as a missing version. Buildkite
-serializes publishing jobs so two builds cannot pass the existing-version check
-concurrently. Docker Hub tags are mutable by default, so do not overwrite
-releases with other publishing tools.
-
-The script packages the chart, pushes it, then pulls it by its published OCI
-digest and compares the downloaded package with the original. The build log
-records the digest and verification result. Helm's login credentials and chart
-packages are kept in a temporary directory removed when the script exits.
-
-If a job fails after pushing, the version may already be published. Retrying
-will refuse to overwrite it: inspect the package and digest before proceeding,
-and publish a new chart version if a correction is needed. Do not delete a
-release just to make a retry succeed.
-
-### Installing a release
-
-The chart repository is public, so you don't need Docker Hub credentials or a
-registry login to install a release:
-
-```bash
-helm upgrade --install buildkite-operator \
-  oci://registry-1.docker.io/buildkite/buildkite-operator-chart \
-  --version 0.20.0 \
-  --namespace buildkite-runner-stack --create-namespace \
-  --values values.yaml
-```
-
-The values file must provide the runner pools described in
-[Quickstart](#quickstart) and the token Secret references described in
-[Production secret management](docs/wip_deployment.md#production-secret-management),
-and KEDA must already be installed. Any private container images used by your
-configuration still need their own pull credentials. For digest-pinned
-installs, replace the chart URL with the `oci://…@sha256:…` reference from the
-release log and omit `--version`.
-
-Run `python3 hack/test_publish_chart.py` to test release handling locally. It
-uses real Helm chart packaging with simulated registry and credential services.
-It does not retrieve secrets or publish to Docker Hub.
+See [Maintainers](docs/wip_maintainers.md) for development and for releasing
+the chart.
 
 ## License
 
