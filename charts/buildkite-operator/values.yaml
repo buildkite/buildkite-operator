@@ -218,6 +218,7 @@ ociAccelerator:
     # Peers share the release's CA and fetch cached content from one another.
     # Cache and peer identity survive container restarts, but not Pod replacement.
     # Switching this rolls the existing StatefulSet, starting each Pod cold.
+    # Requires replicas of 32 or fewer, the accelerator's peer limit.
     enabled: false
   # Registries whose digest-addressed manifests and blobs are cached, as host
   # or host:port. Use registry-1.docker.io for Docker Hub. Traffic to other
@@ -274,8 +275,8 @@ ociAccelerator:
   # The digest pins the multi-platform image index for the tag.
   image:
     repository: buildkite/oci-accelerator
-    tag: v0.3.0
-    digest: sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641
+    tag: v0.5.0
+    digest: sha256:c671b75f349cf625fdd7555c632f17782d6b98ed7c21bc5fa8bdcf6426ab0578
     pullPolicy: IfNotPresent
   resources:
     requests:

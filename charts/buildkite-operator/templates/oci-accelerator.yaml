@@ -15,6 +15,10 @@
 {{- fail (printf "ociAccelerator.extraEnv.%s is managed by the chart" $name) }}
 {{- end }}
 {{- end }}
+{{- /* The accelerator's peer address book holds at most 32 members. */}}
+{{- if and $accelerator.peering.enabled (gt (int $accelerator.replicas) 32) }}
+{{- fail (printf "ociAccelerator.replicas must be at most 32 with ociAccelerator.peering.enabled, got %d" (int $accelerator.replicas)) }}
+{{- end }}
 {{- $name := include "buildkite-operator.ociAcceleratorName" . }}
 apiVersion: v1
 kind: Service

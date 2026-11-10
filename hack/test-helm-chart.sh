@@ -378,7 +378,7 @@ if [[ "${accel_runner}" == *'"oci-ca"'* || "${accel_runner}" == *'"ca.key"'* ]];
 	exit 1
 fi
 accel_proxy=$(document "${accel}" StatefulSet test-buildkite-operator-oci-accelerator)
-assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.3.0@sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641"'
+assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.5.0@sha256:c671b75f349cf625fdd7555c632f17782d6b98ed7c21bc5fa8bdcf6426ab0578"'
 assert_contains "${accel_proxy}" 'value: "registry-1.docker.io,ghcr.io,public.ecr.aws"'
 assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CACHE_MAX_FILLS\n              value: "32"'
 assert_contains "${accel_proxy}" $'- name: cache\n          emptyDir:\n            sizeLimit: 20Gi'
@@ -496,7 +496,7 @@ fi
 ca_create=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-create)
 assert_contains "${ca_create}" "helm.sh/hook: pre-install,pre-upgrade"
 assert_contains "${ca_create}" "oci-accelerator init-ca --dir /work/state/ca"
-assert_contains "${ca_create}" 'image: "buildkite/oci-accelerator:v0.3.0@sha256:4278099ee0e250ed3648afbedd9cfe9242fda6e81ea6f5196f7e598754f21641"'
+assert_contains "${ca_create}" 'image: "buildkite/oci-accelerator:v0.5.0@sha256:c671b75f349cf625fdd7555c632f17782d6b98ed7c21bc5fa8bdcf6426ab0578"'
 assert_contains "${ca_create}" $'SECRET_NAME\n              value: "'"${generated_secret}"'"'
 ca_delete=$(document "${generated}" Job test-buildkite-operator-oci-accelerator-ca-delete)
 assert_contains "${ca_delete}" "helm.sh/hook: post-delete"
@@ -534,6 +534,15 @@ assert_fails "ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_LISTEN is managed by 
 assert_fails "does not match pattern" \
 	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 \
 	"${accel_args[@]}" --set ociAccelerator.registries='{https://ghcr.io}'
+assert_fails "ociAccelerator.replicas must be at most 32 with ociAccelerator.peering.enabled, got 33" \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 --set-string runnerPools.linux.runtime=kata \
+	"${accel_args[@]}" --set ociAccelerator.replicas=33 --set ociAccelerator.peering.enabled=true
+"${HELM}" template test "${CHART_DIR}" "${KEDA_API_VERSIONS[@]}" \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 --set-string runnerPools.linux.runtime=kata \
+	"${accel_args[@]}" --set ociAccelerator.replicas=32 --set ociAccelerator.peering.enabled=true >/dev/null
+"${HELM}" template test "${CHART_DIR}" "${KEDA_API_VERSIONS[@]}" \
+	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 --set-string runnerPools.linux.runtime=kata \
+	"${accel_args[@]}" --set ociAccelerator.replicas=33 >/dev/null
 
 # Docker runners always share a writable Docker client configuration for the
 # Pod's lifetime; standard runners have none.
