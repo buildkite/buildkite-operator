@@ -28,8 +28,7 @@ patch its Pod's annotations. See
 Deployment Pod names are generated, so the sidecar's Role can't be limited to
 its own Pod and lets its token patch every Pod in the release namespace. A job
 that escapes to its node could read the tokens of the Pods there, and use one
-to take over another runner Pod, or the OCI accelerator proxy, by changing its
-image.
+to take over another runner Pod, or the accelerator, by changing its image.
 
 To limit this, the chart installs a `ValidatingAdmissionPolicy` and binding,
 both named `<namespace>-<release>-buildkite-operator-deletion-cost`. Using the
@@ -102,44 +101,48 @@ If you replace `docker.image` on a pool that sets `docker.agentRuntimeImage`,
 it must be Docker Engine 29 or later, with support for the containerd image
 store. See [Agent runtime image](../README.md#agent-runtime-image).
 
-## OCI accelerator
+## OCI Accelerator
 
 With `ociAccelerator.enabled`, the chart installs:
 
-- A StatefulSet running `ociAccelerator.replicas` proxies (default 1), and a
-  ClusterIP Service that the Docker daemons use as their HTTPS proxy.
+- A StatefulSet running `ociAccelerator.replicas` accelerator replicas
+  (default 1), and a ClusterIP Service that the Docker daemons use as their
+  HTTPS proxy.
 - A headless Service providing stable per-Pod DNS names for the StatefulSet,
   also used for discovery when peering is enabled.
 - A NetworkPolicy admitting only this release's runner Pods
   (`networkPolicy.enabled`). Enforcement requires a network plugin that
   supports NetworkPolicy.
 
-Proxies prefer spreading across nodes, without needing a separate node for
-each replica. See [Image pull caching](../README.md#image-pull-caching).
+Accelerator replicas prefer spreading across nodes, without needing a separate
+node for each replica. See
+[Image pull caching](../README.md#image-pull-caching).
 
 With peering enabled:
 
-- Runners use the proxy Service on port 3128, and the headless Service also
-  exposes the peer port, 7443.
-- The NetworkPolicy allows port 7443 only between this release's proxies.
-- Changing the replica count changes the peer seed list and rolls the proxies.
+- Runners use the accelerator Service on port 3128, and the headless Service
+  also exposes the peer port, 7443.
+- The NetworkPolicy allows port 7443 only between this release's accelerator
+  replicas.
+- Changing the replica count changes the peer seed list and rolls the
+  accelerator.
 - Switching peering on or off rolls the StatefulSet, without changing the
   Service runners use or the CA, so runner Pods need no restart.
-- The proxy Pods' 40-second termination grace period covers the default proxy
-  and peer drains. Keep any `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` override below
-  20 seconds, to leave time for cleanup.
+- The accelerator Pods' 40-second termination grace period covers the default
+  proxy and peer drains. Keep any `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` override
+  below 20 seconds, to leave time for cleanup.
 
-## OCI accelerator CA
+## OCI Accelerator CA
 
-The proxy signs registry certificates with its own root CA, which it loads from
-a Secret in the release namespace. It never generates one itself. Runner Pods
-trust only the CA's certificate, which they mount from a separate ConfigMap,
-`<release>-buildkite-operator-oci-accelerator-ca-cert`, so only the proxy
-references the Secret holding the private key.
+The accelerator signs registry certificates with its own root CA, which it
+loads from a Secret in the release namespace. It never generates one itself.
+Runner Pods trust only the CA's certificate, which they mount from a separate
+ConfigMap, `<release>-buildkite-operator-oci-accelerator-ca-cert`, so only the
+accelerator references the Secret holding the private key.
 
 By default the chart generates the CA with Helm hook Jobs:
 
-- Before install and every upgrade, a Job runs the accelerator's `init-ca` and
+- Before install and every upgrade, a Job runs OCI Accelerator's `init-ca` and
   stores the result in the Secret
   `<release>-buildkite-operator-oci-accelerator-ca`, unless it already exists,
   so the CA is created once and then kept.
@@ -152,8 +155,8 @@ By default the chart generates the CA with Helm hook Jobs:
   only the ConfigMap.
 - Helm itself never renders or stores the private key.
 
-To rotate the CA, delete the Secret, run `helm upgrade`, then restart the proxy
-StatefulSet and the runner Deployments.
+To rotate the CA, delete the Secret, run `helm upgrade`, then restart the
+accelerator StatefulSet and the runner Deployments.
 
 To manage the CA yourself instead, for example to keep it across reinstalls,
 create it once and store it in a Secret in the release namespace. This runs
@@ -176,20 +179,21 @@ oci-accelerator-ca`. The chart never creates, changes or deletes a Secret you
 name. Its hook Job only reads it, before install and every upgrade, to copy the
 certificate into the runners' ConfigMap, so install and upgrade fail until the
 Secret exists. After replacing the Secret, run `helm upgrade` to copy the new
-certificate, then restart the proxy StatefulSet and the runner Deployments.
+certificate, then restart the accelerator StatefulSet and the runner
+Deployments.
 
 The CA's private key stays off runner Pods:
 
 - A node's kubelet can read every key of any Secret that a Pod on the node
   references, so a job that escapes to its node can read those Secrets.
 - Runner Pods reference only the certificate's ConfigMap, never the CA Secret.
-- The private key is mounted only in the proxy, and held briefly by the hook
-  Job that generates or copies it.
-- The hook Jobs that generate, copy and delete the CA use the proxy's
+- The private key is mounted only in the accelerator, and held briefly by the
+  hook Job that generates or copies it.
+- The hook Jobs that generate, copy and delete the CA use the accelerator's
   `nodeSelector` and `tolerations`.
 - Without the [deletion-cost admission policy](#deletion-cost-admission-policy),
-  an escaped job could instead use a runner Pod's token to change the proxy
-  Pod's image.
+  an escaped job could instead use a runner Pod's token to change the
+  accelerator Pod's image.
 
-Pods read the CA at startup, so after replacing it, restart the proxy
+Pods read the CA at startup, so after replacing it, restart the accelerator
 StatefulSet and the runner Deployments.

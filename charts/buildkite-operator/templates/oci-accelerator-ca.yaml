@@ -4,8 +4,8 @@ nodes never needs to read the CA Secret, which holds the private key. Before
 install and every upgrade, the create Job copies the certificate into the
 ConfigMap. Without ca.existingSecret.name, it first generates the CA with
 oci-accelerator init-ca if no Secret exists, since Helm's certificate functions
-cannot produce the CA profile the proxy requires. After uninstall, the delete
-Job removes the ConfigMap and any generated Secret. Neither is a release
+cannot produce the CA profile OCI Accelerator requires. After uninstall, the
+delete Job removes the ConfigMap and any generated Secret. Neither is a release
 resource, so Helm never renders or stores the private key.
 */}}
 {{- if include "buildkite-operator.ociAcceleratorUsed" . }}
@@ -131,7 +131,7 @@ spec:
       {{- with include "buildkite-operator.hookImagePullSecrets" $ }}
       {{- . | nindent 6 }}
       {{- end }}
-      # The proxy's user, so the create step can read the generated private key.
+      # The accelerator's user, so the create step can read the generated key.
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -139,7 +139,8 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      # The Pod briefly holds the CA private key, so it runs where the proxy does.
+      # The Pod briefly holds the CA private key, so it runs where the
+      # accelerator does.
       {{- with $accelerator.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

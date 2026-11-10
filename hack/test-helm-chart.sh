@@ -342,29 +342,29 @@ assert_contains "${sysbox_scaling}" $'scaleDown:\n          stabilizationWindowS
 assert_contains "${sysbox_scaling}" 'valueLocation: "jobs.queues.build.scheduled"'
 assert_contains "${multi}" "name: test-buildkite-operator-ephemeral-agent"
 
-# The OCI accelerator serves Docker-backed entries that have not opted out.
+# The accelerator serves Docker-backed entries that have not opted out.
 accel_args=(
 	--set-string agentToken.value="${TOKEN}"
 	--set ociAccelerator.enabled=true
 	--set-string ociAccelerator.ca.existingSecret.name=oci-ca
 )
 if [[ "${kata}" == *"oci-accelerator"* ]]; then
-	echo "OCI accelerator rendered while disabled" >&2
+	echo "The accelerator rendered while disabled" >&2
 	exit 1
 fi
 accel=$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=sysbox \
 	--set ociAccelerator.noProxy='{registry.internal:5000}' \
 	--set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_CACHE_MAX_FILLS=32)
 [[ $(count_kind "${accel}" Service) -eq 2 && $(count_kind "${accel}" NetworkPolicy) -eq 1 ]] || {
-	echo "Expected proxy and headless Services and one OCI accelerator NetworkPolicy" >&2
+	echo "Expected accelerator and headless Services and one accelerator NetworkPolicy" >&2
 	exit 1
 }
 [[ $(count_kind "${accel}" Deployment) -eq 1 && $(count_kind "${accel}" StatefulSet) -eq 1 ]] || {
-	echo "Expected a runner Deployment and an OCI accelerator StatefulSet" >&2
+	echo "Expected a runner Deployment and an accelerator StatefulSet" >&2
 	exit 1
 }
 if [[ "${accel}" == *"PersistentVolumeClaim"* || "${accel}" == *"volumeClaimTemplates"* ]]; then
-	echo "OCI accelerator rendered persistent storage" >&2
+	echo "The accelerator rendered persistent storage" >&2
 	exit 1
 fi
 accel_runner=$(document "${accel}" Deployment test-linux)
@@ -374,7 +374,7 @@ assert_contains "${accel_runner}" $'- name: SSL_CERT_DIR\n              value: /
 ca_cert_volume=$'- name: oci-accelerator-ca\n          configMap:\n            name: "test-buildkite-operator-oci-accelerator-ca-cert"'
 assert_contains "${accel_runner}" "${ca_cert_volume}"
 if [[ "${accel_runner}" == *'"oci-ca"'* || "${accel_runner}" == *'"ca.key"'* ]]; then
-	echo "Runner Pods referenced the OCI accelerator CA Secret" >&2
+	echo "Runner Pods referenced the accelerator CA Secret" >&2
 	exit 1
 fi
 accel_proxy=$(document "${accel}" StatefulSet test-buildkite-operator-oci-accelerator)
@@ -395,7 +395,7 @@ assert_contains "${accel_storage}" "ephemeral-storage: 12Gi"
 assert_contains "${accel_storage}" $'limits:\n              memory: 2Gi'
 assert_contains "${accel_proxy}" $'path: ca.key\n'
 assert_contains "$(document "${accel}" NetworkPolicy test-buildkite-operator-oci-accelerator)" "app.kubernetes.io/component: runner"
-# Peering keeps the runner endpoint but gives each proxy its own stable address.
+# Peering keeps the runner endpoint but gives each replica its own stable address.
 peering=$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=dind \
 	--set ociAccelerator.peering.enabled=true --set ociAccelerator.replicas=3)
 peer_proxy=$(document "${peering}" StatefulSet test-buildkite-operator-oci-accelerator)
@@ -438,7 +438,7 @@ assert_contains "${accel_dind}" "- --https-proxy=http://test-buildkite-operator-
 assert_contains "${accel_dind}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
 assert_contains "${accel_dind}" "${ca_cert_volume}"
 if [[ "${accel_dind}" == *'"oci-ca"'* || "${accel_dind}" == *'"ca.key"'* ]]; then
-	echo "dind runner Pods referenced the OCI accelerator CA Secret" >&2
+	echo "dind runner Pods referenced the accelerator CA Secret" >&2
 	exit 1
 fi
 no_policy=$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=kata --set ociAccelerator.networkPolicy.enabled=false)
@@ -450,7 +450,7 @@ accel_opt_out=$("${HELM}" template test "${CHART_DIR}" "${KEDA_API_VERSIONS[@]}"
 	--set-string runnerPools.kata.queue=kata --set-string runnerPools.kata.runtime=kata --set runnerPools.kata.maxReplicas=1 \
 	--set runnerPools.kata.docker.ociAccelerator=false)
 if [[ "${accel_opt_out}" == *"oci-accelerator"* || "${accel_opt_out}" == *"https-proxy"* ]]; then
-	echo "OCI accelerator rendered with no entry using it" >&2
+	echo "The accelerator rendered with no entry using it" >&2
 	exit 1
 fi
 # With an existing CA Secret, hook Jobs read it but never create or delete it.
@@ -474,7 +474,7 @@ if [[ "${accel}" == *"oci-accelerator-ca\""* ]]; then
 	echo "Generated CA Secret referenced with an existing CA Secret" >&2
 	exit 1
 fi
-# The proxy loads the CA only from the Secret, so it never generates its own:
+# The accelerator loads the CA only from the Secret, so it never generates its own:
 # an existing CA directory stops it from initializing one.
 assert_contains "${accel_proxy}" "cp /ca-source/ca.crt /ca-source/ca.key /run/oci-accelerator/private/ca/"
 assert_contains "${accel_proxy}" $'- name: ca-source\n          secret:\n            secretName: "oci-ca"'
@@ -813,16 +813,16 @@ assert_contains "${runtime_notes}" '"RuntimeClass not found"'
 assert_contains "${runtime_notes}" "build-sysbox: queue build, sysbox, ephemeral agents, 1-4 runners"
 accel_notes=$(notes -f "${values_dir}/base.yaml" --set ociAccelerator.enabled=true \
 	--set-string ociAccelerator.ca.existingSecret.name=oci-ca --set runnerPools.build-sysbox.docker.ociAccelerator=false)
-assert_contains "${accel_notes}" "Docker daemons for linux-kata pull through the OCI accelerator"
+assert_contains "${accel_notes}" "Docker daemons for linux-kata pull through OCI Accelerator"
 assert_contains "${accel_notes}" "kubectl logs statefulset/test-buildkite-operator-oci-accelerator"
 assert_contains "${accel_notes}" "use at least two replicas for availability during updates"
 assert_contains "${accel_notes}" "Peering is disabled"
 peer_notes=$(notes -f "${values_dir}/base.yaml" --set ociAccelerator.enabled=true \
 	--set ociAccelerator.peering.enabled=true --set ociAccelerator.replicas=3)
 assert_contains "${peer_notes}" "kubectl logs statefulset/test-buildkite-operator-oci-accelerator"
-assert_contains "${peer_notes}" "Proxy replicas: 3"
+assert_contains "${peer_notes}" "Accelerator replicas: 3"
 assert_contains "${peer_notes}" "Peers use stable DNS seeds"
-assert_contains "${peer_notes}" "restart the proxy StatefulSet"
+assert_contains "${peer_notes}" "restart the accelerator StatefulSet"
 unused_accel_notes=$(notes --set ociAccelerator.enabled=true --set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1)
 assert_contains "${unused_accel_notes}" "no dind, kata or sysbox runner pool uses it"
 standard_notes=$(notes --set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1)

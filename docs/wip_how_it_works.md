@@ -44,16 +44,16 @@ mount. See [Agent runtime image](../README.md#agent-runtime-image).
 - The supervisor refuses to start on a daemon without the containerd image
   store, rather than falling back to another way of getting the binary.
 
-## OCI accelerator peering
+## OCI Accelerator peering
 
-With `ociAccelerator.peering.enabled`, the chart configures each proxy's peer
-discovery. See [Peering](../README.md#peering).
+With `ociAccelerator.peering.enabled`, the chart configures peer discovery for
+each accelerator replica. See [Peering](../README.md#peering).
 
-- Each proxy is seeded with every replica's DNS name from the StatefulSet's
-  headless Service, including its own, which the accelerator ignores.
+- Each replica is seeded with every replica's DNS name from the StatefulSet's
+  headless Service, including its own, which OCI Accelerator ignores.
 - Seeds are DNS names, not Pod IPs, so replaced Pods can find each other again.
 - Pods start in parallel, and peer DNS records are published before the Pods
   are ready.
 - No Kubernetes API access or discovery sidecar is needed.
-- Discovery and cache listings refresh asynchronously, so a new proxy can fetch
-  from origin before it learns what its peers have.
+- Discovery and cache listings refresh asynchronously, so a new replica can
+  fetch from origin before it learns what its peers have.

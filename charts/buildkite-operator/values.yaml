@@ -83,7 +83,7 @@ defaults:
     storage:
       data: 40Gi
       workspace: 10Gi
-    # Pull images through the release's OCI accelerator when
+    # Pull images through the release's OCI Accelerator when
     # ociAccelerator.enabled is true. Set false on an entry to pull directly.
     ociAccelerator: true
     # Run the whole job in its image:, including plugin/repository checkout,
@@ -177,7 +177,7 @@ supervisor:
 # pod-deletion-cost 100 and removes the annotation from idle agents. It needs
 # permission to patch Pods in the release namespace. The digest pins the
 # multi-platform image index for the tag. The image and resources are also used
-# by the OCI accelerator CA hook Jobs.
+# by the OCI Accelerator CA hook Jobs.
 deletionCost:
   # RBAC lets the sidecar patch any Pod in the release namespace. A
   # ValidatingAdmissionPolicy and binding, which are cluster-scoped and named
@@ -201,14 +201,14 @@ deletionCost:
       cpu: 100m
       memory: 64Mi
 
-# Caching HTTPS proxy for image pulls by the dind, kata and sysbox Docker
-# daemons (https://github.com/buildkite/oci-accelerator). Instances in a release
-# cache registry content on their nodes' disks and serve every runner pool with
-# docker.ociAccelerator enabled. Each daemon sends all of its HTTPS traffic
-# through the proxy, so pulls fail while the proxy is unavailable.
+# OCI Accelerator, a caching HTTPS proxy for image pulls by the dind, kata and
+# sysbox Docker daemons (https://github.com/buildkite/oci-accelerator). Replicas
+# in a release cache registry content on their nodes' disks and serve every
+# runner pool with docker.ociAccelerator enabled. Each daemon sends all of its
+# HTTPS traffic through the accelerator, so pulls fail while it is unavailable.
 ociAccelerator:
   enabled: false
-  # Always runs as a StatefulSet behind a proxy Service. Use at least two
+  # Always runs as a StatefulSet behind a Service. Use at least two
   # replicas for availability during rolling updates, which do not surge.
   # Cache size and resource requests apply to each replica, not the whole fleet.
   # Without peering, each replica fills its cache independently from origin.
@@ -218,36 +218,37 @@ ociAccelerator:
     # Peers share the release's CA and fetch cached content from one another.
     # Cache and peer identity survive container restarts, but not Pod replacement.
     # Switching this rolls the existing StatefulSet, starting each Pod cold.
-    # Requires replicas of 32 or fewer, the accelerator's peer limit.
+    # Requires replicas of 32 or fewer, OCI Accelerator's peer limit.
     enabled: false
   # Registries whose digest-addressed manifests and blobs are cached, as host
   # or host:port. Use registry-1.docker.io for Docker Hub. Traffic to other
-  # hosts passes through the proxy uncached.
+  # hosts passes through the accelerator uncached.
   registries:
     - registry-1.docker.io
     - ghcr.io
     - public.ecr.aws
-  # Hosts the Docker daemons reach directly instead of through the proxy, such
-  # as private registries the proxy cannot reach. Must not include registries.
+  # Hosts the Docker daemons reach directly instead of through the accelerator,
+  # such as private registries it cannot reach. Must not include registries.
   noProxy: []
-  # Root CA the proxy signs registry certificates with, held in a Secret only
-  # the proxy references. Before install and every upgrade, a hook Job copies the
-  # certificate into a <release>-...-oci-accelerator-ca-cert ConfigMap for runner
-  # Docker daemons. With no existingSecret.name, it first generates the CA with
-  # "oci-accelerator init-ca" into a <release>-...-oci-accelerator-ca Secret if
-  # none exists. Hooks delete the ConfigMap, and any generated Secret, on
-  # uninstall. To provide your own, set existingSecret.name to a Secret in the
-  # release namespace holding both files (see the README); the chart only reads it.
+  # Root CA the accelerator signs registry certificates with, held in a Secret
+  # only the accelerator references. Before install and every upgrade, a hook
+  # Job copies the certificate into a <release>-...-oci-accelerator-ca-cert
+  # ConfigMap for runner Docker daemons. With no existingSecret.name, it first
+  # generates the CA with "oci-accelerator init-ca" into a
+  # <release>-...-oci-accelerator-ca Secret if none exists. Hooks delete the
+  # ConfigMap, and any generated Secret, on uninstall. To provide your own, set
+  # existingSecret.name to a Secret in the release namespace holding both files
+  # (see docs/wip_deployment.md). The chart only reads it.
   ca:
     existingSecret:
       name: ""
       certificateKey: ca.crt
       privateKeyKey: ca.key
-  # The cache is an emptyDir on the proxy's node, so it outlives runner Pods
-  # but starts empty whenever the proxy Pod is replaced, such as on upgrades
-  # that change it or when its node is removed.
+  # The cache is an emptyDir on the accelerator's node, so it outlives runner
+  # Pods but starts empty whenever the accelerator Pod is replaced, such as on
+  # upgrades that change it or when its node is removed.
   cache:
-    # The emptyDir's size limit. The proxy also requests this much
+    # The emptyDir's size limit. The accelerator also requests this much
     # ephemeral-storage unless resources.requests sets it, so it needs a node
     # with this much free disk alongside the runners there.
     size: 20Gi
@@ -259,15 +260,15 @@ ociAccelerator:
   # (registries, listeners, state directories, maxBytes and peering) cannot be
   # set here.
   #
-  # The proxy also keeps tag manifests, tag lists, referrer lists and catalog
-  # responses in memory for 30 seconds, so a tag pushed or moved during that
-  # time can still resolve to its previous digest. Set
+  # The accelerator also keeps tag manifests, tag lists, referrer lists and
+  # catalog responses in memory for 30 seconds, so a tag pushed or moved during
+  # that time can still resolve to its previous digest. Set
   # OCI_ACCELERATOR_CACHE_MUTABLE_TTL: "0s" to disable this, or
   # OCI_ACCELERATOR_CACHE_MUTABLE_SHARED: "false" for registries whose tag or
   # referrer listings differ by token.
   extraEnv: {}
-  # Admit proxy connections only from this release's runner Pods. Requires a
-  # network plugin that enforces NetworkPolicy.
+  # Admit accelerator connections only from this release's runner Pods.
+  # Requires a network plugin that enforces NetworkPolicy.
   networkPolicy:
     enabled: true
   nodeSelector: {}

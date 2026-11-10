@@ -1,4 +1,4 @@
-"""Sync the OCI accelerator CA certificate from its Secret into a ConfigMap.
+"""Sync the OCI Accelerator CA certificate from its Secret into a ConfigMap.
 
 create copies the certificate into the ConfigMap for runner Pods to use. If the
 Secret is missing, create first stores the CA that oci-accelerator init-ca

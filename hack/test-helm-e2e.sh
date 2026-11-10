@@ -388,7 +388,7 @@ fi
 "${KUBECTL[@]}" rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=30s
 "${HELM_CLUSTER[@]}" uninstall "${SECOND_RELEASE}" --namespace "${SECOND_NAMESPACE}" --wait --timeout 2m
 
-# The OCI accelerator caches pulls by the Docker daemon in a dind runner Pod,
+# The accelerator caches pulls by the Docker daemon in a dind runner Pod,
 # with a CA the chart generates. Its NetworkPolicy is enabled only after the
 # pulls: on some CI hosts, Kind's policy enforcement drops replies to the
 # proxy's own upstream connections, which the policy does not restrict.
@@ -478,7 +478,7 @@ dockerd docker pull -q "${image}"
 accelerator_logs=$("${KUBECTL[@]}" logs statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -c oci-accelerator)
 # Not grep -q: exiting at the first match would fail the pipeline with SIGPIPE.
 if ! grep '"registry":"registry-1.docker.io"' <<<"${accelerator_logs}" | grep '"cache":"hit"' >/dev/null; then
-	echo "Second pull was not served from the OCI accelerator cache" >&2
+	echo "Second pull was not served from the accelerator cache" >&2
 	echo "${accelerator_logs}" >&2
 	exit 1
 fi
@@ -495,11 +495,11 @@ for _ in $(seq 1 6); do
 	sleep 2
 done
 [[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]] || {
-	echo "NetworkPolicy blocked a runner Pod from the OCI accelerator" >&2
+	echo "NetworkPolicy blocked a runner Pod from the accelerator" >&2
 	exit 1
 }
 [[ "${blocked}" == *"timed out"* ]] || {
-	echo "NetworkPolicy did not block a non-runner Pod from the OCI accelerator: ${blocked}" >&2
+	echo "NetworkPolicy did not block a non-runner Pod from the accelerator: ${blocked}" >&2
 	exit 1
 }
 
@@ -533,7 +533,7 @@ dockerd docker pull -q "${image}"
 [[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]]
 
 # Give discovery one normal 30-second exchange interval plus jitter. Pull an
-# immutable blob through each proxy explicitly so a local cache hit or Service
+# immutable blob through each replica explicitly so a local cache hit or Service
 # load balancing cannot masquerade as peer delivery. Credentials are anonymous.
 sleep 40
 "${KUBECTL[@]}" run peer-pull -n "${ACCEL_NAMESPACE}" --image=python:3.12-alpine --restart=Never \
@@ -613,7 +613,7 @@ for _ in $(seq 1 60); do
 	sleep 1
 done
 [[ -z "${proxy}" ]] || {
-	echo "OCI accelerator Pod remained after uninstall" >&2
+	echo "Accelerator Pod remained after uninstall" >&2
 	exit 1
 }
 [[ -z "$("${KUBECTL[@]}" get secret "${ACCEL_CA_SECRET}" -n "${ACCEL_NAMESPACE}" -o name --ignore-not-found)" ]] || {

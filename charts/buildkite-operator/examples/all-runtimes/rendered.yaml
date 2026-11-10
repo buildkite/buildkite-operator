@@ -1587,8 +1587,8 @@ spec:
               app.kubernetes.io/name: buildkite-operator
               app.kubernetes.io/instance: buildkite
               app.kubernetes.io/component: oci-accelerator
-      # Covers the default 15 second proxy drain and, with peering, a second
-      # 15 second peer drain. Increase this if overriding the shutdown timeout.
+      # Covers the default 15 second accelerator drain and, with peering, a
+      # second 15 second peer drain. Increase this if overriding the shutdown timeout.
       terminationGracePeriodSeconds: 40
       securityContext:
         runAsNonRoot: true
@@ -1598,8 +1598,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       initContainers:
-        # The proxy requires private, non-symlink state directories owned by
-        # its user, which Secret and volume mounts do not provide directly.
+        # OCI Accelerator requires private, non-symlink state directories owned
+        # by its user, which Secret and volume mounts do not provide directly.
         - name: prepare-state
           image: "buildkite/oci-accelerator:v0.5.0@sha256:c671b75f349cf625fdd7555c632f17782d6b98ed7c21bc5fa8bdcf6426ab0578"
           imagePullPolicy: IfNotPresent
@@ -2079,7 +2079,7 @@ metadata:
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 data:
   oci_accelerator_ca.py: |-
-    """Sync the OCI accelerator CA certificate from its Secret into a ConfigMap.
+    """Sync the OCI Accelerator CA certificate from its Secret into a ConfigMap.
     
     create copies the certificate into the ConfigMap for runner Pods to use. If the
     Secret is missing, create first stores the CA that oci-accelerator init-ca
@@ -2309,7 +2309,7 @@ spec:
       serviceAccountName: buildkite-buildkite-operator-oci-accelerator-ca-hook
       automountServiceAccountToken: false
       restartPolicy: Never
-      # The proxy's user, so the create step can read the generated private key.
+      # The accelerator's user, so the create step can read the generated key.
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -2317,7 +2317,8 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      # The Pod briefly holds the CA private key, so it runs where the proxy does.
+      # The Pod briefly holds the CA private key, so it runs where the
+      # accelerator does.
       initContainers:
         # init-ca requires an owner-controlled parent directory, which an
         # emptyDir mount is not.
@@ -2438,7 +2439,7 @@ spec:
       serviceAccountName: buildkite-buildkite-operator-oci-accelerator-ca-hook
       automountServiceAccountToken: false
       restartPolicy: Never
-      # The proxy's user, so the create step can read the generated private key.
+      # The accelerator's user, so the create step can read the generated key.
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -2446,7 +2447,8 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      # The Pod briefly holds the CA private key, so it runs where the proxy does.
+      # The Pod briefly holds the CA private key, so it runs where the
+      # accelerator does.
       containers:
         # Reuses the chart's pinned Python image to call the Kubernetes API.
         - name: delete-ca

@@ -138,7 +138,7 @@ separate release.
 | `docker.resources` | (default 2 CPUs, 4Gi memory and 15Gi disk requested, limited to 4 CPUs, 8Gi and 50Gi) Kubernetes `requests` and `limits` for the Docker daemon. With `ephemeralAgent`, they also bound the agent containers. |
 | `docker.storage.data` | (default `40Gi`) Size limit of the `emptyDir` for Docker's data in `/var/lib/docker`. |
 | `docker.storage.workspace` | (default `10Gi`) Size limit of the `emptyDir` for the `/buildkite` workspace. |
-| `docker.ociAccelerator` | (default `true`) Pull through the [OCI accelerator](#image-pull-caching) when it is enabled. |
+| `docker.ociAccelerator` | (default `true`) Pull through [OCI Accelerator](#image-pull-caching) when it is enabled. |
 | `docker.stepImages` | (default `true`) Run steps that set `image:` in that image. See [Step images](#step-images). |
 | `docker.defaultStepImage` | (default none) Image for steps without `image:`. See [Step images](#step-images). |
 | `docker.agentRuntimeImage` | (default none) Separate runtime image for ephemeral agents. See [Agent runtime image](#agent-runtime-image). |
@@ -530,17 +530,17 @@ upgrading runner Pods.
 
 ## Image pull caching
 
-The `dind`, `kata` and `sysbox` Docker daemons can pull images through an
-[OCI accelerator](https://github.com/buildkite/oci-accelerator), an HTTPS proxy
+The `dind`, `kata` and `sysbox` Docker daemons can pull images through
+[OCI Accelerator](https://github.com/buildkite/oci-accelerator), an HTTPS proxy
 that caches registry content on its node's disk:
 
 - Repeat pulls of layers and digest-addressed manifests come from the cache,
   across all runners and after runners are replaced.
 - Image names and `docker login` don't change.
 - Tags and pushes go to the upstream registry, which must approve access before
-  the proxy serves cached content.
+  the accelerator serves cached content.
 
-Enable the accelerator:
+Enable OCI Accelerator:
 
 ```yaml
 ociAccelerator:
@@ -551,37 +551,37 @@ ociAccelerator:
 Every `dind`, `kata` and `sysbox` entry then uses it. Set
 `docker.ociAccelerator: false` on an entry to pull directly.
 
-Each daemon sends all of its HTTPS traffic through the proxy:
+Each daemon sends all of its HTTPS traffic through the accelerator:
 
 - Only `registries` are cached, and other hosts are tunneled through unchanged.
-- List hosts the proxy can't reach, such as in-cluster registries, in
+- List hosts the accelerator can't reach, such as in-cluster registries, in
   `noProxy`.
-- Pulls fail while the proxy is unavailable.
+- Pulls fail while the accelerator is unavailable.
 - Job containers don't inherit the daemon's proxy settings.
 - A NetworkPolicy admits only this release's runner Pods, if your network
   plugin enforces NetworkPolicy.
 
-The proxy signs registry certificates with its own root CA. By default the
-chart generates the CA on first install and keeps it across upgrades, and
+The accelerator signs registry certificates with its own root CA. By default
+the chart generates the CA on first install and keeps it across upgrades, and
 runner Pods trust only its certificate. To rotate it or bring your own, see
-[OCI accelerator CA](docs/wip_deployment.md#oci-accelerator-ca).
+[OCI Accelerator CA](docs/wip_deployment.md#oci-accelerator-ca).
 
-The chart runs `ociAccelerator.replicas` proxies (default 1) in a StatefulSet.
-Cache size and resource requests apply **per replica**:
+The chart runs `ociAccelerator.replicas` accelerator replicas (default 1) in a
+StatefulSet. Cache size and resource requests apply **per replica**:
 
-- Use at least two replicas to keep a proxy available during rolling updates
-  and node replacement.
-- In-flight pulls through a terminating proxy can still fail, even with
+- Use at least two replicas to keep the accelerator available during rolling
+  updates and node replacement.
+- In-flight pulls through a terminating replica can still fail, even with
   several replicas.
-- Without [peering](#peering), each proxy fills its cache from origin
+- Without [peering](#peering), each replica fills its cache from origin
   independently.
 - The Service spreads connections, not image layers, so a long-lived
   connection keeps using the same replica.
 
 ### Peering
 
-To let the proxies fetch cached content from one another, enable peering and
-set the replica count:
+To let accelerator replicas fetch cached content from one another, enable
+peering and set the replica count:
 
 ```yaml
 ociAccelerator:
@@ -592,46 +592,49 @@ ociAccelerator:
 ```
 
 - The chart sets up peer discovery and mutual TLS with the release's CA, and
-  runners keep using the same proxy Service.
-- The NetworkPolicy allows peer traffic only between this release's proxies.
-- Peering supports at most 32 replicas, the accelerator's peer limit.
+  runners keep using the same accelerator Service.
+- The NetworkPolicy allows peer traffic only between this release's
+  accelerator replicas.
+- Peering supports at most 32 replicas, OCI Accelerator's peer limit.
 - Changing the replica count, or switching peering on or off, rolls the
-  proxies and empties their caches.
+  accelerator and empties its caches.
 
-See the accelerator's
+See OCI Accelerator's
 [peer discovery](https://github.com/buildkite/oci-accelerator/blob/v0.5.0/docs/deployment.md#peer-discovery)
 docs for how peering works and its limits.
 
 ### Cache storage
 
-- The cache is an `emptyDir` on the proxy's node, limited to `cache.size`
-  (default 20Gi). It survives container restarts, but starts empty when the
-  proxy Pod is replaced.
-- The proxy requests `cache.size` of `ephemeral-storage`, so size it to fit
-  beside runner Pods, or place the proxy with `nodeSelector` and `tolerations`.
+- The cache is an `emptyDir` on the accelerator's node, limited to
+  `cache.size` (default 20Gi). It survives container restarts, but starts
+  empty when the accelerator Pod is replaced.
+- The accelerator requests `cache.size` of `ephemeral-storage`, so size it to
+  fit beside runner Pods, or place the accelerator with `nodeSelector` and
+  `tolerations`.
 - Keep `cache.maxBytes` below `cache.size`.
 - Tag lookups are cached in memory for 30 seconds, so a tag pushed in one step
   can still resolve to its old digest in the next. To turn this off, set
   `OCI_ACCELERATOR_CACHE_MUTABLE_TTL: "0s"` in `ociAccelerator.extraEnv`.
 
 Pass other `OCI_ACCELERATOR_*` settings through `ociAccelerator.extraEnv`. See
-the accelerator's
+OCI Accelerator's
 [cache storage](https://github.com/buildkite/oci-accelerator/blob/v0.5.0/docs/deployment.md#cache-storage) and
 [settings](https://github.com/buildkite/oci-accelerator/blob/v0.5.0/docs/settings.md) docs.
 
 ### Trust and placement
 
-- The Docker daemons trust the accelerator's CA for every host, not only
+- The Docker daemons trust OCI Accelerator's CA for every host, not only
   `registries`, because Docker doesn't read `/etc/docker/certs.d` for Docker
   Hub with the classic image store that `sysbox` uses.
-- The proxy's node holds the CA private key that every accelerated daemon
-  trusts, including those of `kata` and `sysbox` pools running untrusted jobs.
-- A `dind` job can escape to its node, so with `dind` pools, keep the proxy off
-  nodes `dind` runners can reach, using `ociAccelerator.nodeSelector` and
-  `tolerations`.
+- The accelerator's node holds the CA private key that every accelerated
+  daemon trusts, including those of `kata` and `sysbox` pools running
+  untrusted jobs.
+- A `dind` job can escape to its node, so with `dind` pools, keep the
+  accelerator off nodes `dind` runners can reach, using
+  `ociAccelerator.nodeSelector` and `tolerations`.
 
-See [OCI accelerator CA](docs/wip_deployment.md#oci-accelerator-ca) for how the
-chart protects the key, and the accelerator's
+See [OCI Accelerator CA](docs/wip_deployment.md#oci-accelerator-ca) for how the
+chart protects the key, and OCI Accelerator's
 [security model](https://github.com/buildkite/oci-accelerator/blob/v0.5.0/docs/deployment.md#security-model).
 
 ## Registry credentials
@@ -667,7 +670,7 @@ kubectl create secret docker-registry registry-credentials \
 The credentials are used in two places:
 
 - The kubelet uses them as `imagePullSecrets` to pull the images of every Pod
-  the release runs: runners, the OCI accelerator, and the CA hook Jobs. Hooks
+  the release runs: runners, the accelerator, and the CA hook Jobs. Hooks
   run before the chart-managed Secret is created on install and after it is
   deleted on uninstall, so the hook Jobs use a copy,
   `<release>-buildkite-operator-registry-credentials-hook`, that Helm creates
@@ -686,9 +689,9 @@ carry over to later jobs on that Pod. Credentials are copied in when the Pod
 starts. Any job can read them, so use tokens with only the access the
 pools' jobs need.
 
-Changing chart-managed credentials rolls the runner and proxy Pods. After
+Changing chart-managed credentials rolls the runner and accelerator Pods. After
 changing an existing Secret, restart those Deployments yourself. Pulls through
-the [OCI accelerator](#image-pull-caching) use the credentials unchanged.
+[OCI Accelerator](#image-pull-caching) use the credentials unchanged.
 
 ## Development
 

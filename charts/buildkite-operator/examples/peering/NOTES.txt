@@ -9,12 +9,12 @@ dind runner Pods include a privileged Docker daemon, so the namespace must allow
 
 WARNING: dind needs nothing installed, but its privileged Docker daemon has host-level access to its node. It is not isolation: only run trusted jobs on dind runner pools.
 
-Docker daemons for docker pull through the OCI accelerator, caching registry-1.docker.io, ghcr.io, public.ecr.aws:
+Docker daemons for docker pull through OCI Accelerator, caching registry-1.docker.io, ghcr.io, public.ecr.aws:
 
   kubectl logs statefulset/buildkite-buildkite-operator-oci-accelerator -c oci-accelerator -n buildkite
 
-Proxy replicas: 3. Each StatefulSet Pod has an ephemeral cache; replacing all Pods loses all cached content. Rolling updates replace one Pod at a time without surging, so use at least two replicas for availability during updates.
+Accelerator replicas: 3. Each StatefulSet Pod has an ephemeral cache, and replacing all Pods loses all cached content. Rolling updates replace one Pod at a time without surging, so use at least two replicas for availability during updates.
 
 Peers use stable DNS seeds through the headless Service buildkite-buildkite-operator-oci-accelerator-peers. Pod replacement also loses peer identity.
 
-The proxy uses the CA in Secret oci-accelerator-ca, and runners trust its certificate, copied to ConfigMap buildkite-buildkite-operator-oci-accelerator-ca-cert on every install and upgrade. Pods read both only at startup. After replacing the Secret, run helm upgrade, then restart the proxy StatefulSet and those runner pools' Deployments.
+The accelerator uses the CA in Secret oci-accelerator-ca, and runners trust its certificate, copied to ConfigMap buildkite-buildkite-operator-oci-accelerator-ca-cert on every install and upgrade. Pods read both only at startup. After replacing the Secret, run helm upgrade, then restart the accelerator StatefulSet and those runner pools' Deployments.
