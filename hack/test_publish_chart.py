@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import threading
 import unittest
@@ -95,6 +96,9 @@ class PublishChartTest(unittest.TestCase):
         publish_chart.publish()
         self.assertEqual(self.secret_reads, ["DOCKERHUB_TOKEN"])
         self.assertEqual(len(self.registry), 1)
+        with tarfile.open(fileobj=io.BytesIO(next(iter(self.registry.values()))), mode="r:gz") as archive:
+            license_file = archive.extractfile("buildkite-operator-chart/LICENSE")
+            self.assertEqual(license_file.read(), Path("LICENSE").read_bytes())
         self.assertIn(f"Verified oci://registry-1.docker.io/buildkite/buildkite-operator-chart@{DIGEST}", self.output.getvalue())
         self.assertNotIn("test-private-password", self.output.getvalue())
         self.assertTrue(self.credentials)
