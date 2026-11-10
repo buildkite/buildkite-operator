@@ -25,13 +25,15 @@ helm upgrade --install keda keda \
   --wait
 ```
 
-If you've limited the namespaces KEDA watches (`watchNamespace`), include the
-one where you install this chart. When you configure at least one runner pool,
-the chart checks that the `ScaledObject` and `TriggerAuthentication` APIs are
-available, and fails with a KEDA prerequisite error if they aren't. To skip the
-check, set `keda.validateInstallation: false`. API discovery cannot confirm that
-KEDA's controller is healthy, that its namespace watch configuration includes
-the release namespace, or which KEDA version serves those APIs.
+After installing KEDA:
+
+- If you've limited the namespaces KEDA watches (`watchNamespace`), include the
+  one where you install this chart.
+- With any runner pools configured, the chart fails to install unless KEDA's
+  `ScaledObject` and `TriggerAuthentication` APIs are available.
+- This check can't tell whether KEDA is healthy, watches the release namespace
+  or is a supported version.
+- To skip the check, set `keda.validateInstallation: false`.
 
 Some features need more: Kubernetes 1.30 or later for the
 [deletion-cost admission policy](#scale-in-preference), native sidecars for
@@ -48,29 +50,16 @@ is used in resource names:
 export BUILDKITE_AGENT_TOKEN='<agent-token>'
 
 helm upgrade --install buildkite-operator ./charts/buildkite-operator \
-  --namespace buildkite-operator-system \
+  --namespace buildkite-runner-stack \
   --create-namespace \
   --set-string runnerPools.linux.queue=<queue> \
   --set runnerPools.linux.maxReplicas=<maximum> \
   --set-string agentToken.value="$BUILDKITE_AGENT_TOKEN"
 ```
 
-Helm stores supplied values in its release data. For production secret
-management, create the Secrets separately in the release namespace and
-reference them instead:
-
-```bash
-helm upgrade --install buildkite-operator ./charts/buildkite-operator \
-  --namespace buildkite-operator-system \
-  --create-namespace \
-  --set-string runnerPools.linux.queue=<queue> \
-  --set runnerPools.linux.maxReplicas=<maximum> \
-  --set-string agentToken.existingSecret.name=<agent-secret> \
-  --set-string metricsToken.existingSecret.name=<metrics-secret>
-```
-
-The metrics Secret key must contain the complete `Authorization` value in the
-form `Token <cluster-agent-token>`.
+Helm stores supplied values in its release data. For production, create the
+token Secrets yourself. See
+[Production secret management](docs/wip_deployment.md#production-secret-management).
 
 ## Runner pools
 
@@ -564,7 +553,7 @@ docker run --rm --entrypoint /bin/sh buildkite/oci-accelerator:v0.3.0 -ec \
   'mkdir -m 0700 /tmp/state; oci-accelerator init-ca --dir /tmp/state/ca >&2; tar -C /tmp/state/ca -cf - ca.crt ca.key' |
   tar -C oci-accelerator-ca -xf -
 kubectl create secret generic oci-accelerator-ca \
-  --namespace buildkite-operator-system \
+  --namespace buildkite-runner-stack \
   --from-file=oci-accelerator-ca/ca.crt \
   --from-file=oci-accelerator-ca/ca.key
 ```
@@ -722,7 +711,7 @@ create it in the release namespace and set
 
 ```bash
 kubectl create secret docker-registry registry-credentials \
-  --namespace buildkite-operator-system \
+  --namespace buildkite-runner-stack \
   --docker-server=https://index.docker.io/v1/ \
   --docker-username=myuser \
   --docker-password=dckr_pat_...
@@ -849,7 +838,7 @@ registry login to install a release:
 helm upgrade --install buildkite-operator \
   oci://registry-1.docker.io/buildkite/buildkite-operator-chart \
   --version 0.20.0 \
-  --namespace buildkite-operator-system --create-namespace \
+  --namespace buildkite-runner-stack --create-namespace \
   --values values.yaml
 ```
 
