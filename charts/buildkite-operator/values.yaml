@@ -1,7 +1,7 @@
 # Settings shared by every runner pool. Any of these can be overridden per pool
 # under runnerPools.<name>.
 defaults:
-  # standard, dind, kata, or sysbox (see the README's "Runner isolation").
+  # standard, dind, kata, or sysbox (see the README's "Runtimes").
   # - standard: the agent alone, with no Docker daemon.
   # - dind: the agent plus a privileged Docker daemon on any node. Nothing to
   #   install, but the namespace must allow privileged Pods (Pod Security

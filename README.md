@@ -8,7 +8,7 @@ scaling, and they share one token Secret.
 The stack includes:
 
 - Runner pools that KEDA [scales](#autoscaling) on each queue's job count.
-- A choice of [isolation runtimes](#runner-isolation) for each pool.
+- A choice of [isolation runtimes](#runtimes) for each pool.
 - An optional [image pull cache](#image-pull-caching) shared by the runners.
 
 ## Prerequisites
@@ -37,9 +37,10 @@ After installing KEDA:
 
 Some features need more: Kubernetes 1.30 or later for the
 [deletion-cost admission policy](docs/wip_deployment.md#deletion-cost-admission-policy),
-native sidecars for
-the [`dind`, `kata` and `sysbox` runtimes](#runner-isolation), and Kata or
-Sysbox installed on the nodes for those runtimes.
+native sidecars for the
+[`dind`, `kata` and `sysbox` runtimes](#runtimes), and Kata or Sysbox
+[installed on the nodes](docs/wip_deployment.md#installing-kata-and-sysbox) for
+those runtimes.
 
 ## Quickstart
 
@@ -116,7 +117,7 @@ separate release.
 | `queue` | (required) Buildkite queue key the agents serve and scale on. |
 | `maxReplicas` | (required) Upper bound on runners. |
 | `minReplicas` | (default `1`) Runners kept when the queue is idle. |
-| `runtime` | (default `standard`) `standard`, `dind`, `kata` or `sysbox`. See [Runner isolation](#runner-isolation). |
+| `runtime` | (default `standard`) `standard`, `dind`, `kata` or `sysbox`. See [Runtimes](#runtimes). |
 | `ephemeralAgent` | (default `false`) Replace the agent after every job, with a clean workspace. The Pod persists. See [Ephemeral agents](#ephemeral-agents). |
 | `terminationGracePeriodSeconds` | (default `3600`) Longest time an agent may take to drain its job. |
 | `pollingInterval` | (default `10`) Seconds between KEDA's checks of the queue. |
@@ -295,67 +296,20 @@ This is best-effort:
 - Node drains outside Cluster Autoscaler, such as `kubectl drain` or spot
   interruptions, ignore the annotation.
 
-## Runner isolation
+## Runtimes
 
-Set `runtime` in `defaults` or on a runner pool to choose its isolation profile:
+Set `runtime` in `defaults` or on a runner pool to choose its runtime.
+Different pools in one release can use different runtimes.
 
-| Value | Runner Pod |
-| --- | --- |
-| `standard` (default) | A Buildkite agent in a regular Kubernetes Pod, with no Docker daemon. |
-| `dind` | An agent and privileged Docker native sidecar in a regular Pod on any node. Not isolation. See [Privileged Docker-in-Docker](#privileged-docker-in-docker). |
-| `kata` | An agent and privileged Docker native sidecar inside the `kata-qemu-runtime-rs` VM RuntimeClass. |
-| `sysbox` | An agent and unprivileged Docker native sidecar using the `sysbox-runc` RuntimeClass and Kubernetes user namespaces. |
+| Value | Runner Pod | Needs |
+| --- | --- | --- |
+| `standard` (default) | A Buildkite agent in a regular Kubernetes Pod, with no Docker daemon. | Nothing extra. |
+| `dind` | An agent and privileged Docker native sidecar in a regular Pod on any node. Not isolation. See [Privileged Docker-in-Docker](#privileged-docker-in-docker). | Native sidecars, and a namespace that allows privileged Pods. |
+| `kata` | An agent and privileged Docker native sidecar inside the `kata-qemu-runtime-rs` VM RuntimeClass. | Native sidecars, Kata on the nodes, and a namespace that allows privileged Pods. |
+| `sysbox` | An agent and unprivileged Docker native sidecar using the `sysbox-runc` RuntimeClass and Kubernetes user namespaces. | Native sidecars, user namespaces, and Sysbox on the nodes. |
 
-Different entries in one release can use different profiles. `standard` and
-`dind` need nothing installed. Kata and Sysbox are host runtimes, so the chart
-deliberately does not install them or modify containerd. Like KEDA, they are
-cluster-wide installs, done once per cluster before installing the chart:
-
-| `runtime` | RuntimeClass | Installer | Nodes |
-| --- | --- | --- | --- |
-| `kata` | `kata-qemu-runtime-rs` | [kata-deploy](https://github.com/kata-containers/kata-containers/tree/main/tools/packaging/kata-deploy) | KVM-capable, labeled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=kata` |
-| `sysbox` | `sysbox-runc` | [sysbox-deploy-k8s](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md) | Kubernetes user namespaces support, labeled and tainted (`NoSchedule`) `experiments.buildkite.com/runtime=sysbox` |
-
-Each installer must target the runtime's nodes and tolerate their
-`experiments.buildkite.com/runtime=<kata|sysbox>:NoSchedule` taint. Neither
-does by default. With node autoscaling, the installer must also run on newly
-added nodes before runners are scheduled there. For kata-deploy, add to its
-Helm values:
-
-```yaml
-nodeSelector:
-  experiments.buildkite.com/runtime: kata
-tolerations:
-  - {key: experiments.buildkite.com/runtime, operator: Equal, value: kata, effect: NoSchedule}
-```
-
-For Sysbox, label the nodes `sysbox-install=yes` as upstream requires, and
-patch the `sysbox-deploy-k8s` DaemonSet, for example as a Kustomize patch.
-The tolerations list replaces upstream's, so keep its
-`sysbox-runtime=not-running` toleration:
-
-```yaml
-spec:
-  template:
-    spec:
-      nodeSelector:
-        experiments.buildkite.com/runtime: sysbox
-      tolerations:
-        - {key: sysbox-runtime, operator: Equal, value: not-running, effect: NoSchedule}
-        - {key: experiments.buildkite.com/runtime, operator: Equal, value: sysbox, effect: NoSchedule}
-```
-
-The `dind`, `kata` and `sysbox` profiles require Kubernetes native sidecars.
-Sysbox additionally requires Kubernetes user namespaces. Their Docker data and
-workspace are Pod-local and are discarded when a runner Pod is removed.
-
-The Docker daemon resolves bind-mount sources in its own container, which
-shares only the `/buildkite` workspace with the agent. Jobs can bind-mount
-checkouts and other paths under `/buildkite` into their containers, but not
-files elsewhere in the agent's container. So that the Docker and Docker Compose
-plugins' `mount-buildkite-agent` works, each agent copies its binary to
-`/buildkite/bin/buildkite-agent` and puts that directory first on `PATH`,
-where the plugins look for it. The agent image therefore needs `/bin/sh`.
+Kata and Sysbox are host runtimes that the chart doesn't install. See
+[Installing Kata and Sysbox](docs/wip_deployment.md#installing-kata-and-sysbox).
 
 ### Privileged Docker-in-Docker
 
@@ -364,64 +318,164 @@ need Docker. The Pod runs the same Docker daemon sidecar as `kata` and
 `sysbox`, privileged and without a RuntimeClass, so it schedules on any node.
 
 > [!WARNING]
-> A privileged container has host-level access to its node: it can see host
-> devices, load kernel modules and escape to the host. `dind` is not isolation.
-> Only run trusted jobs on `dind` runner pools, and don't share their nodes with
-> workloads those jobs must not reach.
+> `dind` is not isolation. A privileged container can reach host devices, load
+> kernel modules and escape to its node. Run only trusted jobs on `dind` pools,
+> and keep their nodes apart from workloads those jobs must not reach.
 
-The namespace must allow privileged Pods. With Pod Security Admission, label it
-for the `privileged` level, for example
-`kubectl label namespace <namespace> pod-security.kubernetes.io/enforce=privileged`.
-`kata` runners need the same, because their Docker daemon is privileged inside
-the VM. The chart adds no node selector or toleration for `dind`, so its Pods
-can land on any node. Dedicated nodes for `dind` runners aren't configurable
-yet.
+The namespace must allow privileged Pods. `kata` runners need this too, because
+their Docker daemon is privileged inside the VM. With Pod Security Admission:
 
-### Ephemeral agents
+```bash
+# Allow privileged Pods in the release namespace
+kubectl label namespace <namespace> pod-security.kubernetes.io/enforce=privileged
+```
 
-`ephemeralAgent` controls the Buildkite agent, not the Pod. Runner Pods always
-persist across jobs. Only autoscaling adds or removes them.
+The chart adds no node selector or toleration for `dind`, so its Pods can land
+on any node. Dedicated `dind` nodes aren't configurable yet.
 
-By default (`ephemeralAgent: false`) agents are persistent: one agent registers
-when its Pod starts and runs job after job, so whatever a job leaves behind is
-still there for the next. With `ephemeralAgent: true`, the agent disconnects
-after one job and is replaced by a newly registered agent, named
-`<pod>-<suffix>`, with a clean workspace. How depends on the runtime:
+### Bind mounts
 
-- `standard`: the agent container runs a small loop instead of the agent
-  itself. It empties the build and plugin directories, runs
-  `buildkite-agent start --disconnect-after-job`, and repeats when the agent
-  exits. The container is never restarted, so the kubelet's restart backoff
-  does not slow down the next job. The agent image needs `/bin/sh`.
-- `dind`, `kata`, `sysbox`: a supervisor container starts each agent as a fresh
-  container inside the Pod's Docker daemon with `--disconnect-after-job`.
-  After each job it removes the job's containers, networks and volumes, clears
-  the `/buildkite` workspace, and starts the next agent.
+The Docker daemon resolves bind-mount sources in its own container, which
+shares only the `/buildkite` workspace with the agent:
 
-If cleanup fails, no new agent starts until it succeeds. Scaling in, upgrades
-and node scale-down behave as for persistent agents: on SIGTERM the current
-agent finishes its job, bounded by `terminationGracePeriodSeconds`, and no
-further agent starts. If the deletion-cost sidecar polls while one agent is
-being replaced by the next, it finds no agent status and marks the Pod busy
-until the new agent reports idle, so the Pod is briefly protected rather than
-exposed.
+- Jobs can bind-mount checkouts and other paths under `/buildkite` into their
+  containers.
+- Jobs can't bind-mount files from elsewhere in the agent's container.
 
-What is reset between jobs:
+So that the Docker and Docker Compose plugins' `mount-buildkite-agent` option
+works, each agent copies its binary to `/buildkite/bin/buildkite-agent` and
+puts that directory first on `PATH`, where the plugins look for it. The agent
+image therefore needs `/bin/sh`.
 
-| `runtime` | Reset | Persists |
-| --- | --- | --- |
-| `standard` | The agent process and its registration, and the contents of `/buildkite/builds` (checkouts) and `/buildkite/plugins`. | The Pod and its node, and the agent container with the rest of its filesystem: `/tmp`, the home directory, packages or tools a job installed, caches outside `/buildkite`, and any processes a job left running. |
-| `dind`, `kata`, `sysbox` | The agent container (recreated from the image), every Docker container, network and volume, and the `/buildkite` workspace (checkouts, plugins and sockets). | The Pod and its node, the Docker daemon and its image and build caches, and the Docker client configuration (`DOCKER_CONFIG`, including logins). |
+## Ephemeral agents
 
-Ephemeral agents keep successive jobs' state apart, but they are not a security
-boundary between them. Anything a job can reach that persists, such as files
-outside the workspace in a `standard` container or the Pod's Docker image
-cache, remains available to later jobs.
+`ephemeralAgent` controls the Buildkite agent, not the Pod:
+
+- Runner Pods always persist across jobs, and only autoscaling adds or removes
+  them.
+- With `dind`, `kata` and `sysbox`, Docker data and the workspace live in the
+  Pod and are discarded when it's removed.
+
+By default (`ephemeralAgent: false`), one agent registers when its Pod starts
+and runs job after job, so whatever a job leaves behind is there for the next.
+
+With `ephemeralAgent: true`, the agent disconnects after each job, and a newly
+registered agent named `<pod>-<suffix>` replaces it with a clean workspace:
+
+- `standard`: a small loop in the agent container empties the build and plugin
+  directories, then runs `buildkite-agent start --disconnect-after-job` again.
+  The container never restarts, so restart backoff doesn't delay the next job.
+  The agent image needs `/bin/sh`.
+- `dind`, `kata`, `sysbox`: a supervisor starts each agent as a fresh container
+  in the Pod's Docker daemon. After each job it removes the job's containers,
+  networks and volumes, and clears the `/buildkite` workspace.
+
+Ephemeral agents also behave as follows:
+
+- If cleanup fails, no new agent starts until it succeeds.
+- On SIGTERM, from scale-in, upgrades or node scale-down, the current agent
+  finishes its job within `terminationGracePeriodSeconds`, and no further agent
+  starts.
+- While one agent replaces the next, the deletion-cost sidecar marks the Pod
+  busy until the new agent reports idle, so scale-in prefers other Pods.
+
+### What's reset between jobs
+
+#### `standard`
+
+<table>
+<tr>
+<th>Reset</th>
+<td>The agent process and its registration, and the contents of
+<code>/buildkite/builds</code> (checkouts) and
+<code>/buildkite/plugins</code>.</td>
+</tr>
+<tr>
+<th>Persist</th>
+<td>The Pod, its node and the agent container, with the rest of its filesystem:
+<code>/tmp</code>, the home directory, packages or tools a job installed, caches
+outside <code>/buildkite</code>, and any processes a job left running.</td>
+</tr>
+</table>
+
+#### `dind`, `kata` and `sysbox`
+
+<table>
+<tr>
+<th>Reset</th>
+<td>The agent container, recreated from the image, every Docker container,
+network and volume, and the <code>/buildkite</code> workspace (checkouts,
+plugins and sockets).</td>
+</tr>
+<tr>
+<th>Persist</th>
+<td>The Pod, its node and the Docker daemon, with Docker's image and build
+caches and the Docker client configuration (<code>DOCKER_CONFIG</code>,
+including logins).</td>
+</tr>
+</table>
+
+### Security
+
+Ephemeral agents keep jobs' state apart, but they aren't a security boundary.
+Anything that persists, such as files outside the workspace in a `standard`
+container or the Pod's Docker image cache, stays available to later jobs.
+
+## Job images
+
+### Step images
+
+On `dind`, `kata` and `sysbox` runners, a command step's `image:` runs the
+whole job in that image, including plugin and repository checkout. `standard`
+runners have no Docker daemon, so they ignore `image:` and run the step in the
+agent container.
+
+Set a default whole-job image for steps without a nonempty `image:`:
+
+```yaml
+defaults:
+  docker:
+    defaultStepImage: buildkite/agent-base:ubuntu-noble-hosted-toolchains
+```
+
+Which image a step runs in:
+
+- A nonempty step `image:` takes precedence over the default.
+- Override `docker.defaultStepImage` per pool, or set it to `""` there to clear
+  it.
+- With neither, the usual bootstrap runs in the agent, unchanged.
+- To ignore both and run every step in the agent, set
+  `docker.stepImages: false` on a pool.
+- `standard` runners ignore both, because they have no Docker daemon.
+- `defaults.image` is unaffected and still supplies the agent binary.
+
+For how the step container runs the job, see
+[Step images](docs/wip_how_it_works.md#step-images) in How it works.
+
+Images are pulled only when the Pod's daemon doesn't have them, so a cached
+tag isn't updated until the Pod is replaced, even across ephemeral agents.
+Private step images must be pullable with the existing Docker client
+configuration, because a login in a job hook happens too late.
+
+The step's image must:
+
+- Match the agent binary's architecture.
+- Include Git, `bash` (the default command shell), and any checkout, SSH/CA or
+  plugin tools the job needs.
+- Run as a user that can write to the shared workspace and, when needed, use
+  the Docker socket.
+
+It doesn't need the agent installed, because it runs the shared binary.
+
+A pipeline-level `image:` applies to every step, including those using the
+Docker or Docker Compose plugins, whose hooks then need the Docker CLI (and
+Compose) in that image. Set `image:` only on the steps that need it, or use an
+image with the Docker CLI.
 
 ### Agent runtime image
 
-Supervised ephemeral `dind`, `kata` and `sysbox` agents can run in a separate
-runtime image, including their initial environment/plugin/checkout hooks:
+Ephemeral `dind`, `kata` and `sysbox` agents can run in a separate runtime
+image, including their environment, plugin and checkout hooks:
 
 ```yaml
 defaults:
@@ -431,120 +485,60 @@ defaults:
     agentRuntimeImage: buildkite/agent-base:ubuntu-noble-hosted-toolchains
 ```
 
-`image` remains the agent-binary source (`buildkite/agent:4` by default). Docker
-mounts its filesystem read-only at `/opt/buildkite-agent-source` inside the
-runtime, rather than overlaying it on the runtime's root. Startup copies only
-the agent binary to `/buildkite/bin/buildkite-agent` and runs that copy. The
-shared path is first on `PATH` and is the agent's `BUILDKITE_BIN_PATH`, so
-Docker/Compose plugins and step containers can bind-mount it without
-inheriting the source-image mount. No extraction container or custom combined
-image is needed, and the existing between-job workspace cleanup is unchanged.
+- `image` still supplies the agent binary, and the runtime image provides
+  everything else the agent runs with.
+- Override `docker.agentRuntimeImage` per pool, or set it to `""` to clear an
+  inherited runtime image.
+- The chart rejects it for persistent agents and `standard` runners, rather
+  than ignoring it.
 
-The runtime must match the source binary's architecture and provide `/bin/sh`,
-`cp`, a writable workspace and whatever tools/hooks the jobs require.
-Source-image configuration and hooks are not copied. With step images enabled
-it also needs the Docker CLI and `setsid`. Docker/Compose plugins need their
-usual tooling. Without a selected step image, the whole job runs in this
-runtime, including initial hooks. A selected explicit/default step image
-instead runs the whole job there. If the runtime is already the desired job
-image, leave `defaultStepImage` empty to avoid a redundant container. Setting
-`docker.stepImages: false` also keeps the whole job in this runtime, but
-ignores explicit step images too.
+Where the job runs:
 
-Override `docker.agentRuntimeImage` per pool, or set it to `""` to clear an
-inherited runtime. An empty default preserves the existing behavior. Nonempty
-values are rejected for persistent agents or `standard` runners rather than
-silently ignored.
+- Without a step image, the whole job, including its first hooks, runs in the
+  runtime image.
+- With a step image or a default step image, the whole job runs there instead.
+- If the runtime image is already your job image, leave `defaultStepImage`
+  empty to avoid an extra container.
+- `docker.stepImages: false` keeps every job in the runtime image, and ignores
+  step `image:` too.
 
-Requires Docker Engine/CLI 29+ and the containerd image store for `type=image`
-mounts. The opt-in explicitly enables that store. For Sysbox this replaces the
-usual classic `overlay2` selection. It does not migrate an existing daemon's
-images: a runner Pod replacement starts with a fresh emptyDir image cache. The
-supervisor refuses an incompatible store instead of falling back to an overlay
-or extraction helper. CI exercises isolated Docker image mounts, not Sysbox or
-Kata host/runtime compatibility, so validate those before rolling out an
-opted-in pool. The feature is not enabled in any deployed values by this chart
-change.
+The runtime image must:
 
-Both source and runtime are pulled only when missing, reusing cached mutable
-tags between agents, not requesting per-job freshness. Coordinate active jobs
-before changing either image or upgrading runner Pods.
+- Match the agent binary's architecture.
+- Provide `/bin/sh`, `cp`, a writable workspace, and the tools and hooks your
+  jobs need.
+- Provide the Docker CLI and `setsid` when step images are enabled.
 
-### Step images
+Configuration and hooks from `image` aren't copied into it.
 
-On `dind`, `kata` and `sysbox` runners, a command step's `image:` runs the
-whole job in that image, including plugin and repository checkout. `standard`
-runners have no Docker daemon, so they ignore `image:` and run the step in the
-agent container.
+Before you enable it:
 
-The agent runs each job through a script from the chart instead of
-`buildkite-agent bootstrap`. Set a default whole-job image for steps without a
-nonempty `image:`:
+- The pool's Docker daemon must be Docker Engine 29 or later.
+- The chart switches the daemon to the containerd image store, replacing
+  `overlay2` on Sysbox.
+- Changing the setting rolls the pool's Pods, which start with empty image
+  caches.
+- CI tests the image mounts in Docker but not on Kata or Sysbox, so test those
+  before rolling it out.
 
-```yaml
-defaults:
-  docker:
-    defaultStepImage: buildkite/agent-base:ubuntu-noble-hosted-toolchains
-```
+See [Agent runtime image](docs/wip_how_it_works.md#agent-runtime-image) in How
+it works.
 
-An explicit nonempty step `image:` takes precedence. Override
-`docker.defaultStepImage` per pool, or set it to `""` there to clear the
-default. With neither a step image nor a default, the usual bootstrap runs
-unchanged. This does not change `defaults.image`, the agent-binary source. For
-either a step image or the configured default, a container started in the Pod's
-Docker daemon runs one full `buildkite-agent bootstrap`: plugins, checkout,
-hooks and commands. Hook-added, changed and unset environment variables, and
-changes to the working directory, stay in the same executor through the command
-phase. This does not fix the agent's own environment semantics: agent 4.8 can
-reintroduce a hook-unset variable if it was inherited at bootstrap startup,
-because its subprocess layer merges the original OS environment back in.
-Variables created by an earlier hook and later unset are not affected.
+Both images are pulled only when missing, so a cached tag isn't refreshed for
+each job. Coordinate with active jobs before changing either image or
+upgrading runner Pods.
 
-**Upgrading from 0.14:** step images were command-only environments, with
-initial plugin/checkout hooks running separately in the agent. They are now
-whole-job environments. Supply Git and all initial hook/checkout tools in the
-selected image (for example AWS CLI for AWS plugin environment hooks).
-Agent-image tools, global hooks, home-directory files and configuration are not
-automatically copied into it. Private step images must be pullable using the
-existing Docker client configuration before their own hooks can run. A login
-performed by a job hook is too late to pull that job's image.
-
-The container mounts the `/buildkite` workspace at the same path, so it sees
-the checkout, the plugins, the Job API socket and the agent binary, which the
-bootstrap appends to `PATH`. Like the agent, it gets the job's environment,
-the Pod's Docker daemon and its Docker client configuration (`DOCKER_CONFIG`).
-The image is pulled if the daemon doesn't have it yet, so a tag the daemon
-already has isn't updated until the Pod is replaced. The container is removed
-when the job finishes and stopped when the job is cancelled. It is named
-`buildkite-step-<job ID>` and labeled `buildkite.com/job-id`.
-
-The agent runtime needs the `docker` CLI and `setsid`, which `buildkite/agent`
-images have. The step's image must match the agent binary's architecture and
-needs Git, `bash` (the default command shell), and any checkout authentication,
-SSH/CA or plugin tools the job requires. It must run as a user that can write
-to the shared workspace and use the Docker socket when required. No agent
-installation is needed in the step image: it runs the shared binary.
-
-An `image:` at the top of a pipeline applies to every step in it, including
-steps that use the Docker or Docker Compose plugins. Their hooks then run in
-that image, which needs the Docker CLI (and Compose) for them to work. Set
-`image:` on the steps that need it instead, or use an image with the Docker
-CLI.
-
-To ignore both `image:` and the default and run every step in the agent
-container, set `docker.stepImages: false` on an entry. `standard` runners also
-ignore the default. Neither explicit nor default images are pulled per job:
-the daemon reuses cached tags, including across ephemeral agent replacements.
-
-### Image pull caching
+## Image pull caching
 
 The `dind`, `kata` and `sysbox` Docker daemons can pull images through an
-[OCI accelerator](https://github.com/buildkite/oci-accelerator), an HTTPS
-proxy that caches registry content on its node's disk. Repeat pulls of
-layers and digest-addressed manifests across all runners, and after runners
-are replaced, come from the cache. Image names and `docker login` don't change.
-Tags and pushes go to the upstream registry, and the registry must approve
-access before the proxy serves cached content.
+[OCI accelerator](https://github.com/buildkite/oci-accelerator), an HTTPS proxy
+that caches registry content on its node's disk:
+
+- Repeat pulls of layers and digest-addressed manifests come from the cache,
+  across all runners and after runners are replaced.
+- Image names and `docker login` don't change.
+- Tags and pushes go to the upstream registry, which must approve access before
+  the proxy serves cached content.
 
 Enable the accelerator:
 
@@ -557,86 +551,37 @@ ociAccelerator:
 Every `dind`, `kata` and `sysbox` entry then uses it. Set
 `docker.ociAccelerator: false` on an entry to pull directly.
 
-The proxy signs registry certificates with its own root CA, which it loads from
-a Secret in the release namespace. It never generates one itself. Runner Pods
-trust only the CA's certificate, which they mount from a separate ConfigMap,
-`<release>-buildkite-operator-oci-accelerator-ca-cert`, so only the proxy
-references the Secret holding the private key. By default the chart generates
-the CA. Before install and every upgrade, a hook Job runs the accelerator's
-`init-ca` and stores the result in the Secret
-`<release>-buildkite-operator-oci-accelerator-ca`, unless that Secret already
-exists, so the CA is created once and then kept. The same Job then copies the
-certificate from the Secret into the ConfigMap, creating or updating it, so
-upgrading a release installed before the ConfigMap existed creates it. A second
-hook Job deletes the ConfigMap and the Secret after `helm uninstall`, but
-`helm uninstall --no-hooks` leaves them behind. The hook Jobs run with a
-short-lived ServiceAccount that may create Secrets and ConfigMaps, but may
-read or delete only that Secret and ConfigMap and update only the ConfigMap,
-and Helm itself never renders or stores the private key. To rotate the CA,
-delete the Secret, run `helm upgrade`, then restart the proxy StatefulSet and
-the runner Deployments.
+Each daemon sends all of its HTTPS traffic through the proxy:
 
-To manage the CA yourself instead, for example to keep it across reinstalls,
-create it once and store it in a Secret in the release namespace. This runs
-`init-ca` in a throwaway container and copies the files out:
+- Only `registries` are cached, and other hosts are tunneled through unchanged.
+- List hosts the proxy can't reach, such as in-cluster registries, in
+  `noProxy`.
+- Pulls fail while the proxy is unavailable.
+- Job containers don't inherit the daemon's proxy settings.
+- A NetworkPolicy admits only this release's runner Pods, if your network
+  plugin enforces NetworkPolicy.
 
-```bash
-mkdir -m 0700 oci-accelerator-ca
-docker run --rm --entrypoint /bin/sh buildkite/oci-accelerator:v0.3.0 -ec \
-  'mkdir -m 0700 /tmp/state; oci-accelerator init-ca --dir /tmp/state/ca >&2; tar -C /tmp/state/ca -cf - ca.crt ca.key' |
-  tar -C oci-accelerator-ca -xf -
-kubectl create secret generic oci-accelerator-ca \
-  --namespace buildkite-runner-stack \
-  --from-file=oci-accelerator-ca/ca.crt \
-  --from-file=oci-accelerator-ca/ca.key
-```
+The proxy signs registry certificates with its own root CA. By default the
+chart generates the CA on first install and keeps it across upgrades, and
+runner Pods trust only its certificate. To rotate it or bring your own, see
+[OCI accelerator CA](docs/wip_deployment.md#oci-accelerator-ca).
 
-Keep a secure backup of `ca.key`. Anyone with it can impersonate registries
-to the runners' Docker daemons. Then set `ociAccelerator.ca.existingSecret.name:
-oci-accelerator-ca`. The chart never creates, changes or deletes a Secret you
-name. Its hook Job only reads it, before install and every upgrade, to copy the
-certificate into the runners' ConfigMap, so install and upgrade fail until the
-Secret exists. After replacing the Secret, run `helm upgrade` to copy the new
-certificate, then restart the proxy StatefulSet and the runner Deployments.
+The chart runs `ociAccelerator.replicas` proxies (default 1) in a StatefulSet.
+Cache size and resource requests apply **per replica**:
 
-The chart installs:
+- Use at least two replicas to keep a proxy available during rolling updates
+  and node replacement.
+- In-flight pulls through a terminating proxy can still fail, even with
+  several replicas.
+- Without [peering](#peering), each proxy fills its cache from origin
+  independently.
+- The Service spreads connections, not image layers, so a long-lived
+  connection keeps using the same replica.
 
-- A StatefulSet running `ociAccelerator.replicas` proxies (default 1), and a
-  ClusterIP Service that the Docker daemons use as their HTTPS proxy.
-- A headless Service providing stable per-Pod DNS names for the StatefulSet,
-  also used for discovery when peering is enabled.
-- A NetworkPolicy admitting only this release's runner Pods
-  (`networkPolicy.enabled`). Enforcement requires a network plugin that
-  supports NetworkPolicy.
+### Peering
 
-Each daemon sends all of its HTTPS traffic through the proxy. Only
-`registries` are cached. Other hosts are tunneled through it unchanged. List
-hosts the proxy cannot reach, such as in-cluster registries, in `noProxy`.
-Pulls fail while the proxy is unavailable. Job containers don't inherit the
-daemon's proxy settings.
-
-Multiple replicas work with or without peering. Without peering, each proxy
-fills its cache independently from origin, even if another proxy has the
-content. The Service distributes connections, not individual image layers,
-so long-lived connections can keep using the same replica. Proxies prefer
-spreading across nodes without requiring a separate node for each replica.
-Cache size and resource requests apply **per replica**.
-
-Use at least two replicas to keep a proxy available during StatefulSet rolling
-updates, which replace one Pod at a time without surging. A single replica has
-an availability gap during updates or node replacement. In-flight pulls through
-a terminating proxy can still fail, even with multiple replicas.
-
-**Upgrading from 0.16:** the accelerator changes from a Deployment to a
-StatefulSet, discarding the old workload's cache and potentially interrupting
-pulls. Schedule this one-time transition outside active builds. The proxy
-Service and CA stay the same, so runners need no configuration change or
-restart.
-
-#### Peering
-
-For multiple proxies that can fetch cached content from one another, enable
-peering and set the replica count:
+To let the proxies fetch cached content from one another, enable peering and
+set the replica count:
 
 ```yaml
 ociAccelerator:
@@ -646,81 +591,50 @@ ociAccelerator:
     enabled: true
 ```
 
-Runners keep using the same proxy Service on port 3128. The StatefulSet's
-headless Service also exposes port 7443. The chart seeds each proxy with all the
-replicas' names, including its own, which the accelerator ignores. Seeds are
-DNS names, not snapshots of Pod IPs, so replacements can rediscover each other.
-Pods start in parallel, and peer DNS is published before readiness. No API
-access or discovery sidecar is needed.
+- The chart sets up peer discovery and mutual TLS with the release's CA, and
+  runners keep using the same proxy Service.
+- The NetworkPolicy allows peer traffic only between this release's proxies.
+- Peering supports at most 32 replicas, the accelerator's peer limit.
+- Changing the replica count, or switching peering on or off, rolls the
+  proxies and empties their caches.
 
-Peers use mutual TLS with the release's existing CA and private key. The
-NetworkPolicy allows port 7443 only between this release's accelerator Pods,
-and runner access stays limited to port 3128. Keep the existing CA-key
-placement precautions below for every proxy node.
+See the accelerator's
+[peer discovery](https://github.com/buildkite/oci-accelerator/blob/v0.5.0/docs/deployment.md#peer-discovery)
+docs for how peering works and its limits.
 
-Each replica has its own `emptyDir` cache and peer state. Both survive container
-restarts, but Pod replacement loses its cache and creates a new peer identity.
-Peering is not sharding or proactive replication: popular content can be
-duplicated across caches, and losing every proxy Pod loses all cached content.
-A peer miss or unavailable peer falls back to origin. The requesting proxy
-still obtains upstream registry authorization before fetching peer content.
-Mutable tag responses are not shared.
+### Cache storage
 
-With peering enabled, changing the replica count changes the seed list and
-rolls the fleet. Discovery and cache inventory refresh are asynchronous, so a
-new proxy can initially fetch from origin before peer hints are available.
+- The cache is an `emptyDir` on the proxy's node, limited to `cache.size`
+  (default 20Gi). It survives container restarts, but starts empty when the
+  proxy Pod is replaced.
+- The proxy requests `cache.size` of `ephemeral-storage`, so size it to fit
+  beside runner Pods, or place the proxy with `nodeSelector` and `tolerations`.
+- Keep `cache.maxBytes` below `cache.size`.
+- Tag lookups are cached in memory for 30 seconds, so a tag pushed in one step
+  can still resolve to its old digest in the next. To turn this off, set
+  `OCI_ACCELERATOR_CACHE_MUTABLE_TTL: "0s"` in `ociAccelerator.extraEnv`.
 
-Switching peering on or off rolls the existing StatefulSet, replacing each
-Pod's cache and peer identity without changing workload kind, governing Service,
-runner endpoint or CA. Runner Pods need no configuration change or restart.
-The 40-second Pod termination grace covers the default proxy and peer drains.
-Keep any `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` override below half that budget,
-leaving time for cleanup.
+Pass other `OCI_ACCELERATOR_*` settings through `ociAccelerator.extraEnv`. See
+the accelerator's
+[cache storage](https://github.com/buildkite/oci-accelerator/blob/v0.5.0/docs/deployment.md#cache-storage) and
+[settings](https://github.com/buildkite/oci-accelerator/blob/v0.5.0/docs/settings.md) docs.
 
-#### Cache storage and trust
+### Trust and placement
 
-Besides content addressed by digest, the proxy keeps tag manifests, tag lists,
-referrer lists and catalog responses in memory for 30 seconds. A tag pushed or
-moved during that time can still resolve to its previous digest, for example
-when one step pushes `myapp:latest` and the next pulls it. Set
-`OCI_ACCELERATOR_CACHE_MUTABLE_TTL: "0s"` in `extraEnv` to disable this.
+- The Docker daemons trust the accelerator's CA for every host, not only
+  `registries`, because Docker doesn't read `/etc/docker/certs.d` for Docker
+  Hub with the classic image store that `sysbox` uses.
+- The proxy's node holds the CA private key that every accelerated daemon
+  trusts, including those of `kata` and `sysbox` pools running untrusted jobs.
+- A `dind` job can escape to its node, so with `dind` pools, keep the proxy off
+  nodes `dind` runners can reach, using `ociAccelerator.nodeSelector` and
+  `tolerations`.
 
-The cache is an `emptyDir` on the proxy's node, limited to `cache.size`
-(default 20Gi), so it needs no StorageClass. It outlives runner Pods but starts
-empty whenever the proxy Pod is replaced: on upgrades that change it and when
-its node is removed. Container restarts within a Pod keep the cache. The proxy
-requests `cache.size` of `ephemeral-storage`, unless `resources.requests` sets
-it, so it is only scheduled on a node with that much disk free. Runner Pods
-with a Docker daemon request disk too, so size it to fit beside them, or place
-the proxy with `nodeSelector` and `tolerations`. Keep `cache.maxBytes` below
-`cache.size`.
+See [OCI accelerator CA](docs/wip_deployment.md#oci-accelerator-ca) for how the
+chart protects the key, and the accelerator's
+[security model](https://github.com/buildkite/oci-accelerator/blob/v0.5.0/docs/deployment.md#security-model).
 
-The daemons trust the CA for every host, not only `registries`. Docker Engine
-does not read `/etc/docker/certs.d` for Docker Hub with the classic image
-store used by `sysbox`, so per-registry trust is not possible. Runner Pods
-reference only the certificate's ConfigMap, never the CA Secret. This matters
-because a node's kubelet can read every key of any Secret that a Pod on the
-node references, whatever `items` the Pod mounts, so a job that escapes to its
-node can read those Secrets. The private key is mounted only in the proxy, and
-held briefly by the hook Job that generates or copies it. Pods read the CA at
-startup, so after replacing it restart the proxy StatefulSet and the runner
-Deployments. Other `OCI_ACCELERATOR_*` settings can be passed through
-`ociAccelerator.extraEnv`. See the accelerator's
-[deployment guide](https://github.com/buildkite/oci-accelerator/blob/main/docs/deployment.md#configuration).
-
-The proxy's node holds the CA private key that every accelerated daemon
-trusts, including those of `kata` and `sysbox` pools running untrusted jobs.
-A `dind` job can escape to its node and read the Secrets mounted in other Pods
-there, so a release with `dind` pools should keep the proxy off nodes `dind`
-runners can reach. The chart adds no node selector for `dind`, so place the
-proxy with `ociAccelerator.nodeSelector` and `tolerations`, for example on
-nodes tainted for `kata` or `sysbox`, or on dedicated system nodes. The hook
-Jobs that generate, copy and delete the CA use the same placement. Without the
-deletion-cost admission policy, such a job could instead use a runner's token
-to change the proxy Pod's image. See
-[Deletion-cost admission policy](docs/wip_deployment.md#deletion-cost-admission-policy).
-
-### Registry credentials
+## Registry credentials
 
 To pull private images, or to avoid Docker Hub's anonymous rate limits, give
 the release registry credentials. They apply to every Pod and runner pool:
@@ -878,9 +792,10 @@ helm upgrade --install buildkite-operator \
 The values file must provide the runner pools described in
 [Quickstart](#quickstart) and the token Secret references described in
 [Production secret management](docs/wip_deployment.md#production-secret-management),
-and KEDA must already be installed. Any private container images used by your configuration still need
-their own pull credentials. For digest-pinned installs, replace the chart URL
-with the `oci://…@sha256:…` reference from the release log and omit `--version`.
+and KEDA must already be installed. Any private container images used by your
+configuration still need their own pull credentials. For digest-pinned
+installs, replace the chart URL with the `oci://…@sha256:…` reference from the
+release log and omit `--version`.
 
 Run `python3 hack/test_publish_chart.py` to test release handling locally. It
 uses real Helm chart packaging with simulated registry and credential services.
