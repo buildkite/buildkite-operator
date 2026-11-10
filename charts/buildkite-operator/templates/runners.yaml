@@ -272,10 +272,9 @@ spec:
           # Restarts the agent after each job without restarting the container.
           command: ["/bin/sh", "/opt/ephemeral-agent/ephemeral-agent.sh"]
           {{- else if $docker }}
-          # The Docker daemon resolves bind-mount sources in its own container,
-          # which shares only the workspace with the agent. Jobs whose plugins
-          # mount the agent binary (mount-buildkite-agent) take it from PATH,
-          # so put a copy in the workspace first on PATH.
+          # Before starting buildkite-agent, put a copy first on PATH under
+          # /buildkite, so plugins can mount it into job containers. See
+          # "Bind mounts" in docs/appendices.md.
           command:
             - /bin/sh
             - -c
