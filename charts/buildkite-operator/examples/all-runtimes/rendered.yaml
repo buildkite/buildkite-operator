@@ -883,13 +883,16 @@ spec:
         - name: step-image
           configMap:
             name: buildkite-buildkite-operator-step-image
+        # The daemon's images and containers, discarded with the Pod.
         - name: docker-data
           emptyDir:
             sizeLimit: 40Gi
+        # Holds the daemon's socket, which the Pod's other containers connect to.
         - name: docker-run
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
+        # Builds and plugins, shared so the daemon can bind-mount build paths.
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi
@@ -898,6 +901,7 @@ spec:
         - name: docker-config
           emptyDir:
             sizeLimit: 16Mi
+        # OCI Accelerator's CA certificate, which SSL_CERT_DIR adds.
         - name: oci-accelerator-ca
           configMap:
             name: "buildkite-buildkite-operator-oci-accelerator-ca-cert"
@@ -1123,13 +1127,16 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
+        # The daemon's images and containers, discarded with the Pod.
         - name: docker-data
           emptyDir:
             sizeLimit: 40Gi
+        # Holds the daemon's socket, which the Pod's other containers connect to.
         - name: docker-run
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
+        # Builds and plugins, shared so the daemon can bind-mount build paths.
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi
@@ -1138,6 +1145,7 @@ spec:
         - name: docker-config
           emptyDir:
             sizeLimit: 16Mi
+        # OCI Accelerator's CA certificate, which SSL_CERT_DIR adds.
         - name: oci-accelerator-ca
           configMap:
             name: "buildkite-buildkite-operator-oci-accelerator-ca-cert"
@@ -1517,13 +1525,16 @@ spec:
         - name: step-image
           configMap:
             name: buildkite-buildkite-operator-step-image
+        # The daemon's images and containers, discarded with the Pod.
         - name: docker-data
           emptyDir:
             sizeLimit: 40Gi
+        # Holds the daemon's socket, which the Pod's other containers connect to.
         - name: docker-run
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
+        # Builds and plugins, shared so the daemon can bind-mount build paths.
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi

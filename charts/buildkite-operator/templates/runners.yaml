@@ -426,13 +426,16 @@ spec:
             name: {{ include "buildkite-operator.stepImageName" $ }}
         {{- end }}
         {{- if $docker }}
+        # The daemon's images and containers, discarded with the Pod.
         - name: docker-data
           emptyDir:
             sizeLimit: {{ $r.docker.storage.data }}
+        # Holds the daemon's socket, which the Pod's other containers connect to.
         - name: docker-run
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
+        # Builds and plugins, shared so the daemon can bind-mount build paths.
         - name: workspace
           emptyDir:
             sizeLimit: {{ $r.docker.storage.workspace }}
@@ -451,6 +454,7 @@ spec:
         {{- end }}
         {{- end }}
         {{- if $accelerated }}
+        # OCI Accelerator's CA certificate, which SSL_CERT_DIR adds.
         - name: oci-accelerator-ca
           configMap:
             name: {{ include "buildkite-operator.ociAcceleratorCACertName" $ | quote }}
