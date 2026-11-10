@@ -2,14 +2,16 @@
 
 ## Development
 
+Install the pinned tools with `mise install`. Docker is also required for the
+supervisor, step-image and Kind end-to-end tests.
+
 ```bash
 make test-helm        # lint and render the standalone chart
 make helm-examples    # update the chart's rendered examples
 make test-supervisor  # run the ephemeral-agent supervisor against Docker
 make test-step-image  # run step images against Docker
 make test-helm-e2e    # install and uninstall the chart in isolated Kind
-make lint             # golangci-lint
-make test             # Go tests and generated-file checks
+make check-docs       # check documentation links and heading anchors
 make install-hooks    # use the Git hooks in .githooks
 ```
 
