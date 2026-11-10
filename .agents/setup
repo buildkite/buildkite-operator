@@ -25,11 +25,5 @@ printf '%s\n' 'Installing pinned toolchain'
 time "$mise_bin" trust "$repo_root/mise.toml"
 time "$mise_bin" install
 
-printf '%s\n' 'Downloading Go modules'
-time "$mise_bin" exec -- go mod download
-
-printf '%s\n' 'Installing repository build and test tools'
-time "$mise_bin" exec -- make kustomize controller-gen setup-envtest golangci-lint
-
 printf '%s\n' 'Enabling repository Git hooks'
 "$mise_bin" exec -- make install-hooks

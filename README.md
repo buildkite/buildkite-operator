@@ -11,9 +11,6 @@ The stack includes:
 - A choice of [runtimes](#runtimes) for each pool.
 - An optional [image pull cache](#image-pull-caching) shared by the runners.
 
-This repository also holds a Kubernetes operator scaffold (`cmd/`, `config/`),
-which the chart doesn't use yet.
-
 ## Prerequisites
 
 Install the supported KEDA 2.20.0 release once in the cluster before installing
