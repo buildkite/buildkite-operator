@@ -1,5 +1,15 @@
 # Buildkite runner stack for Kubernetes
 
+> [!IMPORTANT]
+> This chart is still under heavy development:
+>
+> - Values, defaults and the resources the chart creates can change in any
+>   release, including minor ones, without a migration path.
+> - Pin the chart version, and review the changes before you upgrade.
+> - Test it in a non-production cluster before you rely on it.
+>
+> Please report bugs and feedback as GitHub issues.
+
 This repository contains a standalone Helm chart for running a Buildkite
 runner stack on Kubernetes. One chart release can serve several Buildkite
 queues. Each gets its own runner pool (a `Deployment` of runner Pods) and KEDA
