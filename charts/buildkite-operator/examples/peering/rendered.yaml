@@ -431,9 +431,6 @@ spec:
             # image store, so the daemon trusts the CA for every host instead.
             - name: SSL_CERT_DIR
               value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs
-          # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
-          # Pod's user namespace. Kata's is privileged, but only inside the VM.
-          # Dind's is privileged on the node itself, with host-level access.
           securityContext:
             privileged: true
           startupProbe:
@@ -463,8 +460,6 @@ spec:
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
-            # Containers the daemon runs bind-mount this: ephemeral agents and
-            # step image containers.
             - name: docker-config
               mountPath: /etc/buildkite-agent/docker
             - name: oci-accelerator-ca
@@ -1219,8 +1214,6 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      # The Pod briefly holds the CA private key, so it runs where the
-      # accelerator does.
       containers:
         # Reuses the chart's pinned Python image to call the Kubernetes API.
         - name: create-ca
@@ -1315,8 +1308,6 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      # The Pod briefly holds the CA private key, so it runs where the
-      # accelerator does.
       containers:
         # Reuses the chart's pinned Python image to call the Kubernetes API.
         - name: delete-ca

@@ -139,8 +139,8 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      # The Pod briefly holds the CA private key, so it runs where the
-      # accelerator does.
+      {{- /* The Pod briefly holds the CA private key, so it runs where the
+      accelerator does. */}}
       {{- with $accelerator.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

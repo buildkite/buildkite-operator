@@ -154,9 +154,9 @@ spec:
             - name: SSL_CERT_DIR
               value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs
             {{- end }}
-          # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
-          # Pod's user namespace. Kata's is privileged, but only inside the VM.
-          # Dind's is privileged on the node itself, with host-level access.
+          {{- /* Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
+          Pod's user namespace. Kata's is privileged, but only inside the VM.
+          Dind's is privileged on the node itself, with host-level access. */}}
           securityContext:
             privileged: {{ ne $r.runtime "sysbox" }}
           startupProbe:
@@ -180,8 +180,8 @@ spec:
             - name: workspace
               mountPath: /buildkite
             {{- if or $supervised $stepImages }}
-            # Containers the daemon runs bind-mount this: ephemeral agents and
-            # step image containers.
+            {{- /* Containers the daemon runs bind-mount this: ephemeral agents and
+            step image containers. */}}
             - name: docker-config
               mountPath: {{ $dockerConfig }}
             {{- end }}
