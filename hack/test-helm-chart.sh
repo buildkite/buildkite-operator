@@ -126,6 +126,44 @@ if [[ "${direct}" == *"ephemeral-agent"* ]]; then
 	exit 1
 fi
 
+# Rollout budgets inherit independently, and a pool can override either with
+# zero. Counts stay numbers and percentages stay strings in the Deployment.
+rollout=$(render --set-string agentToken.value="${TOKEN}" \
+	--set defaults.rollingUpdate.maxUnavailable=2 \
+	--set defaults.rollingUpdate.maxSurge=20 \
+	--set runnerPools.linux.rollingUpdate.maxUnavailable=0 \
+	--set-string runnerPools.linux.rollingUpdate.maxSurge=30% \
+	--set-string runnerPools.inherited.queue=inherited --set runnerPools.inherited.maxReplicas=100 \
+	--set-string runnerPools.no-surge.queue=no-surge --set runnerPools.no-surge.maxReplicas=100 \
+	--set-string runnerPools.no-surge.rollingUpdate.maxUnavailable=20% \
+	--set runnerPools.no-surge.rollingUpdate.maxSurge=0)
+assert_contains "$(document "${rollout}" Deployment test-linux)" \
+	$'maxUnavailable: 0\n      maxSurge: 30%'
+assert_contains "$(document "${rollout}" Deployment test-inherited)" \
+	$'maxUnavailable: 2\n      maxSurge: 20'
+assert_contains "$(document "${rollout}" Deployment test-no-surge)" \
+	$'maxUnavailable: 20%\n      maxSurge: 0'
+partial_rollout=$(render --set-string agentToken.value="${TOKEN}" \
+	--set defaults.rollingUpdate.maxSurge=20 \
+	--set runnerPools.linux.rollingUpdate.maxUnavailable=3)
+assert_contains "$(document "${partial_rollout}" Deployment test-linux)" \
+	$'maxUnavailable: 3\n      maxSurge: 20'
+for field in maxUnavailable maxSurge; do
+	for invalid in -1 1.5 true; do
+		assert_fails "rollingUpdate" --set "defaults.rollingUpdate.${field}=${invalid}"
+	done
+	for invalid in 20 -10% 1.5%; do
+		assert_fails "rollingUpdate" --set-string "runnerPools.linux.rollingUpdate.${field}=${invalid}"
+	done
+done
+assert_fails "rollingUpdate" --set-string defaults.rollingUpdate.maxUnavailable=101%
+for zero in 0 0%; do
+	assert_fails "runnerPools.linux.rollingUpdate.maxUnavailable and maxSurge must not both be zero" \
+		--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=4 \
+		--set-string defaults.rollingUpdate.maxUnavailable=0% \
+		--set runnerPools.linux.rollingUpdate.maxSurge="${zero}"
+done
+
 direct_with_reserved_key=$(render \
 	--set-string agentToken.value="${TOKEN}" \
 	--set-string agentToken.existingSecret.key=authorization)

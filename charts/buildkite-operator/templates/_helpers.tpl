@@ -61,6 +61,9 @@ values would silently render no runner pools and delete every runner.
 {{- if gt (int $settings.minReplicas) $maxReplicas }}
 {{- fail (printf "runnerPools.%s.minReplicas must be less than or equal to maxReplicas" $name) }}
 {{- end }}
+{{- if and (has (toString $settings.rollingUpdate.maxUnavailable) (list "0" "0%")) (has (toString $settings.rollingUpdate.maxSurge) (list "0" "0%")) }}
+{{- fail (printf "runnerPools.%s.rollingUpdate.maxUnavailable and maxSurge must not both be zero" $name) }}
+{{- end }}
 {{- if and $settings.docker.agentRuntimeImage (not (and $settings.ephemeralAgent (has $settings.runtime (list "dind" "kata" "sysbox")))) }}
 {{- fail (printf "runnerPools.%s.docker.agentRuntimeImage requires ephemeralAgent and a dind, kata or sysbox runtime" $name) }}
 {{- end }}

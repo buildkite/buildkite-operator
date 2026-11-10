@@ -7,8 +7,9 @@
       "allOf": [
         { "$ref": "#/$defs/runnerSettings" },
         {
-          "required": ["runtime", "ephemeralAgent", "minReplicas", "pollingInterval", "cooldownPeriod", "scaleDownStabilizationWindowSeconds", "terminationGracePeriodSeconds", "image", "resources", "docker"],
+          "required": ["runtime", "ephemeralAgent", "minReplicas", "pollingInterval", "cooldownPeriod", "scaleDownStabilizationWindowSeconds", "terminationGracePeriodSeconds", "rollingUpdate", "image", "resources", "docker"],
           "properties": {
+            "rollingUpdate": { "required": ["maxUnavailable", "maxSurge"] },
             "image": { "required": ["repository", "tag", "pullPolicy"] },
             "docker": {
               "required": ["image", "resources", "storage", "ociAccelerator", "stepImages", "defaultStepImage", "agentRuntimeImage"],
@@ -215,6 +216,24 @@
         "cooldownPeriod": { "type": "integer", "minimum": 0 },
         "scaleDownStabilizationWindowSeconds": { "type": "integer", "minimum": 0, "maximum": 3600 },
         "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
+        "rollingUpdate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxUnavailable": {
+              "oneOf": [
+                { "type": "integer", "minimum": 0 },
+                { "type": "string", "pattern": "^(0|[1-9][0-9]?|100)%$" }
+              ]
+            },
+            "maxSurge": {
+              "oneOf": [
+                { "type": "integer", "minimum": 0 },
+                { "type": "string", "pattern": "^(0|[1-9][0-9]*)%$" }
+              ]
+            }
+          }
+        },
         "image": { "$ref": "#/$defs/image" },
         "resources": { "type": "object" },
         "docker": {
