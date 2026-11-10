@@ -154,6 +154,11 @@ test-helm: ## Validate the standalone Helm chart.
 	python3 hack/test_deletion_cost.py
 	HELM=$(HELM) HELM_CHART_DIR=$(HELM_CHART_DIR) ./hack/test-helm-chart.sh
 
+.PHONY: check-docs
+check-docs: ## Check that relative links and heading anchors in the docs resolve.
+	python3 hack/test_check_docs.py
+	python3 hack/check_docs.py
+
 .PHONY: helm-examples
 helm-examples: ## Render each examples/<name>/values.yaml of the standalone chart into rendered.yaml and NOTES.txt.
 	@set -eu; \

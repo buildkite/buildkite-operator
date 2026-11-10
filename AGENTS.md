@@ -126,6 +126,9 @@ that don't affect what users install, such as tests, examples or docs.
 Regenerate the examples afterwards, since their `helm.sh/chart` labels include
 the version.
 
+**After editing `README.md` or anything under `docs/`:**
+Follow [docs/style.md](docs/style.md), then run `make check-docs`.
+
 **After editing `*.go` files:**
 ```
 make lint-fix   # Auto-fix code style
