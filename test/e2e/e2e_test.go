@@ -21,7 +21,7 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "buildkite-operator-system"
+const namespace = "buildkite-runner-stack"
 
 // serviceAccountName created for the project
 const serviceAccountName = "buildkite-operator-controller-manager"

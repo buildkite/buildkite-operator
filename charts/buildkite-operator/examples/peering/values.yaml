@@ -1,7 +1,8 @@
-# A three-replica OCI accelerator fleet with DNS-seeded peering and an existing
-# CA Secret. Each proxy keeps an ephemeral cache; the dind runner pool uses the
-# same proxy Service as a single-instance release. Run `make helm-examples`
-# after changing this file or the chart to update rendered.yaml and NOTES.txt.
+# A three-replica OCI Accelerator fleet with DNS-seeded peering and an existing
+# CA Secret. Each replica keeps an ephemeral cache, and the dind runner pool
+# uses the same accelerator Service as a single-instance release. Run
+# `make helm-examples` after changing this file or the chart to update
+# rendered.yaml and NOTES.txt.
 agentToken:
   existingSecret:
     name: buildkite-agent-token

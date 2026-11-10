@@ -104,7 +104,7 @@ true
 {{- end }}
 
 {{/*
-Returns "true" when any runner pool pulls through the OCI accelerator, so the
+Returns "true" when any runner pool pulls through OCI Accelerator, so the
 release installs it.
 */}}
 {{- define "buildkite-operator.ociAcceleratorUsed" -}}
