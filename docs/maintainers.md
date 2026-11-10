@@ -55,8 +55,8 @@ pass, including the chart E2E test.
 ### Publishing
 
 Merge the chart changes and version bump, then tag that commit
-`chart-v<version>` and push the tag. For example, tag `chart-v0.20.0` for
-`version: 0.20.0` in `charts/buildkite-operator/Chart.yaml`. Only stable
+`chart-v<version>` and push the tag. For example, tag `chart-v0.21.0` for
+`version: 0.21.0` in `charts/buildkite-operator/Chart.yaml`. Only stable
 `major.minor.patch` versions are supported, and `appVersion` isn't used.
 
 The release script, `.buildkite/publish-chart.py`:

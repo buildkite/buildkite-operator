@@ -238,7 +238,7 @@ ociAccelerator:
   # <release>-...-oci-accelerator-ca Secret if none exists. Hooks delete the
   # ConfigMap, and any generated Secret, on uninstall. To provide your own, set
   # existingSecret.name to a Secret in the release namespace holding both files
-  # (see docs/wip_deployment.md). The chart only reads it.
+  # (see docs/appendices.md). The chart only reads it.
   ca:
     existingSecret:
       name: ""
