@@ -219,6 +219,7 @@ spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 3600
       containers:
+        # Run the Buildkite agent, which takes jobs from the pool's queue.
         - name: agent
           image: "buildkite/agent:4"
           imagePullPolicy: Always
@@ -264,6 +265,7 @@ spec:
             privileged: false
           resources:
             {}
+        # Increase Pod deletion cost if the agent is busy, so scale-in prefers idle Pods.
         - name: deletion-cost
           image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
           imagePullPolicy: IfNotPresent
@@ -304,9 +306,11 @@ spec:
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
       volumes:
+        # The deletion-cost sidecar's script.
         - name: deletion-cost-code
           configMap:
             name: buildkite-buildkite-operator-deletion-cost
+        # API token for the deletion-cost sidecar only.
         - name: deletion-cost-api
           projected:
             sources:

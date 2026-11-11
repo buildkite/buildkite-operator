@@ -106,8 +106,7 @@ spec:
       {{- if $docker }}
       initContainers:
         {{- if $registryCredentials }}
-        # Copied rather than mounted so jobs can still docker login and keep
-        # buildx state alongside the credentials.
+        # Seed docker-config with registryCredentials, leaving it writable for jobs.
         - name: docker-config
           image: "{{ $.Values.supervisor.image.repository }}:{{ $.Values.supervisor.image.tag }}@{{ $.Values.supervisor.image.digest }}"
           imagePullPolicy: {{ $.Values.supervisor.image.pullPolicy }}
@@ -126,6 +125,7 @@ spec:
             - name: docker-config
               mountPath: {{ $dockerConfig }}
         {{- end }}
+        # Run the Docker daemon for jobs as a native sidecar started before the agent.
         - name: dockerd
           image: "{{ $r.docker.image.repository }}:{{ $r.docker.image.tag }}"
           imagePullPolicy: {{ $r.docker.image.pullPolicy }}
@@ -199,6 +199,7 @@ spec:
       {{- end }}
       containers:
         {{- if $supervised }}
+        # Start a fresh agent container in the daemon for each job.
         - name: supervisor
           image: "{{ $.Values.supervisor.image.repository }}:{{ $.Values.supervisor.image.tag }}@{{ $.Values.supervisor.image.digest }}"
           imagePullPolicy: {{ $.Values.supervisor.image.pullPolicy }}
@@ -265,6 +266,7 @@ spec:
             - name: docker-config
               mountPath: {{ $dockerConfig }}
         {{- else }}
+        # Run the Buildkite agent, which takes jobs from the pool's queue.
         - name: agent
           image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
           imagePullPolicy: {{ $r.image.pullPolicy }}
@@ -376,6 +378,7 @@ spec:
             {{- end }}
           {{- end }}
         {{- end }}
+        # Increase Pod deletion cost if the agent is busy, so scale-in prefers idle Pods.
         - name: deletion-cost
           image: "{{ $.Values.deletionCost.image.repository }}:{{ $.Values.deletionCost.image.tag }}@{{ $.Values.deletionCost.image.digest }}"
           imagePullPolicy: {{ $.Values.deletionCost.image.pullPolicy }}
@@ -411,9 +414,11 @@ spec:
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
       volumes:
+        # The deletion-cost sidecar's script.
         - name: deletion-cost-code
           configMap:
             name: {{ include "buildkite-operator.deletionCostName" $ }}
+        # API token for the deletion-cost sidecar only.
         - name: deletion-cost-api
           projected:
             sources:
@@ -426,11 +431,13 @@ spec:
                     - key: ca.crt
                       path: ca.crt
         {{- if $r.ephemeralAgent }}
+        # Scripts that run ephemeral agents.
         - name: ephemeral-agent-scripts
           configMap:
             name: {{ include "buildkite-operator.ephemeralAgentName" $ }}
         {{- end }}
         {{- if $stepImages }}
+        # step-image.sh to run each job in its step's image.
         - name: step-image
           configMap:
             name: {{ include "buildkite-operator.stepImageName" $ }}
@@ -440,7 +447,7 @@ spec:
         - name: docker-data
           emptyDir:
             sizeLimit: {{ $r.docker.storage.data }}
-        # Holds the daemon's socket, which the Pod's other containers connect to.
+        # The daemon's socket, which the Pod's other containers connect to.
         - name: docker-run
           emptyDir:
             medium: Memory
@@ -449,12 +456,12 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: {{ $r.docker.storage.workspace }}
-        # Docker client configuration for the Pod's lifetime, shared by every
-        # job, so logins and buildx state persist across jobs.
+        # Docker client config shared across jobs for the lifetime of the Pod.
         - name: docker-config
           emptyDir:
             sizeLimit: 16Mi
         {{- if $registryCredentials }}
+        # registryCredentials to copy into the Docker client config when the Pod starts.
         - name: registry-credentials
           secret:
             secretName: {{ include "buildkite-operator.registryCredentialsSecretName" $ | quote }}

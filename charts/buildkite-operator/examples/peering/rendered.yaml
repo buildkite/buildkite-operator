@@ -416,6 +416,7 @@ spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 3600
       initContainers:
+        # Run the Docker daemon for jobs as a native sidecar started before the agent.
         - name: dockerd
           image: "docker:29.7.2-dind"
           imagePullPolicy: IfNotPresent
@@ -466,6 +467,7 @@ spec:
               mountPath: /etc/ssl/oci-accelerator-certs
               readOnly: true
       containers:
+        # Run the Buildkite agent, which takes jobs from the pool's queue.
         - name: agent
           image: "buildkite/agent:4"
           imagePullPolicy: Always
@@ -552,6 +554,7 @@ spec:
             - name: step-image
               mountPath: /opt/step-image
               readOnly: true
+        # Increase Pod deletion cost if the agent is busy, so scale-in prefers idle Pods.
         - name: deletion-cost
           image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
           imagePullPolicy: IfNotPresent
@@ -592,9 +595,11 @@ spec:
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
       volumes:
+        # The deletion-cost sidecar's script.
         - name: deletion-cost-code
           configMap:
             name: buildkite-buildkite-operator-deletion-cost
+        # API token for the deletion-cost sidecar only.
         - name: deletion-cost-api
           projected:
             sources:
@@ -606,6 +611,7 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
+        # step-image.sh to run each job in its step's image.
         - name: step-image
           configMap:
             name: buildkite-buildkite-operator-step-image
@@ -613,7 +619,7 @@ spec:
         - name: docker-data
           emptyDir:
             sizeLimit: 40Gi
-        # Holds the daemon's socket, which the Pod's other containers connect to.
+        # The daemon's socket, which the Pod's other containers connect to.
         - name: docker-run
           emptyDir:
             medium: Memory
@@ -622,8 +628,7 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: 10Gi
-        # Docker client configuration for the Pod's lifetime, shared by every
-        # job, so logins and buildx state persist across jobs.
+        # Docker client config shared across jobs for the lifetime of the Pod.
         - name: docker-config
           emptyDir:
             sizeLimit: 16Mi
