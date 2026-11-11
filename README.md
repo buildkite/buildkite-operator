@@ -575,8 +575,8 @@ Each daemon sends all of its HTTPS traffic through the accelerator:
   `noProxy`.
 - Pulls fail while the accelerator is unavailable.
 - Job containers don't inherit the daemon's proxy settings.
-- A NetworkPolicy admits only this release's runner Pods, if your network
-  plugin enforces NetworkPolicy.
+- A NetworkPolicy allows this release's runner Pods to reach the accelerator
+  on port 5128, if your network plugin enforces NetworkPolicy.
 
 The accelerator signs registry certificates with its own root CA. By default
 the chart generates the CA on first install and keeps it across upgrades, and
@@ -615,6 +615,15 @@ ociAccelerator:
 See
 [OCI Accelerator resources and peering](docs/appendices.md#oci-accelerator-resources-and-peering)
 for cache sizing and peering details.
+
+### Metrics
+
+Set `ociAccelerator.metrics.remote: true` to expose the Prometheus endpoint
+at each accelerator Pod's IP on port 9090. Use
+`ociAccelerator.networkPolicy.metricsFrom` to admit your collectors, and
+`ociAccelerator.podAnnotations` for collector discovery. See
+[OCI Accelerator metrics](docs/appendices.md#oci-accelerator-metrics) for
+configuration and access restrictions.
 
 ### Trust and placement
 

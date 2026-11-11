@@ -322,13 +322,63 @@ With `ociAccelerator.enabled`, the chart installs:
   HTTPS proxy.
 - A headless Service providing stable per-Pod DNS names for the StatefulSet,
   also used for discovery when peering is enabled.
-- A NetworkPolicy admitting only this release's runner Pods
-  (`networkPolicy.enabled`). Enforcement requires a network plugin that
-  supports NetworkPolicy.
+- A NetworkPolicy allowing this release's runner Pods to reach the accelerator
+  on port 5128 (`networkPolicy.enabled`). Enforcement requires a network plugin
+  that supports NetworkPolicy.
 
 Accelerator replicas prefer spreading across nodes, without needing a separate
 node for each replica. See
 [Image pull caching](../README.md#image-pull-caching).
+
+#### OCI Accelerator metrics
+
+| Setting | Description |
+| --- | --- |
+| `ociAccelerator.metrics.remote` | (default `false`) Listen on `0.0.0.0:9090` instead of loopback, allowing remote scrapes. |
+| `ociAccelerator.networkPolicy.metricsFrom` | (default `[]`) Kubernetes NetworkPolicyPeer sources allowed to reach TCP 9090 when remote metrics and the chart's NetworkPolicy are enabled. |
+| `ociAccelerator.podAnnotations` | (default `{}`) Annotations added to every accelerator Pod. The chart's registry-credentials checksum takes precedence if a key conflicts. |
+
+For example, admit collector Pods from a monitoring namespace:
+
+```yaml
+ociAccelerator:
+  enabled: true
+  metrics:
+    remote: true
+  networkPolicy:
+    enabled: true
+    metricsFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        podSelector:
+          matchLabels:
+            app: metrics-collector
+```
+
+- Selectors in one list item combine with AND. Separate items combine with OR.
+  A Pod selector without a namespace selector selects the release namespace.
+- An empty `metricsFrom` adds no metrics ingress rule. With
+  `networkPolicy.enabled: false`, the chart creates no NetworkPolicy and
+  ignores `metricsFrom`. Other policies determine access, and without an
+  applicable policy incoming traffic is unrestricted. Policies are additive.
+- The metrics listener also serves `/livez` and `/readyz`, all without
+  authentication. Keep it on a private network with appropriate restrictions.
+  Health probes continue to use loopback in either mode.
+- Scrape each replica's Pod IP. The chart does not expose metrics through its
+  Services or create monitoring custom resources. Configure your collector's
+  discovery separately, using `podAnnotations` where supported.
+
+The [peering example](../charts/buildkite-operator/examples/peering/values.yaml)
+includes Datadog OpenMetrics discovery annotations. Match its selectors to
+your scraping Agents, not the Datadog Operator. Host-networked Agents may
+appear as node traffic, depending on your network plugin, so verify how your
+cluster enforces their access. Collecting all metrics can increase custom
+metric costs.
+
+See OCI Accelerator's
+[metrics reference](https://github.com/buildkite/oci-accelerator/blob/v0.5.0/docs/metrics.md)
+for metric names.
 
 #### Peering
 
@@ -336,9 +386,9 @@ With `ociAccelerator.peering.enabled`:
 
 - The chart sets up peer discovery and mutual TLS with the release's CA, and
   runners keep using the same accelerator Service.
-- Runners use the accelerator Service on port 3128, and the headless Service
-  also exposes the peer port, 7443.
-- The NetworkPolicy allows port 7443 only between this release's accelerator
+- Runners use the accelerator Service on port 5128, and the headless Service
+  also exposes the peer port, 5130.
+- The NetworkPolicy allows port 5130 only between this release's accelerator
   replicas.
 - Changing the replica count changes the peer seed list and rolls the
   accelerator.

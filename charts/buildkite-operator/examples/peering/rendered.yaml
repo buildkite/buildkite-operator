@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator
 spec:
   podSelector:
@@ -37,6 +37,16 @@ spec:
       ports:
         - port: peer
           protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: datadog
+          podSelector:
+            matchLabels:
+              agent.datadoghq.com/component: agent
+      ports:
+        - port: metrics
+          protocol: TCP
 
 ---
 # Source: buildkite-operator-chart/templates/deletion-cost.yaml
@@ -49,7 +59,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
 automountServiceAccountToken: false
 
 ---
@@ -63,7 +73,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
 data:
   deletion_cost.py: |-
     """Prefer removing idle agents during scale-in (best effort, not a drain).
@@ -168,7 +178,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
 data:
   step-image.sh: |-
     #!/bin/sh
@@ -287,7 +297,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -304,7 +314,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -325,7 +335,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator
 spec:
   type: ClusterIP
@@ -335,7 +345,7 @@ spec:
     app.kubernetes.io/component: oci-accelerator
   ports:
     - name: proxy
-      port: 3128
+      port: 5128
       targetPort: proxy
       protocol: TCP
 
@@ -350,7 +360,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator
 spec:
   clusterIP: None
@@ -362,11 +372,11 @@ spec:
     app.kubernetes.io/component: oci-accelerator
   ports:
     - name: proxy
-      port: 3128
+      port: 5128
       targetPort: proxy
       protocol: TCP
     - name: peer
-      port: 7443
+      port: 5130
       targetPort: peer
       protocol: TCP
 
@@ -381,7 +391,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "docker"
 spec:
@@ -402,7 +412,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-chart-0.23.0
+        helm.sh/chart: buildkite-operator-chart-0.24.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "docker"
       annotations:
@@ -424,7 +434,7 @@ spec:
           args:
             - dockerd
             - --host=unix:///var/run/docker.sock
-            - --https-proxy=http://buildkite-buildkite-operator-oci-accelerator.buildkite.svc:3128
+            - --https-proxy=http://buildkite-buildkite-operator-oci-accelerator.buildkite.svc:5128
           env:
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
@@ -648,7 +658,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator
 spec:
   replicas: 3
@@ -665,8 +675,20 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-chart-0.23.0
+        helm.sh/chart: buildkite-operator-chart-0.24.0
         app.kubernetes.io/component: oci-accelerator
+      annotations:
+        ad.datadoghq.com/oci-accelerator.checks: |
+          {
+            "openmetrics": {
+              "instances": [{
+                "openmetrics_endpoint": "http://%%host%%:9090/metrics",
+                "namespace": "buildkite",
+                "metrics": ["oci_accelerator_.*"],
+                "tags": ["pod_name:%%kube_pod_name%%"]
+              }]
+            }
+          }
     spec:
       automountServiceAccountToken: false
       topologySpreadConstraints:
@@ -732,9 +754,11 @@ spec:
             - name: OCI_ACCELERATOR_REGISTRIES
               value: "registry-1.docker.io,ghcr.io,public.ecr.aws"
             - name: OCI_ACCELERATOR_LISTEN
-              value: 0.0.0.0:3128
+              value: 0.0.0.0:5128
             - name: OCI_ACCELERATOR_METRICS_LISTEN
-              value: 127.0.0.1:9090
+              value: 0.0.0.0:9090
+            - name: OCI_ACCELERATOR_METRICS_ALLOW_REMOTE
+              value: "true"
             - name: OCI_ACCELERATOR_CA_DIR
               value: /run/oci-accelerator/private/ca
             - name: OCI_ACCELERATOR_CACHE_DIR
@@ -746,19 +770,21 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: OCI_ACCELERATOR_PEER_LISTEN
-              value: 0.0.0.0:7443
+              value: 0.0.0.0:5130
             - name: OCI_ACCELERATOR_PEER_ADVERTISE
-              value: "$(POD_NAME).buildkite-buildkite-operator-oci-accelerator-peers.buildkite.svc:7443"
+              value: "$(POD_NAME).buildkite-buildkite-operator-oci-accelerator-peers.buildkite.svc:5130"
             - name: OCI_ACCELERATOR_PEER_SEEDS
-              value: "buildkite-buildkite-operator-oci-accelerator-0.buildkite-buildkite-operator-oci-accelerator-peers.buildkite.svc:7443,buildkite-buildkite-operator-oci-accelerator-1.buildkite-buildkite-operator-oci-accelerator-peers.buildkite.svc:7443,buildkite-buildkite-operator-oci-accelerator-2.buildkite-buildkite-operator-oci-accelerator-peers.buildkite.svc:7443"
+              value: "buildkite-buildkite-operator-oci-accelerator-0.buildkite-buildkite-operator-oci-accelerator-peers.buildkite.svc:5130,buildkite-buildkite-operator-oci-accelerator-1.buildkite-buildkite-operator-oci-accelerator-peers.buildkite.svc:5130,buildkite-buildkite-operator-oci-accelerator-2.buildkite-buildkite-operator-oci-accelerator-peers.buildkite.svc:5130"
             - name: OCI_ACCELERATOR_PEER_STATE_DIR
               value: /run/oci-accelerator/private/peers
           ports:
             - name: proxy
-              containerPort: 3128
+              containerPort: 5128
+            - name: metrics
+              containerPort: 9090
             - name: peer
-              containerPort: 7443
-          # Probes use the loopback metrics listener, so it is never exposed.
+              containerPort: 5130
+          # Probes stay local, including when remote metrics are enabled.
           startupProbe:
             exec:
               command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
@@ -824,7 +850,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     buildkite.com/runner-pool: "docker"
 spec:
   scaleTargetRef:
@@ -886,7 +912,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
 spec:
   secretTargetRef:
     - parameter: apiKey
@@ -909,7 +935,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -956,7 +982,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
 spec:
   policyName: buildkite-buildkite-buildkite-operator-deletion-cost
   validationActions: [Deny]
@@ -971,7 +997,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade,post-delete
@@ -990,7 +1016,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade,post-delete
@@ -1150,7 +1176,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade,post-delete
@@ -1180,7 +1206,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade,post-delete
@@ -1206,7 +1232,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade
@@ -1300,7 +1326,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.23.0
+    helm.sh/chart: buildkite-operator-chart-0.24.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: post-delete

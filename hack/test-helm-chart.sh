@@ -428,7 +428,7 @@ if [[ "${accel}" == *"PersistentVolumeClaim"* || "${accel}" == *"volumeClaimTemp
 	exit 1
 fi
 accel_runner=$(document "${accel}" Deployment test-linux)
-assert_contains "${accel_runner}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
+assert_contains "${accel_runner}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:5128"
 assert_contains "${accel_runner}" "- --no-proxy=registry.internal:5000"
 assert_contains "${accel_runner}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
 ca_cert_volume=$'- name: oci-accelerator-ca\n          configMap:\n            name: "test-buildkite-operator-oci-accelerator-ca-cert"'
@@ -438,6 +438,11 @@ if [[ "${accel_runner}" == *'"oci-ca"'* || "${accel_runner}" == *'"ca.key"'* ]];
 	exit 1
 fi
 accel_proxy=$(document "${accel}" StatefulSet test-buildkite-operator-oci-accelerator)
+assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_LISTEN\n              value: 0.0.0.0:5128'
+assert_contains "${accel_proxy}" $'- name: proxy\n              containerPort: 5128'
+for service in test-buildkite-operator-oci-accelerator test-buildkite-operator-oci-accelerator-peers; do
+	assert_contains "$(document "${accel}" Service "${service}")" $'- name: proxy\n      port: 5128\n      targetPort: proxy'
+done
 assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.5.0@sha256:c671b75f349cf625fdd7555c632f17782d6b98ed7c21bc5fa8bdcf6426ab0578"'
 assert_contains "${accel_proxy}" 'value: "registry-1.docker.io,ghcr.io,public.ecr.aws"'
 assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CACHE_MAX_FILLS\n              value: "32"'
@@ -455,23 +460,85 @@ assert_contains "${accel_storage}" "ephemeral-storage: 12Gi"
 assert_contains "${accel_storage}" $'limits:\n              memory: 2Gi'
 assert_contains "${accel_proxy}" $'path: ca.key\n'
 assert_contains "$(document "${accel}" NetworkPolicy test-buildkite-operator-oci-accelerator)" "app.kubernetes.io/component: runner"
+# Remote metrics are opt-in, with collector access separate from the listener.
+assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_METRICS_LISTEN\n              value: 127.0.0.1:9090'
+if [[ "${accel_proxy}" == *"OCI_ACCELERATOR_METRICS_ALLOW_REMOTE"* || "${accel_proxy}" == *"containerPort: 9090"* ]]; then
+	echo "Remote metrics were exposed by default" >&2
+	exit 1
+fi
+metrics_args=(
+	"${accel_args[@]}"
+	--set-string runnerPools.linux.runtime=dind
+	--values "${CHART_DIR}/examples/peering/values.yaml"
+	--set-string agentToken.existingSecret.name=
+	--set-string registryCredentials.auths[0].registry=ghcr.io
+	--set-string registryCredentials.auths[0].username=user
+	--set-string registryCredentials.auths[0].password=token
+	--set-string ociAccelerator.podAnnotations.checksum/registry-credentials=not-the-checksum
+)
+remote_metrics=$(render "${metrics_args[@]}")
+metrics_proxy=$(document "${remote_metrics}" StatefulSet test-buildkite-operator-oci-accelerator)
+metrics_policy=$(document "${remote_metrics}" NetworkPolicy test-buildkite-operator-oci-accelerator)
+assert_contains "${metrics_proxy}" $'OCI_ACCELERATOR_METRICS_LISTEN\n              value: 0.0.0.0:9090'
+assert_contains "${metrics_proxy}" $'OCI_ACCELERATOR_METRICS_ALLOW_REMOTE\n              value: "true"'
+assert_contains "${metrics_proxy}" $'- name: metrics\n              containerPort: 9090'
+assert_contains "${metrics_proxy}" 'http://127.0.0.1:9090/readyz'
+assert_contains "${metrics_proxy}" 'http://127.0.0.1:9090/livez'
+assert_contains "${metrics_proxy}" $'annotations:\n        ad.datadoghq.com/oci-accelerator.checks: |'
+assert_contains "${metrics_proxy}" '"openmetrics_endpoint": "http://%%host%%:9090/metrics"'
+assert_contains "${metrics_proxy}" 'checksum/registry-credentials:'
+if [[ "${metrics_proxy}" == *"not-the-checksum"* ]]; then
+	echo "Pod annotations overrode the managed registry-credentials checksum" >&2
+	exit 1
+fi
+# Both selectors must stay in one peer, and collectors get only the metrics port.
+assert_contains "${metrics_policy}" $'- from:\n        - namespaceSelector:\n            matchLabels:\n              kubernetes.io/metadata.name: datadog\n          podSelector:\n            matchLabels:\n              agent.datadoghq.com/component: agent\n      ports:\n        - port: metrics\n          protocol: TCP'
+assert_contains "${metrics_policy}" $'app.kubernetes.io/component: runner\n      ports:\n        - port: proxy'
+assert_contains "${metrics_policy}" $'app.kubernetes.io/component: oci-accelerator\n      ports:\n        - port: peer'
+for service in test-buildkite-operator-oci-accelerator test-buildkite-operator-oci-accelerator-peers; do
+	if [[ "$(document "${remote_metrics}" Service "${service}")" == *"metrics"* ]]; then
+		echo "Metrics were exposed through a Service" >&2
+		exit 1
+	fi
+done
+closed_metrics=$(render "${metrics_args[@]}" --set ociAccelerator.metrics.remote=false)
+assert_contains "$(document "${closed_metrics}" StatefulSet test-buildkite-operator-oci-accelerator)" \
+	$'OCI_ACCELERATOR_METRICS_LISTEN\n              value: 127.0.0.1:9090'
+empty_metrics=$(render "${metrics_args[@]}" --set-json 'ociAccelerator.networkPolicy.metricsFrom=[]')
+assert_contains "$(document "${empty_metrics}" StatefulSet test-buildkite-operator-oci-accelerator)" \
+	$'OCI_ACCELERATOR_METRICS_LISTEN\n              value: 0.0.0.0:9090'
+for isolated in "${closed_metrics}" "${empty_metrics}"; do
+	policy=$(document "${isolated}" NetworkPolicy test-buildkite-operator-oci-accelerator)
+	if [[ "${policy}" == *"port: metrics"* || "${policy}" == *"datadog"* ]]; then
+		echo "Metrics ingress rendered without both remote metrics and sources" >&2
+		exit 1
+	fi
+done
+unrestricted_metrics=$(render "${metrics_args[@]}" --set ociAccelerator.networkPolicy.enabled=false)
+[[ $(count_kind "${unrestricted_metrics}" NetworkPolicy) -eq 0 ]] || { echo "Metrics created a disabled NetworkPolicy" >&2; exit 1; }
+assert_contains "$(document "${unrestricted_metrics}" StatefulSet test-buildkite-operator-oci-accelerator)" \
+	$'OCI_ACCELERATOR_METRICS_LISTEN\n              value: 0.0.0.0:9090'
+assert_fails "'/ociAccelerator/metrics/remote': got string, want boolean" "${accel_args[@]}" --set-string ociAccelerator.metrics.remote=yes
+assert_fails "'/ociAccelerator/podAnnotations/test': got boolean, want string" "${accel_args[@]}" --set ociAccelerator.podAnnotations.test=true
+assert_fails "'/ociAccelerator/networkPolicy/metricsFrom': got object, want array" "${accel_args[@]}" --set-json 'ociAccelerator.networkPolicy.metricsFrom={}'
 # Peering keeps the runner endpoint but gives each replica its own stable address.
 peering=$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=dind \
 	--set ociAccelerator.peering.enabled=true --set ociAccelerator.replicas=3)
 peer_proxy=$(document "${peering}" StatefulSet test-buildkite-operator-oci-accelerator)
 assert_contains "${peer_proxy}" $'replicas: 3\n  serviceName: test-buildkite-operator-oci-accelerator-peers\n  podManagementPolicy: Parallel'
-assert_contains "${peer_proxy}" 'value: "$(POD_NAME).test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:7443"'
+assert_contains "${peer_proxy}" $'OCI_ACCELERATOR_PEER_LISTEN\n              value: 0.0.0.0:5130'
+assert_contains "${peer_proxy}" 'value: "$(POD_NAME).test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:5130"'
 assert_contains "${peer_proxy}" 'fieldPath: metadata.name'
-assert_contains "${peer_proxy}" 'value: "test-buildkite-operator-oci-accelerator-0.test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:7443,test-buildkite-operator-oci-accelerator-1.test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:7443,test-buildkite-operator-oci-accelerator-2.test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:7443"'
+assert_contains "${peer_proxy}" 'value: "test-buildkite-operator-oci-accelerator-0.test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:5130,test-buildkite-operator-oci-accelerator-1.test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:5130,test-buildkite-operator-oci-accelerator-2.test-buildkite-operator-oci-accelerator-peers.buildkite-runners.svc:5130"'
 assert_contains "${peer_proxy}" $'OCI_ACCELERATOR_PEER_STATE_DIR\n              value: /run/oci-accelerator/private/peers'
-assert_contains "${peer_proxy}" $'- name: peer\n              containerPort: 7443'
+assert_contains "${peer_proxy}" $'- name: peer\n              containerPort: 5130'
 assert_contains "${peer_proxy}" 'automountServiceAccountToken: false'
 assert_contains "${peer_proxy}" 'whenUnsatisfiable: ScheduleAnyway'
 peer_service=$(document "${peering}" Service test-buildkite-operator-oci-accelerator-peers)
 assert_contains "${peer_service}" 'clusterIP: None'
 assert_contains "${peer_service}" 'publishNotReadyAddresses: true'
-assert_contains "${peer_service}" 'targetPort: peer'
-assert_contains "$(document "${peering}" Deployment test-linux)" '- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128'
+assert_contains "${peer_service}" $'- name: peer\n      port: 5130\n      targetPort: peer'
+assert_contains "$(document "${peering}" Deployment test-linux)" '- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:5128'
 peer_policy=$(document "${peering}" NetworkPolicy test-buildkite-operator-oci-accelerator)
 assert_contains "${peer_policy}" $'app.kubernetes.io/component: runner\n      ports:\n        - port: proxy'
 assert_contains "${peer_policy}" $'app.kubernetes.io/component: oci-accelerator\n      ports:\n        - port: peer'
@@ -494,7 +561,7 @@ fi
 assert_fails "'/ociAccelerator/replicas': minimum:" "${accel_args[@]}" --set ociAccelerator.replicas=0
 assert_fails "'/ociAccelerator/replicas': maximum:" "${accel_args[@]}" --set ociAccelerator.replicas=1025
 accel_dind=$(document "$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=dind)" Deployment test-linux)
-assert_contains "${accel_dind}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:3128"
+assert_contains "${accel_dind}" "- --https-proxy=http://test-buildkite-operator-oci-accelerator.buildkite-runners.svc:5128"
 assert_contains "${accel_dind}" $'- name: SSL_CERT_DIR\n              value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs'
 assert_contains "${accel_dind}" "${ca_cert_volume}"
 if [[ "${accel_dind}" == *'"oci-ca"'* || "${accel_dind}" == *'"ca.key"'* ]]; then
@@ -590,7 +657,7 @@ assert_fails "ociAccelerator.extraEnv.OCI_ACCELERATOR_LISTEN is managed by the c
 	"${accel_args[@]}" --set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_LISTEN=0.0.0.0:1
 assert_fails "ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_LISTEN is managed by the chart" \
 	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 --set-string runnerPools.linux.runtime=kata \
-	"${accel_args[@]}" --set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:7443
+	"${accel_args[@]}" --set-string ociAccelerator.extraEnv.OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:5130
 assert_fails "does not match pattern" \
 	--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=1 \
 	"${accel_args[@]}" --set ociAccelerator.registries='{https://ghcr.io}'

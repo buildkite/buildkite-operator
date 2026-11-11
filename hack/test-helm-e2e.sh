@@ -450,7 +450,7 @@ runner_secrets=$("${KUBECTL[@]}" get pod "${dockerd_pod}" -n "${ACCEL_NAMESPACE}
 }
 
 # Runner Pods reach the proxy, which serves the CA from the Secret.
-served_ca=$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")
+served_ca=$(dockerd wget -q -O - "http://${ACCEL_NAME}:5128/ca.crt")
 [[ "${served_ca}" == "${generated_ca}" ]] || {
 	echo "Proxy did not serve the CA from its Secret" >&2
 	exit 1
@@ -490,11 +490,11 @@ fi
 [[ "$(proxy_pod)" == "${proxy_before}" ]] || { echo "Enabling the NetworkPolicy replaced the proxy Pod" >&2; exit 1; }
 for _ in $(seq 1 6); do
 	blocked=$("${KUBECTL[@]}" run blocked-probe -n "${ACCEL_NAMESPACE}" --image="${ACCEL_IMAGE}" --restart=Never \
-		--rm -i --quiet --command -- wget -q -T 5 -O /dev/null "http://${ACCEL_NAME}:3128/ca.crt" 2>&1 || true)
+		--rm -i --quiet --command -- wget -q -T 5 -O /dev/null "http://${ACCEL_NAME}:5128/ca.crt" 2>&1 || true)
 	[[ "${blocked}" == *"timed out"* ]] && break
 	sleep 2
 done
-[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]] || {
+[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:5128/ca.crt")" == "${generated_ca}" ]] || {
 	echo "NetworkPolicy blocked a runner Pod from the accelerator" >&2
 	exit 1
 }
@@ -511,7 +511,7 @@ done
 "${KUBECTL[@]}" wait --for=jsonpath='{.subsets[0].addresses[1].targetRef.name}' \
 	endpoints/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=1m
 for ordinal in 0 1; do
-	[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}-${ordinal}.${ACCEL_NAME}-peers:3128/ca.crt")" == "${generated_ca}" ]]
+	[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}-${ordinal}.${ACCEL_NAME}-peers:5128/ca.crt")" == "${generated_ca}" ]]
 done
 [[ "$("${KUBECTL[@]}" get pod "${ACCEL_NAME}-0" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${proxy_before}" ]]
 "${KUBECTL[@]}" delete pod "${ACCEL_NAME}-1" -n "${ACCEL_NAMESPACE}" --wait
@@ -530,7 +530,7 @@ dockerd docker pull -q "${image}"
 [[ "$("${KUBECTL[@]}" get statefulset "${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${accelerator_uid}" ]]
 [[ "$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${headless_uid}" ]]
 [[ "$(ca_secret_cert)" == "${generated_ca}" ]]
-[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]]
+[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:5128/ca.crt")" == "${generated_ca}" ]]
 
 # Give discovery one normal 30-second exchange interval plus jitter. Pull an
 # immutable blob through each replica explicitly so a local cache hit or Service
@@ -555,7 +555,7 @@ context = ssl.create_default_context(cadata=os.environ["CA_CERT"])
 name = os.environ["PROXY_NAME"]
 
 def fetch(ordinal, path):
-    proxy = "http://" + name + "-" + str(ordinal) + "." + name + "-peers:3128"
+    proxy = "http://" + name + "-" + str(ordinal) + "." + name + "-peers:5128"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy}), urllib.request.HTTPSHandler(context=context))
     with opener.open(urllib.request.Request(base + path, headers=headers), timeout=60) as response:
         return response.read()
@@ -590,8 +590,8 @@ fi
 # earlier transfer checks already exercise DNS-seeded peer discovery.
 peer_ip=$("${KUBECTL[@]}" get pod "${ACCEL_NAME}-2" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.status.podIP}')
 "${KUBECTL[@]}" exec -n "${ACCEL_NAMESPACE}" "${ACCEL_NAME}-0" -c oci-accelerator -- \
-	nc -z -w 5 "${peer_ip}" 7443
-if dockerd nc -z -w 5 "${peer_ip}" 7443; then
+	nc -z -w 5 "${peer_ip}" 5130
+if dockerd nc -z -w 5 "${peer_ip}" 5130; then
 	echo "NetworkPolicy admitted a runner to the peer listener" >&2
 	exit 1
 fi
@@ -602,8 +602,8 @@ fi
 "${KUBECTL[@]}" rollout status statefulset/"${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" --timeout=3m
 [[ "$("${KUBECTL[@]}" get statefulset "${ACCEL_NAME}" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${accelerator_uid}" ]]
 [[ "$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.metadata.uid}')" == "${headless_uid}" ]]
-[[ "$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.spec.ports[*].port}')" == "3128" ]]
-[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:3128/ca.crt")" == "${generated_ca}" ]]
+[[ "$("${KUBECTL[@]}" get service "${ACCEL_NAME}-peers" -n "${ACCEL_NAMESPACE}" -o jsonpath='{.spec.ports[*].port}')" == "5128" ]]
+[[ "$(dockerd wget -q -O - "http://${ACCEL_NAME}:5128/ca.crt")" == "${generated_ca}" ]]
 [[ "$(ca_secret_cert)" == "${generated_ca}" ]]
 
 "${HELM_CLUSTER[@]}" uninstall "${ACCEL_RELEASE}" --namespace "${ACCEL_NAMESPACE}" --wait --timeout 2m

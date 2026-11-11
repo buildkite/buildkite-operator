@@ -36,7 +36,7 @@ spec:
     app.kubernetes.io/component: oci-accelerator
   ports:
     - name: proxy
-      port: 3128
+      port: 5128
       targetPort: proxy
       protocol: TCP
 ---
@@ -58,12 +58,12 @@ spec:
     app.kubernetes.io/component: oci-accelerator
   ports:
     - name: proxy
-      port: 3128
+      port: 5128
       targetPort: proxy
       protocol: TCP
     {{- if $accelerator.peering.enabled }}
     - name: peer
-      port: 7443
+      port: 5130
       targetPort: peer
       protocol: TCP
     {{- end }}
@@ -90,9 +90,10 @@ spec:
       labels:
         {{- include "buildkite-operator.labels" . | nindent 8 }}
         app.kubernetes.io/component: oci-accelerator
-      {{- with include "buildkite-operator.registryCredentialsChecksum" . }}
+      {{- $checksum := include "buildkite-operator.registryCredentialsChecksum" . | default "{}" | fromYaml }}
+      {{- with mergeOverwrite (deepCopy $accelerator.podAnnotations) $checksum }}
       annotations:
-        {{- . | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
       automountServiceAccountToken: false
@@ -166,9 +167,15 @@ spec:
             - name: OCI_ACCELERATOR_REGISTRIES
               value: {{ join "," $accelerator.registries | quote }}
             - name: OCI_ACCELERATOR_LISTEN
-              value: 0.0.0.0:3128
+              value: 0.0.0.0:5128
             - name: OCI_ACCELERATOR_METRICS_LISTEN
+              {{- if $accelerator.metrics.remote }}
+              value: 0.0.0.0:9090
+            - name: OCI_ACCELERATOR_METRICS_ALLOW_REMOTE
+              value: "true"
+              {{- else }}
               value: 127.0.0.1:9090
+              {{- end }}
             - name: OCI_ACCELERATOR_CA_DIR
               value: /run/oci-accelerator/private/ca
             - name: OCI_ACCELERATOR_CACHE_DIR
@@ -181,13 +188,13 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: OCI_ACCELERATOR_PEER_LISTEN
-              value: 0.0.0.0:7443
+              value: 0.0.0.0:5130
             - name: OCI_ACCELERATOR_PEER_ADVERTISE
-              value: "$(POD_NAME).{{ $name }}-peers.{{ .Release.Namespace }}.svc:7443"
+              value: "$(POD_NAME).{{ $name }}-peers.{{ .Release.Namespace }}.svc:5130"
             - name: OCI_ACCELERATOR_PEER_SEEDS
               {{- $seeds := list }}
               {{- range $ordinal := until (int $accelerator.replicas) }}
-              {{- $seeds = append $seeds (printf "%s-%d.%s-peers.%s.svc:7443" $name $ordinal $name $.Release.Namespace) }}
+              {{- $seeds = append $seeds (printf "%s-%d.%s-peers.%s.svc:5130" $name $ordinal $name $.Release.Namespace) }}
               {{- end }}
               value: {{ join "," $seeds | quote }}
             - name: OCI_ACCELERATOR_PEER_STATE_DIR
@@ -199,12 +206,16 @@ spec:
             {{- end }}
           ports:
             - name: proxy
-              containerPort: 3128
+              containerPort: 5128
+            {{- if $accelerator.metrics.remote }}
+            - name: metrics
+              containerPort: 9090
+            {{- end }}
             {{- if $accelerator.peering.enabled }}
             - name: peer
-              containerPort: 7443
+              containerPort: 5130
             {{- end }}
-          # Probes use the loopback metrics listener, so it is never exposed.
+          # Probes stay local, including when remote metrics are enabled.
           startupProbe:
             exec:
               command: [wget, -Y, "off", -q, -T, "2", -O, /dev/null, http://127.0.0.1:9090/readyz]
@@ -290,6 +301,13 @@ spec:
               app.kubernetes.io/component: oci-accelerator
       ports:
         - port: peer
+          protocol: TCP
+    {{- end }}
+    {{- if and $accelerator.metrics.remote $accelerator.networkPolicy.metricsFrom }}
+    - from:
+        {{- toYaml $accelerator.networkPolicy.metricsFrom | nindent 8 }}
+      ports:
+        - port: metrics
           protocol: TCP
     {{- end }}
 {{- end }}
