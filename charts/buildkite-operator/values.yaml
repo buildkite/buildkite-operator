@@ -239,6 +239,14 @@ ociAccelerator:
   peering:
     enabled: false
 
+  # Metrics stay on loopback for health probes unless remote is true, which
+  # exposes unauthenticated /metrics, /livez and /readyz on port 9090.
+  metrics:
+    remote: false
+
+  # Collector discovery or other annotations added to every accelerator Pod.
+  podAnnotations: {}
+
   # Registries whose digest-addressed manifests and blobs are cached, as host
   # or host:port. Use registry-1.docker.io for Docker Hub. Traffic to other
   # hosts passes through the accelerator uncached.
@@ -288,10 +296,15 @@ ociAccelerator:
   # listings differ by token.
   extraEnv: {}
 
-  # Admit accelerator connections only from this release's runner Pods.
+  # Allow this release's runners to reach the accelerator on port 5128 and,
+  # with peering, connections between its accelerator Pods on port 5130.
   # Requires a network plugin that enforces NetworkPolicy.
   networkPolicy:
     enabled: true
+
+    # NetworkPolicyPeer sources allowed to reach TCP 9090 when metrics.remote
+    # is true. Empty grants no metrics ingress. Ignored when enabled is false.
+    metricsFrom: []
 
   nodeSelector: {}
   tolerations: []

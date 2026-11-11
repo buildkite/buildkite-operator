@@ -131,7 +131,7 @@ ConfigMap holding only the CA certificate, which runner Pods mount.
 {{- end }}
 
 {{- define "buildkite-operator.ociAcceleratorProxyURL" -}}
-{{- printf "http://%s.%s.svc:3128" (include "buildkite-operator.ociAcceleratorName" .) .Release.Namespace }}
+{{- printf "http://%s.%s.svc:5128" (include "buildkite-operator.ociAcceleratorName" .) .Release.Namespace }}
 {{- end }}
 
 {{- define "buildkite-operator.agentTokenSecretRef" -}}

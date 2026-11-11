@@ -1,6 +1,7 @@
 # A three-replica OCI Accelerator fleet with DNS-seeded peering and an existing
-# CA Secret. Each replica keeps an ephemeral cache, and the dind runner pool
-# uses the same accelerator Service as a single-instance release. Run
+# CA Secret, with remote metrics and Datadog discovery annotations. Each replica
+# keeps an ephemeral cache, and the dind runner pool uses the same accelerator
+# Service as a single-instance release. Run
 # `make helm-examples` after changing this file or the chart to update
 # rendered.yaml and NOTES.txt.
 agentToken:
@@ -16,6 +17,28 @@ ociAccelerator:
   replicas: 3
   peering:
     enabled: true
+  metrics:
+    remote: true
+  networkPolicy:
+    metricsFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: datadog
+        podSelector:
+          matchLabels:
+            agent.datadoghq.com/component: agent
+  podAnnotations:
+    ad.datadoghq.com/oci-accelerator.checks: |
+      {
+        "openmetrics": {
+          "instances": [{
+            "openmetrics_endpoint": "http://%%host%%:9090/metrics",
+            "namespace": "buildkite",
+            "metrics": ["oci_accelerator_.*"],
+            "tags": ["pod_name:%%kube_pod_name%%"]
+          }]
+        }
+      }
   ca:
     existingSecret:
       name: oci-accelerator-ca
