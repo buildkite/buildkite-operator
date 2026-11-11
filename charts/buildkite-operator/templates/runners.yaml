@@ -173,9 +173,9 @@ spec:
           resources:
             {{- toYaml $r.docker.resources | nindent 12 }}
           volumeMounts:
-            - name: docker-data
+            - name: dockerd-data
               mountPath: /var/lib/docker
-            - name: docker-run
+            - name: dockerd-run
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
@@ -258,7 +258,7 @@ spec:
           resources:
             {{- toYaml $.Values.supervisor.resources | nindent 12 }}
           volumeMounts:
-            - name: docker-run
+            - name: dockerd-run
               mountPath: /var/run
             - name: ephemeral-agent-scripts
               mountPath: /opt/ephemeral-agent
@@ -359,7 +359,7 @@ spec:
           {{- if or $docker $agentLoop }}
           volumeMounts:
             {{- if $docker }}
-            - name: docker-run
+            - name: dockerd-run
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
@@ -414,41 +414,13 @@ spec:
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
       volumes:
-        # The deletion-cost sidecar's script.
-        - name: deletion-cost-code
-          configMap:
-            name: {{ include "buildkite-operator.deletionCostName" $ }}
-        # API token for the deletion-cost sidecar only.
-        - name: deletion-cost-api
-          projected:
-            sources:
-              - serviceAccountToken:
-                  path: token
-                  expirationSeconds: 3600
-              - configMap:
-                  name: kube-root-ca.crt
-                  items:
-                    - key: ca.crt
-                      path: ca.crt
-        {{- if $r.ephemeralAgent }}
-        # Scripts that run ephemeral agents.
-        - name: ephemeral-agent-scripts
-          configMap:
-            name: {{ include "buildkite-operator.ephemeralAgentName" $ }}
-        {{- end }}
-        {{- if $stepImages }}
-        # step-image.sh to run each job in its step's image.
-        - name: step-image
-          configMap:
-            name: {{ include "buildkite-operator.stepImageName" $ }}
-        {{- end }}
         {{- if $docker }}
         # The daemon's images and containers, discarded with the Pod.
-        - name: docker-data
+        - name: dockerd-data
           emptyDir:
             sizeLimit: {{ $r.docker.storage.data }}
         # The daemon's socket, which the Pod's other containers connect to.
-        - name: docker-run
+        - name: dockerd-run
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
@@ -476,4 +448,32 @@ spec:
           configMap:
             name: {{ include "buildkite-operator.ociAcceleratorCACertName" $ | quote }}
         {{- end }}
+        {{- if $stepImages }}
+        # step-image.sh to run each job in its step's image.
+        - name: step-image
+          configMap:
+            name: {{ include "buildkite-operator.stepImageName" $ }}
+        {{- end }}
+        {{- if $r.ephemeralAgent }}
+        # Scripts that run ephemeral agents.
+        - name: ephemeral-agent-scripts
+          configMap:
+            name: {{ include "buildkite-operator.ephemeralAgentName" $ }}
+        {{- end }}
+        # The deletion-cost sidecar's script.
+        - name: deletion-cost-code
+          configMap:
+            name: {{ include "buildkite-operator.deletionCostName" $ }}
+        # API token for the deletion-cost sidecar only.
+        - name: deletion-cost-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
 {{- end }}
