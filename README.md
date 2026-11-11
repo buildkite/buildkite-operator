@@ -61,7 +61,7 @@ export BUILDKITE_AGENT_TOKEN='<agent-token>'
 
 helm upgrade --install buildkite-operator \
   oci://registry-1.docker.io/buildkite/buildkite-operator-chart \
-  --version 0.23.0 \
+  --version 0.24.0 \
   --namespace buildkite-runner-stack \
   --create-namespace \
   --set-string runnerPools.linux.queue=<queue> \
