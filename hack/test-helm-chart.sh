@@ -112,7 +112,10 @@ if [[ $(grep 'checksum/agent-token:' <<<"${direct}") == $(grep 'checksum/agent-t
 fi
 assert_contains "${direct}" "minReplicaCount: 1"
 assert_contains "${direct}" "maxReplicaCount: 4"
-assert_contains "${direct}" "formula: scheduled + running"
+assert_contains "${direct}" 'formula: "scheduled + running"'
+assert_contains "${direct}" 'target: "1"'
+assert_contains "${direct}" 'activationTarget: "0"'
+assert_contains "${direct}" 'metricType: AverageValue'
 assert_contains "${direct}" $'scaleDown:\n          stabilizationWindowSeconds: 60\n'
 assert_contains "${direct}" 'valueLocation: "jobs.queues.linux.scheduled"'
 assert_contains "${direct}" "token: \"${TOKEN}\""
@@ -379,6 +382,25 @@ assert_contains "${sysbox_scaling}" "maxReplicaCount: 4"
 assert_contains "${sysbox_scaling}" $'scaleDown:\n          stabilizationWindowSeconds: 0\n' # Overridden to zero.
 assert_contains "${sysbox_scaling}" 'valueLocation: "jobs.queues.build.scheduled"'
 assert_contains "${multi}" "name: test-buildkite-operator-ephemeral-agent"
+
+# Pools sharing a queue inherit or override the formula independently.
+# Conditional expressions must stay strings, and KEDA's other settings stay fixed.
+shared_queue=$(render --set-string agentToken.value="${TOKEN}" \
+	--set-string 'defaults.scalingFormula=(scheduled + running) * 0.75' \
+	--set-string 'runnerPools.linux.scalingFormula=scheduled > 0 ? (scheduled + running) * 0.25 : running' \
+	--set-string runnerPools.secondary.queue=linux --set runnerPools.secondary.maxReplicas=12)
+primary_scaling=$(document "${shared_queue}" ScaledObject test-linux)
+secondary_scaling=$(document "${shared_queue}" ScaledObject test-secondary)
+assert_contains "${primary_scaling}" 'formula: "scheduled > 0 ? (scheduled + running) * 0.25 : running"'
+assert_contains "${secondary_scaling}" 'formula: "(scheduled + running) * 0.75"'
+for pool in linux secondary; do
+	assert_contains "$(document "${shared_queue}" ScaledObject "test-${pool}")" 'target: "1"'
+	assert_contains "$(document "${shared_queue}" ScaledObject "test-${pool}")" 'activationTarget: "0"'
+	assert_contains "$(document "${shared_queue}" ScaledObject "test-${pool}")" 'metricType: AverageValue'
+	assert_contains "$(document "${shared_queue}" Deployment "test-${pool}")" 'value: "queue=linux,runtime=standard"'
+	assert_contains "$(document "${shared_queue}" ScaledObject "test-${pool}")" 'valueLocation: "jobs.queues.linux.scheduled"'
+	assert_contains "$(document "${shared_queue}" ScaledObject "test-${pool}")" 'valueLocation: "jobs.queues.linux.running"'
+done
 
 # The accelerator serves Docker-backed entries that have not opted out.
 accel_args=(
@@ -932,12 +954,13 @@ assert_fails "does not match pattern" \
 	--set-string supervisor.image.digest=latest \
 	--set-string agentToken.value="${TOKEN}"
 
-assert_fails 'runnerPools.a and runnerPools.b both use Buildkite queue "linux"' \
-	--set-string runnerPools.a.queue=linux \
-	--set runnerPools.a.maxReplicas=1 \
-	--set-string runnerPools.b.queue=linux \
-	--set runnerPools.b.maxReplicas=1 \
-	--set-string agentToken.value="${TOKEN}"
+for scope in defaults runnerPools.linux; do
+	scaling_args=(--set-string runnerPools.linux.queue=linux --set runnerPools.linux.maxReplicas=4 \
+		--set-string agentToken.value="${TOKEN}")
+	assert_fails "scalingFormula" "${scaling_args[@]}" --set "${scope}.scalingFormula=42"
+	assert_fails "scalingFormula" "${scaling_args[@]}" --set-string "${scope}.scalingFormula="
+	assert_fails "scalingModifiers" "${scaling_args[@]}" --set-string "${scope}.scalingModifiers.target=2"
+done
 assert_fails "runnerPools.Linux_Pool: names must be lowercase" \
 	--set-string runnerPools.Linux_Pool.queue=linux \
 	--set runnerPools.Linux_Pool.maxReplicas=1 \

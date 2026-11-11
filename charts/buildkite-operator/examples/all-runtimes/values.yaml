@@ -2,8 +2,9 @@
 # and ephemeral agents, scale to zero, tokens from existing Secrets, image pull
 # caching through two independent OCI Accelerator replicas, which one pool
 # opts out of, and step images, which another opts out of, and a composed
-# agent runtime. Run `make helm-examples` after changing this file or the
-# chart to update rendered.yaml and NOTES.txt.
+# agent runtime. Two Docker pools share a queue with proportional scaling.
+# Run `make helm-examples` after changing this file or the chart to update
+# rendered.yaml and NOTES.txt.
 agentToken:
   existingSecret:
     name: buildkite-agent-token
@@ -27,13 +28,15 @@ runnerPools:
     runtime: sysbox
     minReplicas: 0
     maxReplicas: 4
+    scalingFormula: "(scheduled + running) * 0.75"
     docker:
       stepImages: false
 
   docker:
-    queue: docker
+    queue: docker-builds
     runtime: dind
     maxReplicas: 4
+    scalingFormula: "(scheduled + running) * 0.25"
 
   untrusted:
     queue: untrusted

@@ -12,8 +12,8 @@
 
 This repository contains a standalone Helm chart for running a Buildkite
 runner stack on Kubernetes. One chart release can serve several Buildkite
-queues. Each gets its own runner pool (a `Deployment` of runner Pods) and KEDA
-scaling, and they share one token Secret.
+queues. Each runner pool has a `Deployment` of runner Pods and KEDA scaling.
+Pools can share a queue, and all pools in a release share one token Secret.
 
 The stack includes:
 
@@ -128,8 +128,8 @@ Pool rules:
 - Pool names use lowercase letters, digits and hyphens, and start and end with
   a letter or digit.
 - The release and pool names combined can be at most 50 characters.
-- Each Buildkite queue can appear in only one pool, because KEDA scales a pool
-  on its queue's whole job count.
+- Pools can share a Buildkite queue. Set a [scaling formula](#scaling-formula)
+  to give each pool a share of its demand.
 - With no pools, the chart installs nothing.
 
 Because `runnerPools` is a map, a later values file can change one pool
@@ -407,17 +407,18 @@ changes in [Agent runtime image](docs/appendices.md#agent-runtime-image).
 
 ## Autoscaling
 
-KEDA polls Buildkite's Agent Metrics API and sizes each runner pool to its
-queue's `scheduled + running` job count, between `minReplicas` (one by default)
-and `maxReplicas`.
+KEDA polls Buildkite's Agent Metrics API and sizes each runner pool between
+`minReplicas` (one by default) and `maxReplicas`. By default, the pool targets
+its queue's `scheduled + running` job count.
 
 Scaling in happens in one of two ways:
 
-- While jobs are scheduled or running, the HPA removes runners only after the
+- While the scaling metric is active, the HPA removes runners only after the
   lower count has lasted `scaleDownStabilizationWindowSeconds`.
-- Once the queue has no scheduled or running jobs, a pool with `minReplicas: 0`
-  scales to zero after `cooldownPeriod`, removing every remaining runner at
-  once.
+- Once the scaling metric is inactive, a pool with `minReplicas: 0` scales to
+  zero after `cooldownPeriod`, removing every remaining runner at once. With
+  the default formula, the metric is inactive when the queue has no
+  scheduled or running jobs.
 
 When a runner is removed:
 
@@ -430,6 +431,46 @@ When a runner is removed:
 
 KEDA stays installed when you uninstall a release of this chart, and several
 releases in the cluster can share it.
+
+### Scaling formula
+
+`scalingFormula` is a KEDA expression using the named queue metrics `scheduled`
+and `running`. It defaults to `scheduled + running` and must return a single
+numeric value, which sets the desired runner count before rounding, replica
+bounds and scaling policies.
+
+Set the formula under `defaults` or override it per pool. For example, split
+a queue's capacity target between two pools:
+
+```yaml
+runnerPools:
+  primary:
+    queue: builds
+    maxReplicas: 75
+    scalingFormula: "(scheduled + running) * 0.75"
+  secondary:
+    queue: builds
+    maxReplicas: 25
+    scalingFormula: "(scheduled + running) * 0.25"
+```
+
+- With 40 scheduled-or-running jobs, the pools target 30 and 10 runners,
+  subject to their replica bounds and scaling policies.
+- Pools scale independently. They do not normalize shares or redistribute
+  capacity if another pool reaches its limit or cannot schedule runners.
+- Agents compete for jobs from the same queue. Capacity shares do not
+  guarantee job assignment shares, and rounding and minimum replicas can
+  increase total capacity above the queue's demand.
+
+The chart fixes KEDA's `target` to `"1"`, `activationTarget` to `"0"` and
+`metricType` to `AverageValue`. A positive formula result activates scaling
+from zero. With `minReplicas: 0`, a nonpositive result allows scale-to-zero
+after the cooldown.
+
+The chart requires a nonempty formula string. KEDA validates the expression.
+See KEDA's
+[scaling modifiers reference](https://keda.sh/docs/2.20/reference/scaledobject-spec/#scalingmodifiers)
+for expression syntax.
 
 ### Scale-in preference
 
@@ -617,8 +658,9 @@ Each runner pool takes these settings, directly or from `defaults`:
 | `rollingUpdate.maxUnavailable` | (default `0`) Maximum unavailable runner Pods during a rollout, as a nonnegative count or percentage string from `"0%"` to `"100%"`. |
 | `rollingUpdate.maxSurge` | (default `1`) Maximum extra non-terminating runner Pods above the desired replica count during a rollout, as a nonnegative count or percentage string. |
 | `pollingInterval` | (default `10`) Seconds between KEDA's checks of the queue. |
-| `cooldownPeriod` | (default `60`) Seconds the queue must be fully idle before KEDA scales a pool with `minReplicas: 0` to zero. See [Autoscaling](#autoscaling). |
-| `scaleDownStabilizationWindowSeconds` | (default `60`) Seconds the HPA waits before removing runners after the job count drops (0–3600), while at least one runner is still needed. |
+| `scalingFormula` | (default `scheduled + running`) KEDA expression for the desired runner count using the named metrics `scheduled` and `running`. See [Scaling formula](#scaling-formula). |
+| `cooldownPeriod` | (default `60`) Seconds the scaling metric must be inactive before KEDA scales a pool with `minReplicas: 0` to zero. See [Autoscaling](#autoscaling). |
+| `scaleDownStabilizationWindowSeconds` | (default `60`) Seconds the HPA waits before removing runners after the desired count drops (0–3600), except when scaling to zero. |
 | `image` | (default `buildkite/agent:4`) Agent image. It needs `/bin/sh`, except for persistent `standard` agents. |
 | `resources` | (default none) Kubernetes `requests` and `limits` for the agent container. With `dind`, `kata` or `sysbox` and `ephemeralAgent`, agents run inside the Docker daemon, so use [`docker.resources`](#docker-settings) instead. |
 | `docker` | Docker daemon settings for `dind`, `kata` and `sysbox`. See [Docker settings](#docker-settings). |

@@ -33,7 +33,7 @@ spec:
   maxReplicaCount: {{ $r.maxReplicas }}
   advanced:
     scalingModifiers:
-      formula: scheduled + running
+      formula: {{ $r.scalingFormula | quote }}
       target: "1"
       activationTarget: "0"
       metricType: AverageValue

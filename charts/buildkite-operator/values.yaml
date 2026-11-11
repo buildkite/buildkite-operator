@@ -41,13 +41,20 @@ defaults:
   minReplicas: 1
   pollingInterval: 10
 
-  # Seconds the queue must be idle before KEDA scales a pool with
-  # minReplicas 0 to zero. KEDA then removes every runner at once, ignoring
-  # scaleDownStabilizationWindowSeconds. Raise it to keep idle pools longer.
+  # KEDA expression using the named queue metrics scheduled and running.
+  # Returns the desired runner count before rounding, replica bounds and
+  # scaling policies. See the README's "Scaling formula".
+  scalingFormula: scheduled + running
+
+  # Seconds the composite metric must be inactive before KEDA scales a pool
+  # with minReplicas 0 to zero. With the default formula, this means an idle
+  # queue. KEDA removes every runner at once, ignoring
+  # scaleDownStabilizationWindowSeconds. Raise it to keep inactive pools longer.
   cooldownPeriod: 60
 
-  # Seconds a lower job count must last before the HPA removes runners, except
-  # when scaling to zero. Absorbs short dips between dependent steps. 0 to 3600.
+  # Seconds a lower desired count must last before the HPA removes runners,
+  # except when scaling to zero. Absorbs short dips between dependent steps.
+  # 0 to 3600.
   scaleDownStabilizationWindowSeconds: 60
 
   # Longest time an agent may take to drain its job once a runner is removed.
@@ -114,10 +121,11 @@ defaults:
     # the README's "Agent runtime image".
     agentRuntimeImage: ""
 
-# One runner pool per Buildkite queue. Each pool is a KEDA-autoscaled
+# Each runner pool serves one Buildkite queue. Each is a KEDA-autoscaled
 # Deployment named <release>-<name>, with Pods labelled
 # buildkite.com/runner-pool=<name>. Set queue and maxReplicas. Everything else
-# comes from defaults. Each queue can appear in only one pool.
+# comes from defaults. Pools can share a queue. Use scalingFormula to give
+# each pool a share of its demand.
 #
 # Examples (the README's "Runner pools" section explains each):
 #

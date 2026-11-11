@@ -1,6 +1,6 @@
 Buildkite runners are installed in buildkite. KEDA scales each runner pool from Buildkite queue metrics:
 
-  docker: queue docker, dind, persistent agents, 1-4 runners (Deployment buildkite-docker)
+  docker: queue docker-builds, dind, persistent agents, 1-4 runners (Deployment buildkite-docker)
   docker-builds: queue docker-builds, sysbox, persistent agents, 0-4 runners (Deployment buildkite-docker-builds)
   linux: queue linux, standard, ephemeral agents, 1-10 runners (Deployment buildkite-linux)
   untrusted: queue untrusted, kata, ephemeral agents, 1-6 runners (Deployment buildkite-untrusted)
