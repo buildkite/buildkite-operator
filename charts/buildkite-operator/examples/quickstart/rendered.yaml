@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
 automountServiceAccountToken: false
 
 ---
@@ -23,7 +23,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
 type: Opaque
 stringData:
   token: "example-agent-token"
@@ -40,7 +40,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
 data:
   deletion_cost.py: |-
     """Prefer removing idle agents during scale-in (best effort, not a drain).
@@ -145,7 +145,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -162,7 +162,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -183,7 +183,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "linux"
 spec:
@@ -204,7 +204,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-chart-0.22.0
+        helm.sh/chart: buildkite-operator-chart-0.22.1
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "linux"
       annotations:
@@ -219,27 +219,34 @@ spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 3600
       containers:
+        # Run the Buildkite agent, which takes jobs from the pool's queue.
         - name: agent
           image: "buildkite/agent:4"
           imagePullPolicy: Always
           command: ["/usr/local/bin/buildkite-agent"]
           args: ["start"]
           env:
+            # Ignore the agent image's config file, so these variables configure it.
             - name: BUILDKITE_AGENT_CONFIG
               value: /dev/null
+            # Auth token to register with Buildkite.
             - name: BUILDKITE_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: buildkite-buildkite-operator-agent-token
                   key: token
+            # Names the agent after its Pod, so each agent maps to one Pod.
             - name: BUILDKITE_AGENT_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # `queue=` routes the pool's jobs here. `runtime=` shows how they run.
             - name: BUILDKITE_AGENT_TAGS
               value: "queue=linux,runtime=standard"
+            # Serves the readiness probe and the deletion-cost sidecar's checks.
             - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
               value: 0.0.0.0:8080
+            # The agent checks out builds here. It won't start without a build path.
             - name: BUILDKITE_BUILD_PATH
               value: /buildkite/builds
             # The agent cannot check out plugins without a plugins path.
@@ -258,6 +265,7 @@ spec:
             privileged: false
           resources:
             {}
+        # Increase Pod deletion cost if the agent is busy, so scale-in prefers idle Pods.
         - name: deletion-cost
           image: "python:3.12.14-alpine3.24@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111"
           imagePullPolicy: IfNotPresent
@@ -298,9 +306,11 @@ spec:
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
       volumes:
+        # The deletion-cost sidecar's script.
         - name: deletion-cost-code
           configMap:
             name: buildkite-buildkite-operator-deletion-cost
+        # API token for the deletion-cost sidecar only.
         - name: deletion-cost-api
           projected:
             sources:
@@ -324,7 +334,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
     buildkite.com/runner-pool: "linux"
 spec:
   scaleTargetRef:
@@ -386,7 +396,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
 spec:
   secretTargetRef:
     - parameter: apiKey
@@ -409,7 +419,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -456,7 +466,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.0
+    helm.sh/chart: buildkite-operator-chart-0.22.1
 spec:
   policyName: buildkite-buildkite-buildkite-operator-deletion-cost
   validationActions: [Deny]

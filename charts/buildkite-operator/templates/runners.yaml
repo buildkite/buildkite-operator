@@ -106,8 +106,7 @@ spec:
       {{- if $docker }}
       initContainers:
         {{- if $registryCredentials }}
-        # Copied rather than mounted so jobs can still docker login and keep
-        # buildx state alongside the credentials.
+        # Seed docker-config with registryCredentials, leaving it writable for jobs.
         - name: docker-config
           image: "{{ $.Values.supervisor.image.repository }}:{{ $.Values.supervisor.image.tag }}@{{ $.Values.supervisor.image.digest }}"
           imagePullPolicy: {{ $.Values.supervisor.image.pullPolicy }}
@@ -126,6 +125,7 @@ spec:
             - name: docker-config
               mountPath: {{ $dockerConfig }}
         {{- end }}
+        # Run the Docker daemon for jobs as a native sidecar started before the agent.
         - name: dockerd
           image: "{{ $r.docker.image.repository }}:{{ $r.docker.image.tag }}"
           imagePullPolicy: {{ $r.docker.image.pullPolicy }}
@@ -149,14 +149,14 @@ spec:
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
             {{- if $accelerated }}
-            # Docker Engine does not read certs.d for Docker Hub with the classic
-            # image store, so the daemon trusts the CA for every host instead.
+            # Trusts OCI Accelerator's CA for every host. See
+            # "OCI Accelerator CA" in docs/appendices.md.
             - name: SSL_CERT_DIR
               value: /etc/ssl/certs:/etc/ssl/oci-accelerator-certs
             {{- end }}
-          # Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
-          # Pod's user namespace. Kata's is privileged, but only inside the VM.
-          # Dind's is privileged on the node itself, with host-level access.
+          {{- /* Sysbox's dockerd runs unprivileged: sysbox-runc isolates it in the
+          Pod's user namespace. Kata's is privileged, but only inside the VM.
+          Dind's is privileged on the node itself, with host-level access. */}}
           securityContext:
             privileged: {{ ne $r.runtime "sysbox" }}
           startupProbe:
@@ -173,15 +173,15 @@ spec:
           resources:
             {{- toYaml $r.docker.resources | nindent 12 }}
           volumeMounts:
-            - name: docker-data
+            - name: dockerd-data
               mountPath: /var/lib/docker
-            - name: docker-run
+            - name: dockerd-run
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
             {{- if or $supervised $stepImages }}
-            # Containers the daemon runs bind-mount this: ephemeral agents and
-            # step image containers.
+            {{- /* Containers the daemon runs bind-mount this: ephemeral agents and
+            step image containers. */}}
             - name: docker-config
               mountPath: {{ $dockerConfig }}
             {{- end }}
@@ -199,6 +199,7 @@ spec:
       {{- end }}
       containers:
         {{- if $supervised }}
+        # Start a fresh agent container in the daemon for each job.
         - name: supervisor
           image: "{{ $.Values.supervisor.image.repository }}:{{ $.Values.supervisor.image.tag }}@{{ $.Values.supervisor.image.digest }}"
           imagePullPolicy: {{ $.Values.supervisor.image.pullPolicy }}
@@ -257,7 +258,7 @@ spec:
           resources:
             {{- toYaml $.Values.supervisor.resources | nindent 12 }}
           volumeMounts:
-            - name: docker-run
+            - name: dockerd-run
               mountPath: /var/run
             - name: ephemeral-agent-scripts
               mountPath: /opt/ephemeral-agent
@@ -265,6 +266,7 @@ spec:
             - name: docker-config
               mountPath: {{ $dockerConfig }}
         {{- else }}
+        # Run the Buildkite agent, which takes jobs from the pool's queue.
         - name: agent
           image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
           imagePullPolicy: {{ $r.image.pullPolicy }}
@@ -272,10 +274,9 @@ spec:
           # Restarts the agent after each job without restarting the container.
           command: ["/bin/sh", "/opt/ephemeral-agent/ephemeral-agent.sh"]
           {{- else if $docker }}
-          # The Docker daemon resolves bind-mount sources in its own container,
-          # which shares only the workspace with the agent. Jobs whose plugins
-          # mount the agent binary (mount-buildkite-agent) take it from PATH,
-          # so put a copy in the workspace first on PATH.
+          # Before starting buildkite-agent, put a copy first on PATH under
+          # /buildkite, so plugins can mount it into job containers. See
+          # "Bind mounts" in docs/appendices.md.
           command:
             - /bin/sh
             - -c
@@ -285,33 +286,43 @@ spec:
           args: ["start"]
           {{- end }}
           env:
+            # Ignore the agent image's config file, so these variables configure it.
             - name: BUILDKITE_AGENT_CONFIG
               value: /dev/null
+            # Auth token to register with Buildkite.
             - name: BUILDKITE_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   {{- include "buildkite-operator.agentTokenSecretRef" $ | nindent 18 }}
+            # Names the agent after its Pod, so each agent maps to one Pod.
             - name: BUILDKITE_AGENT_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # `queue=` routes the pool's jobs here. `runtime=` shows how they run.
             - name: BUILDKITE_AGENT_TAGS
               value: {{ printf "queue=%s,runtime=%s" $r.queue $r.runtime | quote }}
+            # Serves the readiness probe and the deletion-cost sidecar's checks.
             - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
               value: 0.0.0.0:8080
+            # The agent checks out builds here. It won't start without a build path.
             - name: BUILDKITE_BUILD_PATH
               value: /buildkite/builds
             # The agent cannot check out plugins without a plugins path.
             - name: BUILDKITE_PLUGINS_PATH
               value: /buildkite/plugins
             {{- if $docker }}
+            # Puts the Job API socket under /buildkite, where job containers see it.
             - name: BUILDKITE_SOCKETS_PATH
               value: /buildkite/sockets
+            # Points jobs' Docker commands at the dockerd sidecar.
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            # Jobs share one Docker client config, with the Pod's registry logins.
             - name: DOCKER_CONFIG
               value: {{ $dockerConfig }}
             {{- with ($r.docker.resources.limits | default dict).cpu }}
+            # Caps containers the daemon starts at its CPU limit.
             - name: RUNNER_CPU_LIMIT_MILLICORES
               valueFrom:
                 resourceFieldRef:
@@ -321,9 +332,10 @@ spec:
             {{- end }}
             {{- end }}
             {{- if $stepImages }}
-            # Selects the step's image or the configured default; see step-image.sh.
+            # Runs each job through step-image.sh, in its step's image if it has one.
             - name: BUILDKITE_BOOTSTRAP_SCRIPT_PATH
               value: "/bin/sh {{ $stepImageScript }}"
+            # Image for steps without image:. Empty runs them in the agent container.
             - name: DEFAULT_STEP_IMAGE
               value: {{ $r.docker.defaultStepImage | quote }}
             # Puts the job's env files and timeout marker where step image
@@ -347,7 +359,7 @@ spec:
           {{- if or $docker $agentLoop }}
           volumeMounts:
             {{- if $docker }}
-            - name: docker-run
+            - name: dockerd-run
               mountPath: /var/run
             - name: workspace
               mountPath: /buildkite
@@ -366,6 +378,7 @@ spec:
             {{- end }}
           {{- end }}
         {{- end }}
+        # Increase Pod deletion cost if the agent is busy, so scale-in prefers idle Pods.
         - name: deletion-cost
           image: "{{ $.Values.deletionCost.image.repository }}:{{ $.Values.deletionCost.image.tag }}@{{ $.Values.deletionCost.image.digest }}"
           imagePullPolicy: {{ $.Values.deletionCost.image.pullPolicy }}
@@ -401,9 +414,57 @@ spec:
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
       volumes:
+        {{- if $docker }}
+        # The daemon's images and containers, discarded with the Pod.
+        - name: dockerd-data
+          emptyDir:
+            sizeLimit: {{ $r.docker.storage.data }}
+        # The daemon's socket, which the Pod's other containers connect to.
+        - name: dockerd-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        # Builds and plugins, shared so the daemon can bind-mount build paths.
+        - name: workspace
+          emptyDir:
+            sizeLimit: {{ $r.docker.storage.workspace }}
+        # Docker client config shared across jobs for the lifetime of the Pod.
+        - name: docker-config
+          emptyDir:
+            sizeLimit: 16Mi
+        {{- if $registryCredentials }}
+        # registryCredentials to copy into the Docker client config when the Pod starts.
+        - name: registry-credentials
+          secret:
+            secretName: {{ include "buildkite-operator.registryCredentialsSecretName" $ | quote }}
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+        {{- end }}
+        {{- end }}
+        {{- if $accelerated }}
+        # OCI Accelerator's CA certificate, which SSL_CERT_DIR adds.
+        - name: oci-accelerator-ca
+          configMap:
+            name: {{ include "buildkite-operator.ociAcceleratorCACertName" $ | quote }}
+        {{- end }}
+        {{- if $stepImages }}
+        # step-image.sh to run each job in its step's image.
+        - name: step-image
+          configMap:
+            name: {{ include "buildkite-operator.stepImageName" $ }}
+        {{- end }}
+        {{- if $r.ephemeralAgent }}
+        # Scripts that run ephemeral agents.
+        - name: ephemeral-agent-scripts
+          configMap:
+            name: {{ include "buildkite-operator.ephemeralAgentName" $ }}
+        {{- end }}
+        # The deletion-cost sidecar's script.
         - name: deletion-cost-code
           configMap:
             name: {{ include "buildkite-operator.deletionCostName" $ }}
+        # API token for the deletion-cost sidecar only.
         - name: deletion-cost-api
           projected:
             sources:
@@ -415,44 +476,4 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
-        {{- if $r.ephemeralAgent }}
-        - name: ephemeral-agent-scripts
-          configMap:
-            name: {{ include "buildkite-operator.ephemeralAgentName" $ }}
-        {{- end }}
-        {{- if $stepImages }}
-        - name: step-image
-          configMap:
-            name: {{ include "buildkite-operator.stepImageName" $ }}
-        {{- end }}
-        {{- if $docker }}
-        - name: docker-data
-          emptyDir:
-            sizeLimit: {{ $r.docker.storage.data }}
-        - name: docker-run
-          emptyDir:
-            medium: Memory
-            sizeLimit: 16Mi
-        - name: workspace
-          emptyDir:
-            sizeLimit: {{ $r.docker.storage.workspace }}
-        # Docker client configuration for the Pod's lifetime, shared by every
-        # job, so logins and buildx state persist across jobs.
-        - name: docker-config
-          emptyDir:
-            sizeLimit: 16Mi
-        {{- if $registryCredentials }}
-        - name: registry-credentials
-          secret:
-            secretName: {{ include "buildkite-operator.registryCredentialsSecretName" $ | quote }}
-            items:
-              - key: .dockerconfigjson
-                path: config.json
-        {{- end }}
-        {{- end }}
-        {{- if $accelerated }}
-        - name: oci-accelerator-ca
-          configMap:
-            name: {{ include "buildkite-operator.ociAcceleratorCACertName" $ | quote }}
-        {{- end }}
 {{- end }}

@@ -189,7 +189,7 @@ assert_contains "${kata}" "runtimeClassName: kata-qemu-runtime-rs"
 assert_contains "${kata}" "privileged: true"
 assert_contains "${kata}" 'value: "queue=linux,runtime=kata"'
 assert_contains "${kata}" "- name: deletion-cost-code"
-assert_contains "${kata}" "- name: docker-data"
+assert_contains "${kata}" "- name: dockerd-data"
 assert_contains "${kata}" 'cluster-autoscaler.kubernetes.io/safe-to-evict: "false"'
 
 sysbox=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=sysbox)
@@ -211,7 +211,7 @@ assert_contains "${dind_runner}" $'securityContext:\n            privileged: tru
 assert_contains "${dind_runner}" "- name: agent"
 assert_contains "${dind_runner}" 'value: "queue=linux,runtime=dind"'
 assert_contains "${dind_runner}" "value: unix:///var/run/docker.sock"
-assert_contains "${dind_runner}" "- name: docker-data"
+assert_contains "${dind_runner}" "- name: dockerd-data"
 assert_contains "${dind_runner}" 'cluster-autoscaler.kubernetes.io/safe-to-evict: "false"'
 for unexpected in "runtimeClassName:" "nodeSelector:" "tolerations:" "hostUsers:" "--storage-driver" "- name: supervisor"; do
 	if [[ "${dind_runner}" == *"${unexpected}"* ]]; then
@@ -752,7 +752,7 @@ fi
 copy_command='command: ["cp", "/registry-credentials/config.json", "/etc/buildkite-agent/docker/config.json"]'
 for deployment in test-per test-eph; do
 	credentials_runner=$(document "${credentials}" Deployment "${deployment}")
-	assert_contains "${credentials_runner}" $'initContainers:\n        # Copied rather than mounted so jobs can still docker login and keep\n        # buildx state alongside the credentials.\n        - name: docker-config'
+	assert_contains "${credentials_runner}" $'initContainers:\n        # Seed docker-config with registryCredentials, leaving it writable for jobs.\n        - name: docker-config'
 	assert_contains "${credentials_runner}" "${copy_command}"
 	assert_contains "${credentials_runner}" $'secretName: "test-buildkite-operator-registry-credentials"\n            items:\n              - key: .dockerconfigjson\n                path: config.json'
 done
