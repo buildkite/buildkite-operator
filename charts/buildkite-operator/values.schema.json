@@ -7,7 +7,7 @@
       "allOf": [
         { "$ref": "#/$defs/runnerSettings" },
         {
-          "required": ["runtime", "ephemeralAgent", "minReplicas", "pollingInterval", "cooldownPeriod", "scaleDownStabilizationWindowSeconds", "terminationGracePeriodSeconds", "rollingUpdate", "image", "resources", "docker"],
+          "required": ["runtime", "ephemeralAgent", "minReplicas", "pollingInterval", "scalingFormula", "cooldownPeriod", "scaleDownStabilizationWindowSeconds", "terminationGracePeriodSeconds", "rollingUpdate", "image", "resources", "docker"],
           "properties": {
             "rollingUpdate": { "required": ["maxUnavailable", "maxSurge"] },
             "image": { "required": ["repository", "tag", "pullPolicy"] },
@@ -213,6 +213,7 @@
         "minReplicas": { "type": "integer", "minimum": 0 },
         "maxReplicas": { "type": "integer", "minimum": 1 },
         "pollingInterval": { "type": "integer", "minimum": 1 },
+        "scalingFormula": { "type": "string", "minLength": 1 },
         "cooldownPeriod": { "type": "integer", "minimum": 0 },
         "scaleDownStabilizationWindowSeconds": { "type": "integer", "minimum": 0, "maximum": 3600 },
         "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },

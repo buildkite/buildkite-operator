@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
 automountServiceAccountToken: false
 
 ---
@@ -23,7 +23,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
 type: Opaque
 stringData:
   token: "example-agent-token"
@@ -40,7 +40,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
 data:
   deletion_cost.py: |-
     """Prefer removing idle agents during scale-in (best effort, not a drain).
@@ -145,7 +145,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -162,7 +162,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -183,7 +183,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "linux"
 spec:
@@ -204,7 +204,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-chart-0.22.1
+        helm.sh/chart: buildkite-operator-chart-0.23.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "linux"
       annotations:
@@ -334,7 +334,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
     buildkite.com/runner-pool: "linux"
 spec:
   scaleTargetRef:
@@ -345,7 +345,7 @@ spec:
   maxReplicaCount: 4
   advanced:
     scalingModifiers:
-      formula: scheduled + running
+      formula: "scheduled + running"
       target: "1"
       activationTarget: "0"
       metricType: AverageValue
@@ -396,7 +396,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
 spec:
   secretTargetRef:
     - parameter: apiKey
@@ -419,7 +419,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -466,7 +466,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.22.1
+    helm.sh/chart: buildkite-operator-chart-0.23.0
 spec:
   policyName: buildkite-buildkite-buildkite-operator-deletion-cost
   validationActions: [Deny]

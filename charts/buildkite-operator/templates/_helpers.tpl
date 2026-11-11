@@ -32,7 +32,6 @@ values would silently render no runner pools and delete every runner.
 {{- fail "queues was renamed to runnerPools in chart 0.20.0; move its entries under runnerPools" }}
 {{- end }}
 {{- $entries := list }}
-{{- $byQueue := dict }}
 {{- range $name := keys (.Values.runnerPools | default dict) | sortAlpha }}
 {{- $entry := get $root.Values.runnerPools $name }}
 {{- if kindIs "invalid" $entry }}
@@ -50,10 +49,6 @@ values would silently render no runner pools and delete every runner.
 {{- if not $queue }}
 {{- fail (printf "runnerPools.%s.queue is required" $name) }}
 {{- end }}
-{{- if hasKey $byQueue $queue }}
-{{- fail (printf "runnerPools.%s and runnerPools.%s both use Buildkite queue %q; each queue may appear only once" (get $byQueue $queue) $name $queue) }}
-{{- end }}
-{{- $_ := set $byQueue $queue $name }}
 {{- $maxReplicas := int ($settings.maxReplicas | default 0) }}
 {{- if lt $maxReplicas 1 }}
 {{- fail (printf "runnerPools.%s.maxReplicas must be at least 1" $name) }}
