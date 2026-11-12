@@ -151,6 +151,13 @@ wait_for "first agent's runtime checks" docker exec "${ID}-dockerd" test -e "${D
 
 # Leave state behind as a job would.
 inner run --detach --name leftover busybox:1.37 sleep 600 >/dev/null
+job_image=$(inner commit leftover test-job:1)
+untagged_image=$(inner commit leftover)
+docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /job-ctx && cat >/job-ctx/Dockerfile &&
+	docker build --quiet --tag test-job-build:1 /job-ctx >/dev/null' <<'EOF'
+FROM busybox:1.37
+RUN echo job-cache >/job-cache
+EOF
 inner volume create leftover >/dev/null
 inner network create leftover >/dev/null
 docker exec "${ID}-dockerd" touch /buildkite/builds/leftover-file
@@ -170,7 +177,21 @@ workspace=$(docker exec "${ID}-dockerd" ls -A /buildkite/builds)
 	echo "Workspace was not reset between jobs: ${workspace}" >&2
 	exit 1
 }
-inner image inspect busybox:1.37 >/dev/null # Image cache is retained.
+for image in busybox:1.37 test-job:1 test-job-build:1 "${job_image}" "${untagged_image}"; do
+	if inner image inspect "${image}" >/dev/null 2>&1; then
+		echo "Previous job's image survived: ${image}" >&2
+		exit 1
+	fi
+done
+inner system df --format '{{.Type}}: {{.Size}}' | grep -qx 'Build Cache: 0B'
+inner image inspect test-agent:1 >/dev/null
+if [[ -n "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
+	inner image inspect "${TEST_AGENT_RUNTIME_IMAGE}" >/dev/null
+fi
+[[ "$(inner ps -aq --no-trunc)" == "$(inner inspect --format '{{.Id}}' buildkite-agent)" ]] || {
+	echo "Cleanup left containers other than the replacement agent" >&2
+	exit 1
+}
 # Every agent shares the Pod's Docker client configuration, which persists.
 docker exec "${ID}-dockerd" test -e "${DOCKER_CONFIG_DIR}/seen-${first}"
 wait_for "second agent's Docker client configuration" docker exec "${ID}-dockerd" test -e "${DOCKER_CONFIG_DIR}/seen-${second}"
@@ -195,6 +216,7 @@ if [[ -n "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
 	# A source without the agent must fail closed, not start some binary from
 	# the runtime or reuse a stale shared copy left by the previous agent.
 	docker rm "${ID}-supervisor" >/dev/null
+	inner pull --quiet busybox:1.37 >/dev/null
 	inner tag busybox:1.37 test-agent:missing
 	start_supervisor test-agent:missing
 	startup_failed() { docker logs "${ID}-supervisor" 2>&1 | grep -q 'Agent exited with status 1'; }

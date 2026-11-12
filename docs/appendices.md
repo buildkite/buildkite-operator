@@ -110,7 +110,9 @@ How each runtime replaces the agent after every job. See
   The agent image needs `/bin/sh`.
 - `dind`, `kata`, `sysbox`: a supervisor starts each agent as a fresh container
   in the Pod's Docker daemon. After each job it removes the job's containers,
-  networks and volumes, and clears the `/buildkite` workspace.
+  networks and volumes, and clears the `/buildkite` workspace. It prunes unused
+  images and build cache, retaining only the configured `image` and optional
+  `docker.agentRuntimeImage`. Job and service images are pulled again as needed.
 
 Ephemeral agents also behave as follows:
 

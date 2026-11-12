@@ -1,8 +1,8 @@
 #!/bin/sh
 # Runs each Buildkite job in a fresh agent container inside the Pod's Docker
 # daemon. The agent exits after one job; the supervisor clears the job's state
-# and starts a replacement. The Pod, its node, and the Docker image and build
-# caches persist across jobs.
+# and starts a replacement. Only the configured agent images persist in the
+# Docker image store across jobs.
 set -u
 
 agent_container="buildkite-agent"
@@ -56,8 +56,8 @@ random_suffix() {
 	LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 4
 }
 
-# Remove everything the previous job left in the daemon and workspace. The
-# image and build caches are kept. A failure blocks the next agent so a job
+# Remove everything the previous job left in the daemon and workspace, keeping
+# only the configured agent images. A failure blocks the next agent so a job
 # never starts on unclean state.
 clean_job_state() {
 	containers=$(docker ps --all --quiet) || return 1
@@ -74,6 +74,19 @@ clean_job_state() {
 	docker run --rm --pull never --network none --user 0 --entrypoint /bin/sh \
 		--volume /buildkite:/buildkite "$AGENT_IMAGE" \
 		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?*' || return 1
+	# Stopped containers protect both configured images from pruning, including
+	# the binary source when the agent runs in a separate runtime image. If
+	# cleanup fails, the next attempt removes these with the other containers.
+	keepers=""
+	for image in "$AGENT_IMAGE" "${AGENT_RUNTIME_IMAGE:-}"; do
+		[ -n "$image" ] || continue
+		keeper=$(docker create --pull never --entrypoint /bin/sh "$image") || return 1
+		keepers="$keepers $keeper"
+	done
+	docker image prune --all --force >/dev/null || return 1
+	docker builder prune --all --force >/dev/null || return 1
+	# shellcheck disable=SC2086
+	docker rm --volumes $keepers >/dev/null || return 1
 	log "Cleaned job state"
 }
 
