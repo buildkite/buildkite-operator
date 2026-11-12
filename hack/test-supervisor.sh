@@ -28,7 +28,7 @@ ID="bk-supervisor-test-$$"
 
 cleanup() {
 	docker rm --force "${ID}-supervisor" "${ID}-dockerd" >/dev/null 2>&1 || true
-	docker volume rm "${ID}-run" "${ID}-workspace" "${ID}-docker-config" >/dev/null 2>&1 || true
+	docker volume rm "${ID}-run" "${ID}-workspace" "${ID}-docker-config" "${ID}-data" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -53,11 +53,17 @@ agent_running() { [[ "$(inner inspect --format '{{.State.Running}}' buildkite-ag
 new_agent_running() { agent_running && [[ "$(agent_name)" != "$1" ]]; }
 
 DOCKER_CONFIG_DIR=/etc/buildkite-agent/docker
+docker_args=()
+if [[ -z "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
+	# Match Sysbox's classic store, then exercise containerd with a runtime image.
+	docker_args+=(--storage-driver=overlay2)
+fi
 docker run --detach --privileged --name "${ID}-dockerd" \
 	--volume "${ID}-run:/var/run" --volume "${ID}-workspace:/buildkite" \
+	--volume "${ID}-data:/var/lib/docker" \
 	--volume "${ID}-docker-config:${DOCKER_CONFIG_DIR}" \
 	--volume "$(pwd)/${CHART_DIR}/files/step-image.sh:${STEP_IMAGE_SCRIPT}:ro" \
-	"${DIND_IMAGE}" dockerd --host=unix:///var/run/docker.sock >/dev/null
+	"${DIND_IMAGE}" dockerd --host=unix:///var/run/docker.sock "${docker_args[@]}" >/dev/null
 wait_for "Docker daemon" inner info
 docker exec "${ID}-dockerd" sh -c "echo '{\"auths\":{}}' >${DOCKER_CONFIG_DIR}/config.json"
 
@@ -123,20 +129,29 @@ EOF
 	TEST_AGENT_RUNTIME_IMAGE=test-agent-runtime:quit
 fi
 docker exec "${ID}-dockerd" sh -c 'printf "%s" "$1" >"$2/expected-runtime"' sh "${expected}" "${DOCKER_CONFIG_DIR}"
+# Fail a prune on demand while leaving all other Docker operations real.
+docker exec -i "${ID}-dockerd" sh -c 'mkdir -p "$1/bin" && cat >"$1/bin/docker" && chmod +x "$1/bin/docker"' sh "${DOCKER_CONFIG_DIR}" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "image prune" ] && [ -e "$DOCKER_CONFIG/fail-prune" ]; then
+	exit 1
+fi
+exec /usr/local/bin/docker "$@"
+EOF
 start_supervisor() {
-	docker run --detach --read-only --name "${ID}-supervisor" \
+	docker run --detach --read-only --cap-drop ALL --name "${ID}-supervisor" \
 		--volume "${ID}-run:/var/run" \
 		--volume "${ID}-docker-config:${DOCKER_CONFIG_DIR}" \
 		--volume "$(pwd)/${SCRIPT}:/opt/supervisor/supervisor.sh:ro" \
 		--env "DOCKER_CONFIG=${DOCKER_CONFIG_DIR}" \
 		--env "AGENT_IMAGE=$1" --env BUILDKITE_AGENT_TOKEN=unused \
 		--env "AGENT_RUNTIME_IMAGE=${TEST_AGENT_RUNTIME_IMAGE:-}" \
+		--env "DOCKER_PRUNE_THRESHOLD_KIB=${PRUNE_THRESHOLD_KIB:-33554432}" \
 		--env AGENT_TAGS=queue=test --env POD_NAME=runner-pod \
 		--env RUNNER_CPU_LIMIT_MILLICORES=1500 \
 		--env TERMINATION_GRACE_PERIOD_SECONDS=20 \
 		--env "STEP_IMAGE_SCRIPT=${STEP_IMAGE_SCRIPT}" \
 		--env DEFAULT_STEP_IMAGE=test-step:default \
-		"${CLI_IMAGE}" /bin/sh /opt/supervisor/supervisor.sh >/dev/null
+		"${CLI_IMAGE}" /bin/sh -c 'export PATH="$DOCKER_CONFIG/bin:$PATH"; exec /bin/sh /opt/supervisor/supervisor.sh' >/dev/null
 }
 start_supervisor test-agent:1
 
@@ -156,7 +171,7 @@ untagged_image=$(inner commit leftover)
 docker exec -i "${ID}-dockerd" sh -c 'mkdir -p /job-ctx && cat >/job-ctx/Dockerfile &&
 	docker build --quiet --tag test-job-build:1 /job-ctx >/dev/null' <<'EOF'
 FROM busybox:1.37
-RUN echo job-cache >/job-cache
+RUN echo job-cache >/job-cache && mkdir /private && chown 12345 /private && chmod 700 /private
 EOF
 inner volume create leftover >/dev/null
 inner network create leftover >/dev/null
@@ -178,6 +193,25 @@ workspace=$(docker exec "${ID}-dockerd" ls -A /buildkite/builds)
 	exit 1
 }
 for image in busybox:1.37 test-job:1 test-job-build:1 "${job_image}" "${untagged_image}"; do
+	inner image inspect "${image}" >/dev/null || {
+		echo "Cached image was pruned below the threshold: ${image}" >&2
+		exit 1
+	}
+done
+if inner system df --format '{{.Type}}: {{.Size}}' | grep -qx 'Build Cache: 0B'; then
+	echo "Build cache was pruned below the threshold" >&2
+	exit 1
+fi
+
+# Restart with a low threshold. Protected images alone exceed it, but pruning
+# must run only once and still allow the next agent to start.
+docker stop --time 30 "${ID}-supervisor" >/dev/null
+docker rm "${ID}-supervisor" >/dev/null
+PRUNE_THRESHOLD_KIB=1 start_supervisor test-agent:1
+wait_for "agent after pruning" new_agent_running "${second}"
+second=$(agent_name)
+docker logs "${ID}-supervisor" 2>&1 | grep -q 'Warning: Docker data remains at or above the prune threshold'
+for image in busybox:1.37 test-job:1 test-job-build:1 "${job_image}" "${untagged_image}"; do
 	if inner image inspect "${image}" >/dev/null 2>&1; then
 		echo "Previous job's image survived: ${image}" >&2
 		exit 1
@@ -196,6 +230,37 @@ fi
 docker exec "${ID}-dockerd" test -e "${DOCKER_CONFIG_DIR}/seen-${first}"
 wait_for "second agent's Docker client configuration" docker exec "${ID}-dockerd" test -e "${DOCKER_CONFIG_DIR}/seen-${second}"
 
+# A failed prune must block the next agent until cleanup succeeds.
+docker exec "${ID}-dockerd" touch "${DOCKER_CONFIG_DIR}/fail-prune" "/buildkite/release-${second}"
+prune_failed() { docker logs "${ID}-supervisor" 2>&1 | grep -q 'Could not start agent; retrying'; }
+wait_for "prune failure" prune_failed
+if agent_running; then
+	echo "A replacement agent started despite pruning failing" >&2
+	exit 1
+fi
+docker exec "${ID}-dockerd" rm "${DOCKER_CONFIG_DIR}/fail-prune"
+wait_for "agent after prune recovery" new_agent_running "${second}"
+second=$(agent_name)
+
+# A missing measurement command must fall back to pruning, even with the
+# normal high threshold. The cleanup image still has to survive that pruning.
+inner pull --quiet busybox:1.37 >/dev/null
+inner tag busybox:1.37 test-fallback:1
+docker stop --time 30 "${ID}-supervisor" >/dev/null
+docker rm "${ID}-supervisor" >/dev/null
+docker exec -i "${ID}-dockerd" sh -c 'cat >/ctx/Dockerfile && docker build --quiet --tag test-agent:no-du /ctx >/dev/null' <<'EOF'
+FROM test-agent:1
+RUN rm /bin/du
+EOF
+start_supervisor test-agent:no-du
+wait_for "agent after measurement failure" new_agent_running "${second}"
+docker logs "${ID}-supervisor" 2>&1 | grep -q 'Could not measure Docker data usage; pruning caches'
+if inner image inspect test-fallback:1 >/dev/null 2>&1; then
+	echo "Measurement failure did not prune cached images" >&2
+	exit 1
+fi
+inner image inspect test-agent:no-du >/dev/null
+
 # Stopping the supervisor must let the in-flight job drain, not kill it at the
 # stop timeout.
 docker stop --time 30 "${ID}-supervisor" >/dev/null
@@ -211,7 +276,25 @@ docker exec "${ID}-dockerd" test -e /buildkite/drain-finished || {
 	exit 1
 }
 
-echo "Supervisor ran fresh agents for each job, cleaned state between them, and drained on shutdown"
+echo "Supervisor cleaned job state, retained caches below the threshold, pruned above it and on measurement failure, and drained on shutdown"
+
+# Cleanup failure must not be mistaken for a measurement failure and allow a
+# replacement agent to start on the previous job's workspace.
+docker rm "${ID}-supervisor" >/dev/null
+docker exec -i "${ID}-dockerd" sh -c 'cat >/ctx/Dockerfile && docker build --quiet --tag test-agent:no-rm /ctx >/dev/null' <<'EOF'
+FROM test-agent:no-du
+RUN rm /bin/rm
+EOF
+start_supervisor test-agent:no-rm
+cleanup_failed() { docker logs "${ID}-supervisor" 2>&1 | grep -q 'Could not start agent; retrying'; }
+wait_for "workspace cleanup failure" cleanup_failed
+if agent_running; then
+	echo "A replacement agent started despite workspace cleanup failing" >&2
+	exit 1
+fi
+docker stop --time 30 "${ID}-supervisor" >/dev/null
+echo "Workspace cleanup failure blocked agent startup"
+
 if [[ -n "${TEST_AGENT_RUNTIME_IMAGE:-}" ]]; then
 	# A source without the agent must fail closed, not start some binary from
 	# the runtime or reuse a stale shared copy left by the previous agent.

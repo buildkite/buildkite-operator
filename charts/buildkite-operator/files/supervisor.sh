@@ -1,8 +1,8 @@
 #!/bin/sh
 # Runs each Buildkite job in a fresh agent container inside the Pod's Docker
 # daemon. The agent exits after one job; the supervisor clears the job's state
-# and starts a replacement. Only the configured agent images persist in the
-# Docker image store across jobs.
+# and starts a replacement. Image and build caches persist until Docker's data
+# reaches the configured pruning threshold. Configured agent images are kept.
 set -u
 
 agent_container="buildkite-agent"
@@ -56,9 +56,17 @@ random_suffix() {
 	LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 4
 }
 
-# Remove everything the previous job left in the daemon and workspace, keeping
-# only the configured agent images. A failure blocks the next agent so a job
-# never starts on unclean state.
+docker_usage_kib() {
+	usage=$(docker run --rm --pull never --network none --user 0 --read-only --entrypoint /bin/sh \
+		--volume /var/lib/docker:/docker-data:ro "$AGENT_IMAGE" \
+		-c 'du -skx /docker-data') || return 1
+	usage=${usage%%[[:space:]]*}
+	case "$usage" in ''|*[!0-9]*) return 1 ;; esac
+	printf '%s\n' "$usage"
+}
+
+# Remove job state every time, but keep image and build caches below the
+# threshold. A cleanup failure blocks the next agent.
 clean_job_state() {
 	containers=$(docker ps --all --quiet) || return 1
 	if [ -n "$containers" ]; then
@@ -69,11 +77,31 @@ clean_job_state() {
 	fi
 	docker network prune --force >/dev/null || return 1
 	docker volume prune --all --force >/dev/null || return 1
-	# The supervisor cannot write the workspace, so clear the daemon's copy as
-	# root in a throwaway container.
-	docker run --rm --pull never --network none --user 0 --entrypoint /bin/sh \
-		--volume /buildkite:/buildkite "$AGENT_IMAGE" \
-		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?*' || return 1
+	# Clear the workspace and measure Docker data in the same root container.
+	# A failed cleanup blocks startup; a failed measurement triggers pruning.
+	# Stay on the data filesystem so du skips the helper's mounted rootfs.
+	before=$(docker run --rm --pull never --network none --user 0 --entrypoint /bin/sh \
+		--volume /buildkite:/buildkite --volume /var/lib/docker:/docker-data:ro "$AGENT_IMAGE" \
+		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?* || exit 1
+			if usage=$(du -skx /docker-data); then
+				printf "%s\n" "${usage%%[[:space:]]*}"
+			else
+				echo unknown
+			fi') || return 1
+	log "Cleaned job state"
+	case "$before" in
+	''|*[!0-9]*)
+		before=unknown
+		log "Could not measure Docker data usage; pruning caches"
+		;;
+	*)
+		log "Docker data uses ${before}KiB; prune threshold is ${DOCKER_PRUNE_THRESHOLD_KIB}KiB"
+		if [ "$before" -lt "$DOCKER_PRUNE_THRESHOLD_KIB" ]; then
+			return 0
+		fi
+		;;
+	esac
+	started=$(date +%s)
 	# Stopped containers protect both configured images from pruning, including
 	# the binary source when the agent runs in a separate runtime image. If
 	# cleanup fails, the next attempt removes these with the other containers.
@@ -87,7 +115,14 @@ clean_job_state() {
 	docker builder prune --all --force >/dev/null || return 1
 	# shellcheck disable=SC2086
 	docker rm --volumes $keepers >/dev/null || return 1
-	log "Cleaned job state"
+	if after=$(docker_usage_kib); then
+		log "Pruned caches in $(($(date +%s) - started))s: ${before}KiB -> ${after}KiB"
+		if [ "$after" -ge "$DOCKER_PRUNE_THRESHOLD_KIB" ]; then
+			log "Warning: Docker data remains at or above the prune threshold; starting agent anyway"
+		fi
+	else
+		log "Pruned caches in $(($(date +%s) - started))s; could not measure remaining Docker data usage"
+	fi
 }
 
 start_agent() {

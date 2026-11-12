@@ -236,6 +236,56 @@ fi
 	exit 1
 }
 
+# Pruning uses the data volume's budget, not the backing filesystem capacity.
+assert_contains "${ephemeral_dind_runner}" $'- name: DOCKER_PRUNE_THRESHOLD_KIB\n              value: "29360128"'
+supervisor=$(awk '/^        - name: supervisor$/,/^        - name: deletion-cost$/' <<<"${ephemeral_dind_runner}")
+assert_contains "${supervisor}" 'drop: [ALL]'
+if [[ "${supervisor}" == *'add:'* || "${supervisor}" == *'mountPath: /var/lib/docker'* ]]; then
+	echo "Supervisor must not add capabilities or mount Docker data" >&2
+	exit 1
+fi
+for quantity_expected in '1.5Gi:786432' '1500M:732422' '1500000000:732422' '15e8:732422'; do
+	quantity=${quantity_expected%:*}
+	expected=${quantity_expected#*:}
+	custom_prune=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=dind \
+		--set runnerPools.linux.ephemeralAgent=true --set defaults.docker.pruneThresholdPercent=90 \
+		--set runnerPools.linux.docker.pruneThresholdPercent=50 \
+		--set-string runnerPools.linux.docker.storage.data="${quantity}")
+	assert_contains "${custom_prune}" $'- name: DOCKER_PRUNE_THRESHOLD_KIB\n              value: '"\"${expected}\""
+done
+for invalid_threshold in 0 101 62.5; do
+	assert_fails 'pruneThresholdPercent' --set-string agentToken.value="${TOKEN}" \
+		--set runnerPools.linux.docker.pruneThresholdPercent="${invalid_threshold}"
+done
+
+# The merged volume budgets must fit the Docker limit, not its request. Include
+# Docker config's 16Mi but exclude the memory-backed socket's 16Mi.
+for runtime in dind kata sysbox; do
+	for ephemeral_agent in false true; do
+		storage_args=(--set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.queue=linux \
+			--set runnerPools.linux.maxReplicas=4 --set-string runnerPools.linux.runtime="${runtime}" \
+			--set runnerPools.linux.ephemeralAgent="${ephemeral_agent}" \
+			--set-string defaults.docker.storage.data=1Gi --set-string runnerPools.linux.docker.storage.workspace=512Mi \
+			--set-string runnerPools.linux.docker.resources.requests.ephemeral-storage=1Mi)
+		storage_boundary=$(render "${storage_args[@]}" --set-string runnerPools.linux.docker.resources.limits.ephemeral-storage=1552Mi)
+		assert_contains "${storage_boundary}" 'sizeLimit: 1Gi'
+		assert_fails 'runnerPools.linux: docker.storage.data (1Gi) + docker.storage.workspace (512Mi) + docker-config (16Mi) exceeds' \
+			"${storage_args[@]}" --set-string runnerPools.linux.docker.resources.limits.ephemeral-storage=1627389951
+	done
+done
+for cleared_limit in docker.resources.limits docker.resources.limits.ephemeral-storage; do
+	unlimited_storage=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=dind \
+		--set runnerPools.linux.ephemeralAgent=true --set-string runnerPools.linux.docker.storage.data=100Gi \
+		--set "runnerPools.linux.${cleared_limit}=null")
+	assert_contains "${unlimited_storage}" 'sizeLimit: 100Gi'
+done
+assert_fails 'exceeds docker.resources.limits.ephemeral-storage (50Gi)' \
+	--set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.queue=linux \
+	--set runnerPools.linux.maxReplicas=4 --set-string runnerPools.linux.runtime=dind \
+	--set-string runnerPools.linux.docker.storage.data=40Gi
+# Docker settings are unused by the standard runtime.
+render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.docker.storage.data=100Gi >/dev/null
+
 ephemeral=$(render --set-string agentToken.value="${TOKEN}" --set-string runnerPools.linux.runtime=sysbox --set runnerPools.linux.ephemeralAgent=true)
 assert_contains "${ephemeral}" "- name: supervisor"
 assert_contains "${ephemeral}" 'command: ["/bin/sh", "/opt/ephemeral-agent/supervisor.sh"]'

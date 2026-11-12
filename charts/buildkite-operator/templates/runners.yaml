@@ -21,6 +21,13 @@ kata or sysbox, and in a restart loop inside the agent container with
 standard. */}}
 {{- $supervised := and $r.ephemeralAgent $docker }}
 {{- $agentLoop := and $r.ephemeralAgent (not $docker) }}
+{{- /* Convert the data volume's Kubernetes quantity to a threshold in KiB,
+rounding up to match du -k. A disk-backed emptyDir's limit is not visible to df. */}}
+{{- $pruneThresholdKiB := "" }}
+{{- if $supervised }}
+{{- $dataBytes := include "buildkite-operator.storageBytes" (dict "value" $r.docker.storage.data "field" (printf "runnerPools.%s.docker.storage.data" $entry.name)) | float64 }}
+{{- $pruneThresholdKiB = divf (mulf $dataBytes $r.docker.pruneThresholdPercent) 102400 | ceil | printf "%.0f" }}
+{{- end }}
 {{- /* Docker runners run steps that set image: in that image. */}}
 {{- $stepImages := and $docker $r.docker.stepImages }}
 {{- $stepImageScript := "/opt/step-image/step-image.sh" }}
@@ -227,6 +234,8 @@ spec:
               value: unix:///var/run/docker.sock
             - name: DOCKER_CONFIG
               value: {{ $dockerConfig }}
+            - name: DOCKER_PRUNE_THRESHOLD_KIB
+              value: {{ $pruneThresholdKiB | quote }}
             {{- with ($r.docker.resources.limits | default dict).cpu }}
             - name: RUNNER_CPU_LIMIT_MILLICORES
               valueFrom:

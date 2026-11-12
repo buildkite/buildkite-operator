@@ -62,9 +62,35 @@ values would silently render no runner pools and delete every runner.
 {{- if and $settings.docker.agentRuntimeImage (not (and $settings.ephemeralAgent (has $settings.runtime (list "dind" "kata" "sysbox")))) }}
 {{- fail (printf "runnerPools.%s.docker.agentRuntimeImage requires ephemeralAgent and a dind, kata or sysbox runtime" $name) }}
 {{- end }}
+{{- if has $settings.runtime (list "dind" "kata" "sysbox") }}
+{{- $limits := $settings.docker.resources.limits | default dict }}
+{{- $limit := get $limits "ephemeral-storage" }}
+{{- if and (hasKey $limits "ephemeral-storage") (not (kindIs "invalid" $limit)) }}
+{{- $data := include "buildkite-operator.storageBytes" (dict "value" $settings.docker.storage.data "field" (printf "runnerPools.%s.docker.storage.data" $name)) | float64 }}
+{{- $workspace := include "buildkite-operator.storageBytes" (dict "value" $settings.docker.storage.workspace "field" (printf "runnerPools.%s.docker.storage.workspace" $name)) | float64 }}
+{{- $budget := include "buildkite-operator.storageBytes" (dict "value" $limit "field" (printf "runnerPools.%s.docker.resources.limits.ephemeral-storage" $name)) | float64 }}
+{{- /* Only disk-backed volumes count. Leave the memory-backed socket out. */}}
+{{- if gt (addf $data $workspace 16777216) $budget }}
+{{- fail (printf "runnerPools.%s: docker.storage.data (%s) + docker.storage.workspace (%s) + docker-config (16Mi) exceeds docker.resources.limits.ephemeral-storage (%v)" $name $settings.docker.storage.data $settings.docker.storage.workspace $limit) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- $entries = append $entries (dict "name" $name "resourceName" $resourceName "settings" $settings) }}
 {{- end }}
 {{- toJson $entries }}
+{{- end }}
+
+{{/* Convert a positive Kubernetes storage quantity to bytes, rounding up. */}}
+{{- define "buildkite-operator.storageBytes" -}}
+{{- $quantity := toString .value }}
+{{- $unit := regexFind "(Ki|Mi|Gi|Ti|Pi|Ei|[numkMGTPE])$" $quantity }}
+{{- $number := trimSuffix $unit $quantity }}
+{{- $units := dict "" 1 "n" 1e-9 "u" 1e-6 "m" 1e-3 "k" 1e3 "M" 1e6 "G" 1e9 "T" 1e12 "P" 1e15 "E" 1e18
+    "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "Pi" 1125899906842624 "Ei" 1152921504606846976 }}
+{{- if or (not (regexMatch "^[+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$" $number)) (le (float64 $number) 0.0) }}
+{{- fail (printf "%s must be a positive Kubernetes storage quantity" .field) }}
+{{- end }}
+{{- mulf (float64 $number) (get $units $unit) | ceil | printf "%.0f" }}
 {{- end }}
 
 {{- define "buildkite-operator.agentTokenSecretName" -}}

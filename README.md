@@ -61,7 +61,7 @@ export BUILDKITE_AGENT_TOKEN='<agent-token>'
 
 helm upgrade --install buildkite-operator \
   oci://registry-1.docker.io/buildkite/buildkite-operator-chart \
-  --version 0.25.0 \
+  --version 0.26.0 \
   --namespace buildkite-runner-stack \
   --create-namespace \
   --set-string runnerPools.linux.queue=<queue> \
@@ -233,9 +233,9 @@ runnerPools:
 
 - Each Pod runs a fresh agent container for every job, in a Docker daemon
   inside a VM.
-- Between jobs: containers, networks, volumes and the workspace are removed,
-  along with unused images and build cache. The configured agent images stay
-  cached.
+- Between jobs: containers, networks, volumes and the workspace are removed.
+  Unused images and build cache are pruned when Docker data reaches 80% of its
+  storage budget. The configured agent images stay cached.
 - Each Pod runs in its own VM, which separates jobs from the node more strongly
   than the other runtimes.
 
@@ -316,13 +316,14 @@ outside <code>/buildkite</code>, and any processes a job left running.</td>
 <th>Reset</th>
 <td>The agent container, recreated from the image, every Docker container,
 network and volume, and the <code>/buildkite</code> workspace (checkouts,
-plugins and sockets). Unused Docker images and build cache are pruned.</td>
+plugins and sockets).</td>
 </tr>
 <tr>
 <th>Persist</th>
-<td>The Pod, its node and the Docker daemon, with the configured agent images
-and the Docker client configuration (<code>DOCKER_CONFIG</code>, including
-logins). Job and service images must be pulled again for each job.</td>
+<td>The Pod, its node, the Docker daemon, image and build caches, and the Docker
+client configuration (<code>DOCKER_CONFIG</code>, including logins). Caches are
+pruned at <code>docker.pruneThresholdPercent</code> of
+<code>docker.storage.data</code>, retaining the configured agent images.</td>
 </tr>
 </table>
 
@@ -365,8 +366,10 @@ For how the step container runs the job, see
 
 Images are pulled only when the Pod's daemon doesn't have them, so a cached
 tag on a persistent runner isn't updated until the Pod is replaced. Ephemeral
-runners prune images between jobs, except for the configured agent images.
-Other step images are pulled again, so mutable tags can change between jobs.
+runners retain cached tags until threshold-based pruning removes them or the
+Pod is replaced. Configured agent images are protected from pruning. Publishing
+a replacement for a mutable tag does not update a cached image.
+
 Private step images must be pullable with the existing Docker client
 configuration, because a login in a job hook happens too late.
 
@@ -706,12 +709,18 @@ resources while their agents drain jobs, beyond the `maxSurge` budget.
 | --- | --- |
 | `docker.image` | (default `docker:29.7.2-dind`) Docker daemon image. |
 | `docker.resources` | (default 2 CPUs, 4Gi memory and 15Gi disk requested, limited to 4 CPUs, 8Gi and 50Gi) Kubernetes `requests` and `limits` for the Docker daemon. With `ephemeralAgent`, they also bound the agent containers. |
-| `docker.storage.data` | (default `40Gi`) Size limit of the `emptyDir` for Docker's data in `/var/lib/docker`. |
+| `docker.storage.data` | (default `35Gi`) Size limit of the `emptyDir` for Docker's data in `/var/lib/docker`. |
 | `docker.storage.workspace` | (default `10Gi`) Size limit of the `emptyDir` for the `/buildkite` workspace. |
+| `docker.pruneThresholdPercent` | (default `80`) With `ephemeralAgent`, prune unused images and build cache between jobs when Docker data reaches this percentage of `docker.storage.data`. Integer from `1` to `100`. See [Cache pruning](docs/appendices.md#cache-pruning). |
 | `docker.ociAccelerator` | (default `true`) Pull through [OCI Accelerator](#image-pull-caching) when it is enabled. |
 | `docker.stepImages` | (default `true`) Run steps that set `image:` in that image. See [Step images](#step-images). |
 | `docker.defaultStepImage` | (default none) Image for steps without `image:`. See [Step images](#step-images). |
 | `docker.agentRuntimeImage` | (default none) Separate runtime image for ephemeral agents. See [Agent runtime image](#agent-runtime-image). |
+
+The data and workspace volume sizes, plus 16Mi for Docker client configuration,
+must fit within `docker.resources.limits.ephemeral-storage` when set. Leave
+headroom for logs and writable layers. This is a Docker-budget check, not a
+guarantee of available node disk. Requests do not constrain volume sizes.
 
 ## Contributing
 
