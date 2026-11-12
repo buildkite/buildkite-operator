@@ -32,8 +32,8 @@ defaults:
   #     and leftover processes persist.
   #   - dind, kata, sysbox: each agent is a fresh container, and the job's
   #     containers, networks, volumes and /buildkite workspace are removed.
-  #     The daemon's image and build caches and DOCKER_CONFIG (including
-  #     registry logins) persist.
+  #     Unused images and build cache are pruned. The configured agent images
+  #     and DOCKER_CONFIG (including registry logins) persist.
   # Ephemeral agents aren't a security boundary between jobs. See the README's
   # "Ephemeral agents".
   ephemeralAgent: false
@@ -157,7 +157,8 @@ defaults:
 #
 #   # Ephemeral kata agents: each job runs in a fresh agent container inside a
 #   # VM-isolated Pod. Afterwards the job's containers, networks, volumes and
-#   # workspace are removed. Docker's image and build caches are kept.
+#   # workspace are removed. Unused images and build cache are pruned, keeping
+#   # the configured agent images.
 #   untrusted:
 #     queue: untrusted
 #     runtime: kata

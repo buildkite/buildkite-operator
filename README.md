@@ -364,7 +364,9 @@ For how the step container runs the job, see
 [Step images](docs/appendices.md#step-images) in the appendices.
 
 Images are pulled only when the Pod's daemon doesn't have them, so a cached
-tag isn't updated until the Pod is replaced, even across ephemeral agents.
+tag on a persistent runner isn't updated until the Pod is replaced. Ephemeral
+runners prune images between jobs, except for the configured agent images.
+Other step images are pulled again, so mutable tags can change between jobs.
 Private step images must be pullable with the existing Docker client
 configuration, because a login in a job hook happens too late.
 
