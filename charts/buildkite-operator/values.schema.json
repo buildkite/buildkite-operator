@@ -12,7 +12,7 @@
             "rollingUpdate": { "required": ["maxUnavailable", "maxSurge"] },
             "image": { "required": ["repository", "tag", "pullPolicy"] },
             "docker": {
-              "required": ["image", "resources", "storage", "ociAccelerator", "stepImages", "defaultStepImage", "agentRuntimeImage"],
+              "required": ["image", "resources", "storage", "pruneThresholdPercent", "ociAccelerator", "stepImages", "defaultStepImage", "agentRuntimeImage"],
               "properties": {
                 "image": { "required": ["repository", "tag", "pullPolicy"] },
                 "storage": { "required": ["data", "workspace"] }
@@ -261,6 +261,7 @@
                 "workspace": { "type": "string", "minLength": 1 }
               }
             },
+            "pruneThresholdPercent": { "type": "integer", "minimum": 1, "maximum": 100 },
             "ociAccelerator": { "type": "boolean" },
             "stepImages": { "type": "boolean" },
             "defaultStepImage": { "type": "string" },

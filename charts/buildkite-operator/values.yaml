@@ -98,8 +98,14 @@ defaults:
         memory: 8Gi
         ephemeral-storage: 50Gi
     storage:
-      data: 40Gi
+      # Data + workspace + 16Mi of Docker config must fit the Docker storage
+      # limit when set. Leave additional headroom for logs and writable layers.
+      data: 35Gi
       workspace: 10Gi
+
+    # With ephemeralAgent, prune unused images and build cache between jobs
+    # when Docker data reaches this percentage of storage.data.
+    pruneThresholdPercent: 80
 
     # Pull through the accelerator when ociAccelerator.enabled is true. Set
     # false to pull directly.

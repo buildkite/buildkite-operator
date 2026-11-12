@@ -110,9 +110,8 @@ How each runtime replaces the agent after every job. See
   The agent image needs `/bin/sh`.
 - `dind`, `kata`, `sysbox`: a supervisor starts each agent as a fresh container
   in the Pod's Docker daemon. After each job it removes the job's containers,
-  networks and volumes, and clears the `/buildkite` workspace. It prunes unused
-  images and build cache, retaining only the configured `image` and optional
-  `docker.agentRuntimeImage`. Job and service images are pulled again as needed.
+  networks and volumes, and clears the `/buildkite` workspace. Image and build
+  caches persist until the [cache pruning](#cache-pruning) threshold is reached.
 
 Ephemeral agents also behave as follows:
 
@@ -122,6 +121,38 @@ Ephemeral agents also behave as follows:
   starts.
 - While one agent replaces the next, the deletion-cost sidecar marks the Pod
   busy until the new agent reports idle, so scale-in prefers other Pods.
+
+#### Cache pruning
+
+With ephemeral `dind`, `kata` and `sysbox` agents, the supervisor measures
+allocated disk usage in `/var/lib/docker` after ordinary cleanup and before
+starting the next agent. At `docker.pruneThresholdPercent` of
+`docker.storage.data` (default 80% of 35Gi, or 28Gi), it prunes all unused Docker
+images and build cache. It retains the configured `image` and optional
+`docker.agentRuntimeImage`.
+
+The workspace cleanup container also measures Docker data through a read-only
+mount using `du`, not the backing filesystem's capacity reported by `df`. It
+uses its existing root permissions to traverse private image directories. The
+supervisor adds no capabilities and does not mount Docker data.
+
+The agent `image` must provide `du`. Custom daemon images must keep their image
+and build data beneath `/var/lib/docker` for this measurement to cover it. After
+pruning, a second short-lived container measures the remaining usage.
+
+- If measurement fails, the supervisor logs the failure and prunes caches.
+- If pruning fails, the supervisor delays agent startup and retries cleanup.
+  Each retry measures usage again and skips pruning if usage is below the
+  threshold, even if a previous prune only partially succeeded.
+- If pruning succeeds but usage remains above the threshold, the supervisor
+  warns and starts the next agent without repeatedly pruning.
+- Logs report usage before and after pruning, and pruning duration.
+
+The threshold triggers cleanup, not a storage reservation or an admission
+limit. Leave enough headroom for a job's peak storage use. A single job can
+still exhaust storage or trigger eviction because pruning only runs between
+jobs. Cached images, including locally built tags, remain visible to later jobs
+until pruning or Pod removal.
 
 ### Step images
 
