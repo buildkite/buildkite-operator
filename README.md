@@ -61,7 +61,7 @@ export BUILDKITE_AGENT_TOKEN='<agent-token>'
 
 helm upgrade --install buildkite-operator \
   oci://registry-1.docker.io/buildkite/buildkite-operator-chart \
-  --version 0.24.0 \
+  --version 0.25.0 \
   --namespace buildkite-runner-stack \
   --create-namespace \
   --set-string runnerPools.linux.queue=<queue> \
@@ -234,7 +234,8 @@ runnerPools:
 - Each Pod runs a fresh agent container for every job, in a Docker daemon
   inside a VM.
 - Between jobs: containers, networks, volumes and the workspace are removed,
-  but Docker's image and build caches carry over.
+  along with unused images and build cache. The configured agent images stay
+  cached.
 - Each Pod runs in its own VM, which separates jobs from the node more strongly
   than the other runtimes.
 
@@ -315,13 +316,13 @@ outside <code>/buildkite</code>, and any processes a job left running.</td>
 <th>Reset</th>
 <td>The agent container, recreated from the image, every Docker container,
 network and volume, and the <code>/buildkite</code> workspace (checkouts,
-plugins and sockets).</td>
+plugins and sockets). Unused Docker images and build cache are pruned.</td>
 </tr>
 <tr>
 <th>Persist</th>
-<td>The Pod, its node and the Docker daemon, with Docker's image and build
-caches and the Docker client configuration (<code>DOCKER_CONFIG</code>,
-including logins).</td>
+<td>The Pod, its node and the Docker daemon, with the configured agent images
+and the Docker client configuration (<code>DOCKER_CONFIG</code>, including
+logins). Job and service images must be pulled again for each job.</td>
 </tr>
 </table>
 
@@ -329,7 +330,7 @@ including logins).</td>
 
 Ephemeral agents keep jobs' state apart, but they aren't a security boundary.
 Anything that persists, such as files outside the workspace in a `standard`
-container or the Pod's Docker image cache, stays available to later jobs.
+container or the Docker client configuration, stays available to later jobs.
 
 ## Job images
 
@@ -363,7 +364,9 @@ For how the step container runs the job, see
 [Step images](docs/appendices.md#step-images) in the appendices.
 
 Images are pulled only when the Pod's daemon doesn't have them, so a cached
-tag isn't updated until the Pod is replaced, even across ephemeral agents.
+tag on a persistent runner isn't updated until the Pod is replaced. Ephemeral
+runners prune images between jobs, except for the configured agent images.
+Other step images are pulled again, so mutable tags can change between jobs.
 Private step images must be pullable with the existing Docker client
 configuration, because a login in a job hook happens too late.
 
