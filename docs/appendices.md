@@ -359,9 +359,24 @@ With `ociAccelerator.enabled`, the chart installs:
   on port 5128 (`networkPolicy.enabled`). Enforcement requires a network plugin
   that supports NetworkPolicy.
 
-Accelerator replicas prefer spreading across nodes, without needing a separate
-node for each replica. See
+Accelerator replicas prefer spreading across zones and nodes, without needing
+a separate zone or node for each replica. Nodes without a
+`topology.kubernetes.io/zone` label still spread by node. See
 [Image pull caching](../README.md#image-pull-caching).
+
+The accelerator Service sets `trafficDistribution` to `PreferSameZone`, or
+`PreferClose` before Kubernetes 1.34, so each runner's connections go to a
+ready replica in its zone:
+
+- A zone with no ready replica uses replicas in any zone.
+- Each zone's replicas take all of that zone's pulls, so a zone with many
+  runners and one replica can saturate it. Add replicas, or compare
+  per-replica request rates in [metrics](#oci-accelerator-metrics).
+- kube-proxy honors the setting from Kubernetes 1.31, and earlier versions
+  spread connections across all replicas. If your network plugin replaces
+  kube-proxy, check that it supports `trafficDistribution`.
+- With [peering](#peering), a layer crosses zones at most once per replica,
+  when that replica fetches it from a peer, instead of on every pull.
 
 #### OCI Accelerator metrics
 

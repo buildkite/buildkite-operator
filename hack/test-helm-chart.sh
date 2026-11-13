@@ -493,6 +493,18 @@ assert_contains "${accel_proxy}" $'- name: proxy\n              containerPort: 5
 for service in test-buildkite-operator-oci-accelerator test-buildkite-operator-oci-accelerator-peers; do
 	assert_contains "$(document "${accel}" Service "${service}")" $'- name: proxy\n      port: 5128\n      targetPort: proxy'
 done
+# Runners pull from a replica in their own zone, and replicas spread across zones.
+assert_contains "$(document "${accel}" Service test-buildkite-operator-oci-accelerator)" 'trafficDistribution: PreferSameZone'
+# Kubernetes before 1.34 rejects PreferSameZone.
+assert_contains "$(document "$(render "${accel_args[@]}" --set-string runnerPools.linux.runtime=sysbox --kube-version 1.33.5)" \
+	Service test-buildkite-operator-oci-accelerator)" 'trafficDistribution: PreferClose'
+assert_contains "${accel_proxy}" $'- maxSkew: 1\n          topologyKey: kubernetes.io/hostname\n          whenUnsatisfiable: ScheduleAnyway'
+assert_contains "${accel_proxy}" $'preferredDuringSchedulingIgnoredDuringExecution:\n            - weight: 100\n              podAffinityTerm:\n                topologyKey: topology.kubernetes.io/zone'
+# A zone spread constraint would disable hostname spreading on nodes without zone labels.
+if [[ "${accel_proxy}" == *"topologyKey: topology.kubernetes.io/zone"$'\n'"          whenUnsatisfiable"* ]]; then
+	echo "The accelerator spread across zones with a topology spread constraint" >&2
+	exit 1
+fi
 assert_contains "${accel_proxy}" 'image: "buildkite/oci-accelerator:v0.5.0@sha256:c671b75f349cf625fdd7555c632f17782d6b98ed7c21bc5fa8bdcf6426ab0578"'
 assert_contains "${accel_proxy}" 'value: "registry-1.docker.io,ghcr.io,public.ecr.aws"'
 assert_contains "${accel_proxy}" $'OCI_ACCELERATOR_CACHE_MAX_FILLS\n              value: "32"'

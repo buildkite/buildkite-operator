@@ -600,6 +600,10 @@ StatefulSet. Cache size and resource requests apply **per replica**:
   independently.
 - The Service spreads connections, not image layers, so a long-lived
   connection keeps using the same replica.
+- Replicas prefer spreading across zones, and runners prefer a ready replica in
+  their own zone, so pulled images avoid cross-zone transfer charges. Run at
+  least one replica per zone your runners use. See
+  [OCI Accelerator resources and peering](docs/appendices.md#oci-accelerator-resources-and-peering).
 
 ### Peering
 
