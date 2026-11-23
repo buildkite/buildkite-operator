@@ -8,6 +8,7 @@ set -u
 
 base_name="${BUILDKITE_AGENT_NAME:?}"
 build_path="${BUILDKITE_BUILD_PATH:?}"
+plugins_path="${BUILDKITE_PLUGINS_PATH:?}"
 stopping=0
 agent_pid=""
 
@@ -37,18 +38,25 @@ random_suffix() {
 }
 
 clean_workspace() {
-	rm -rf "${build_path:?}"/* "$build_path"/.[!.]* "$build_path"/..?*
+	rm -rf "${build_path:?}"/* "$build_path"/.[!.]* "$build_path"/..?* || return 1
+	# The agent looks for plugins under its own name. Only one agent uses this
+	# cache at a time, so move it to the replacement's name.
+	for cache in "$plugins_path/$base_name"-????; do
+		[ -d "$cache" ] || continue
+		[ "$cache" = "$plugins_path/$1" ] || mv -T "$cache" "$plugins_path/$1" || return 1
+		break
+	done
 }
 
 while [ "$stopping" -eq 0 ]; do
+	agent_name="${base_name}-$(random_suffix)"
 	# A failure blocks the next agent so a job never starts on unclean state.
-	if ! clean_workspace; then
+	if ! clean_workspace "$agent_name"; then
 		log "Could not clean workspace; retrying"
 		pause 5
 		continue
 	fi
 
-	agent_name="${base_name}-$(random_suffix)"
 	log "Starting agent $agent_name"
 	BUILDKITE_AGENT_NAME="$agent_name" /usr/local/bin/buildkite-agent start --disconnect-after-job &
 	agent_pid=$!

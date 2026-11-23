@@ -116,8 +116,9 @@ How each runtime replaces the agent after every job. See
 
 Ephemeral agents also behave as follows:
 
-- Replacement agents reuse `/buildkite/plugins` on the same Pod. New Pods start
-  without that cache.
+- Plugin checkouts are stored under the agent name in `/buildkite/plugins`.
+  After an agent exits, the runner renames its cache directory so the next
+  agent on the same Pod can find it. New Pods start without that cache.
 - If cleanup fails, no new agent starts until it succeeds.
 - On SIGTERM, from scale-in, upgrades or node scale-down, the current agent
   finishes its job within `terminationGracePeriodSeconds`, and no further agent

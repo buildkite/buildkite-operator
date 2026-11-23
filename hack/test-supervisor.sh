@@ -175,8 +175,8 @@ RUN echo job-cache >/job-cache && mkdir /private && chown 12345 /private && chmo
 EOF
 inner volume create leftover >/dev/null
 inner network create leftover >/dev/null
-inner exec buildkite-agent sh -c 'mkdir -p "$BUILDKITE_PLUGINS_PATH" &&
-	touch "$BUILDKITE_PLUGINS_PATH/cached-plugin" /buildkite/builds/leftover-file /buildkite/.leftover'
+inner exec buildkite-agent sh -c 'mkdir -p "$BUILDKITE_PLUGINS_PATH/$BUILDKITE_AGENT_NAME/cached-plugin/.git" &&
+	touch /buildkite/builds/leftover-file /buildkite/.leftover'
 
 docker exec "${ID}-dockerd" touch "/buildkite/release-${first}"
 wait_for "replacement agent" new_agent_running "${first}"
@@ -188,8 +188,9 @@ if inner inspect leftover >/dev/null 2>&1 ||
 	echo "Previous job's container, volume, or network survived" >&2
 	exit 1
 fi
-inner exec buildkite-agent sh -c 'test -f "$BUILDKITE_PLUGINS_PATH/cached-plugin"' || {
-	echo "Plugin cache did not survive agent replacement" >&2
+inner exec buildkite-agent sh -c 'test -d "$BUILDKITE_PLUGINS_PATH/$BUILDKITE_AGENT_NAME/cached-plugin/.git" &&
+	test ! -e "$BUILDKITE_PLUGINS_PATH/$1"' cache "${first}" || {
+	echo "Plugin cache was not moved to the replacement agent" >&2
 	exit 1
 }
 workspace=$(docker exec "${ID}-dockerd" ls -A /buildkite/builds)

@@ -172,6 +172,7 @@ data:
     
     base_name="${BUILDKITE_AGENT_NAME:?}"
     build_path="${BUILDKITE_BUILD_PATH:?}"
+    plugins_path="${BUILDKITE_PLUGINS_PATH:?}"
     stopping=0
     agent_pid=""
     
@@ -201,18 +202,25 @@ data:
     }
     
     clean_workspace() {
-    	rm -rf "${build_path:?}"/* "$build_path"/.[!.]* "$build_path"/..?*
+    	rm -rf "${build_path:?}"/* "$build_path"/.[!.]* "$build_path"/..?* || return 1
+    	# The agent looks for plugins under its own name. Only one agent uses this
+    	# cache at a time, so move it to the replacement's name.
+    	for cache in "$plugins_path/$base_name"-????; do
+    		[ -d "$cache" ] || continue
+    		[ "$cache" = "$plugins_path/$1" ] || mv -T "$cache" "$plugins_path/$1" || return 1
+    		break
+    	done
     }
     
     while [ "$stopping" -eq 0 ]; do
+    	agent_name="${base_name}-$(random_suffix)"
     	# A failure blocks the next agent so a job never starts on unclean state.
-    	if ! clean_workspace; then
+    	if ! clean_workspace "$agent_name"; then
     		log "Could not clean workspace; retrying"
     		pause 5
     		continue
     	fi
     
-    	agent_name="${base_name}-$(random_suffix)"
     	log "Starting agent $agent_name"
     	BUILDKITE_AGENT_NAME="$agent_name" /usr/local/bin/buildkite-agent start --disconnect-after-job &
     	agent_pid=$!
@@ -334,11 +342,17 @@ data:
     				[ "$path" = /buildkite/plugins ] && continue
     				rm -rf "$path" || exit 1
     			done
+    			# The previous agent is gone. Move its cache to the new lookup path.
+    			for cache in "/buildkite/plugins/$1"-????; do
+    				[ -d "$cache" ] || continue
+    				[ "$cache" = "/buildkite/plugins/$2" ] || mv -T "$cache" "/buildkite/plugins/$2" || exit 1
+    				break
+    			done
     			if usage=$(du -skx /docker-data); then
     				printf "%s\n" "${usage%%[[:space:]]*}"
     			else
     				echo unknown
-    			fi') || return 1
+    			fi' cleanup "$POD_NAME" "$1") || return 1
     	log "Cleaned job state"
     	case "$before" in
     	''|*[!0-9]*)
@@ -385,7 +399,8 @@ data:
     		fi
     	done
     
-    	clean_job_state || return 1
+    	agent_name="${POD_NAME}-$(random_suffix)"
+    	clean_job_state "$agent_name" || return 1
     
     	# With step images, each agent runs jobs through the step-image script,
     	# which the Docker daemon's container has at the same path.
@@ -419,7 +434,6 @@ data:
     		set -- "$@" --mount "type=image,source=$AGENT_IMAGE,target=/opt/buildkite-agent-source,readonly"
     	fi
     
-    	agent_name="${POD_NAME}-$(random_suffix)"
     	log "Starting agent $agent_name"
     	# DOCKER_CONFIG is at the same path in the Docker daemon's container, so
     	# every agent shares the Pod's registry credentials and logins. The daemon
@@ -1271,7 +1285,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
-        checksum/ephemeral-agent: 3836e007f821bc13a5ae909efcf563fca2f338aa5b426d497c4c9f8fcaef3023
+        checksum/ephemeral-agent: 5d6e591863974eaf290f041847dd3effe06beeb149ce23c323c4f34b0eedc1f1
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost
       automountServiceAccountToken: false
@@ -1429,7 +1443,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
-        checksum/supervisor: ef77edd6fdea2474303389e8bc83291e330b52b5032cb0ed6b6911b83a0b34be
+        checksum/supervisor: e463e26b9f2426fc0b3fa54842fdd54a5af98bac299d107a84115d2ac1adfd87
         checksum/step-image: 9923493a9d0ee25acaa4580f88cc1c4c81fc2f1d99c1f8edd93c4099c48c68a1
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost

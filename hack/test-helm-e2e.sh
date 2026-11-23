@@ -296,8 +296,8 @@ done
 in_agent() { "${KUBECTL[@]}" exec "${ephemeral_pod}" -n "${NAMESPACE}" -c agent -- "$@"; }
 first=$(in_agent ls -A /buildkite/builds)
 [[ "${first}" == "${ephemeral_pod#pod/}"-???? ]] || { echo "Unexpected first agent workspace: ${first}" >&2; exit 1; }
-in_agent sh -c 'mkdir -p "$BUILDKITE_PLUGINS_PATH" &&
-	touch "$BUILDKITE_PLUGINS_PATH/cached-plugin" /buildkite/builds/.leftover /tmp/outside-workspace'
+in_agent sh -c 'mkdir -p "$BUILDKITE_PLUGINS_PATH/$1/cached-plugin/.git" &&
+	touch /buildkite/builds/.leftover /tmp/outside-workspace' cache "${first}"
 in_agent touch "/tmp/release-${first}"
 second=""
 for _ in $(seq 1 30); do
@@ -310,7 +310,11 @@ done
 	"${KUBECTL[@]}" logs "${ephemeral_pod}" -n "${NAMESPACE}" -c agent >&2 || true
 	exit 1
 }
-in_agent sh -c 'test -f "$BUILDKITE_PLUGINS_PATH/cached-plugin"' || { echo "Plugin cache did not survive agent replacement" >&2; exit 1; }
+in_agent sh -c 'test -d "$BUILDKITE_PLUGINS_PATH/$2/cached-plugin/.git" &&
+	test ! -e "$BUILDKITE_PLUGINS_PATH/$1"' cache "${first}" "${second}" || {
+	echo "Plugin cache was not moved to the replacement agent" >&2
+	exit 1
+}
 in_agent test -e /tmp/outside-workspace # Only the build directory is reset.
 restarts=$("${KUBECTL[@]}" get "${ephemeral_pod}" -n "${NAMESPACE}" -o jsonpath='{.status.containerStatuses[?(@.name=="agent")].restartCount}')
 [[ "${restarts}" == 0 ]] || { echo "Agent container restarted ${restarts} time(s) between jobs" >&2; exit 1; }
