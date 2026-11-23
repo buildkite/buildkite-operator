@@ -77,12 +77,16 @@ clean_job_state() {
 	fi
 	docker network prune --force >/dev/null || return 1
 	docker volume prune --all --force >/dev/null || return 1
-	# Clear the workspace and measure Docker data in the same root container.
+	# Clear the workspace except cached plugins, and measure Docker data in the
+	# same root container.
 	# A failed cleanup blocks startup; a failed measurement triggers pruning.
 	# Stay on the data filesystem so du skips the helper's mounted rootfs.
 	before=$(docker run --rm --pull never --network none --user 0 --entrypoint /bin/sh \
 		--volume /buildkite:/buildkite --volume /var/lib/docker:/docker-data:ro "$AGENT_IMAGE" \
-		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?* || exit 1
+		-c 'for path in /buildkite/* /buildkite/.[!.]* /buildkite/..?*; do
+				[ "$path" = /buildkite/plugins ] && continue
+				rm -rf "$path" || exit 1
+			done
 			if usage=$(du -skx /docker-data); then
 				printf "%s\n" "${usage%%[[:space:]]*}"
 			else

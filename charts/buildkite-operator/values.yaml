@@ -26,14 +26,15 @@ defaults:
   #   kata or sysbox, Docker containers, networks and volumes carry over.
   #   Reused checkouts make builds start faster.
   # - true: after each job, a new agent named <pod>-<suffix> registers with a
-  #   clean workspace. What else resets depends on runtime:
-  #   - standard: only the agent process restarts, and the build and plugin
-  #     directories are emptied. /tmp, the home directory, installed packages
-  #     and leftover processes persist.
+  #   clean checkout. What else resets depends on runtime:
+  #   - standard: only the agent process restarts, and the build directory is
+  #     emptied. /tmp, the home directory, installed packages and leftover
+  #     processes persist.
   #   - dind, kata, sysbox: each agent is a fresh container, and the job's
-  #     containers, networks, volumes and /buildkite workspace are removed.
+  #     containers, networks, volumes and workspace outside plugins are removed.
   #     Unused images and build cache are pruned. The configured agent images
   #     and DOCKER_CONFIG (including registry logins) persist.
+  # Cached plugins carry over between jobs on the same Pod in every runtime.
   # Ephemeral agents aren't a security boundary between jobs. See the README's
   # "Ephemeral agents".
   ephemeralAgent: false
@@ -136,9 +137,9 @@ defaults:
 # Examples (the README's "Runner pools" section explains each):
 #
 # runnerPools:
-#   # Ephemeral standard agents: a fresh agent and empty workspace for every
+#   # Ephemeral standard agents: a fresh agent and clean checkout for every
 #   # job in a plain Pod with no Docker daemon. The container keeps running,
-#   # so files outside the workspace carry over between jobs.
+#   # so cached plugins and files outside the build directory carry over.
 #   linux:
 #     queue: linux
 #     ephemeralAgent: true
@@ -162,9 +163,9 @@ defaults:
 #     maxReplicas: 4
 #
 #   # Ephemeral kata agents: each job runs in a fresh agent container inside a
-#   # VM-isolated Pod. Afterwards the job's containers, networks, volumes and
-#   # workspace are removed. Unused images and build cache are pruned, keeping
-#   # the configured agent images.
+#   # VM-isolated Pod. The job's containers, networks, volumes and workspace
+#   # files other than cached plugins are removed. Unused images and build
+#   # cache are pruned, keeping the configured agent images.
 #   untrusted:
 #     queue: untrusted
 #     runtime: kata

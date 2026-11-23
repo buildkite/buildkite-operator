@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator
 spec:
   podSelector:
@@ -40,7 +40,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
 automountServiceAccountToken: false
 
 ---
@@ -54,7 +54,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
 data:
   deletion_cost.py: |-
     """Prefer removing idle agents during scale-in (best effort, not a drain).
@@ -159,20 +159,19 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
 data:
   ephemeral-agent.sh: |-
     #!/bin/sh
     # Runs ephemeral agents for the standard runtime: each agent disconnects after
     # one job, then this loop clears the workspace and starts a newly registered
     # agent. The container itself keeps running, so the kubelet's restart backoff
-    # never applies. Only the build and plugin directories are reset; the rest of
-    # the container's filesystem persists across jobs.
+    # never applies. Only the build directory is reset, so cached plugins and the
+    # rest of the container's filesystem persist across jobs.
     set -u
     
     base_name="${BUILDKITE_AGENT_NAME:?}"
     build_path="${BUILDKITE_BUILD_PATH:?}"
-    plugins_path="${BUILDKITE_PLUGINS_PATH:?}"
     stopping=0
     agent_pid=""
     
@@ -202,9 +201,7 @@ data:
     }
     
     clean_workspace() {
-    	for dir in "$build_path" "$plugins_path"; do
-    		rm -rf "${dir:?}"/* "$dir"/.[!.]* "$dir"/..?* || return 1
-    	done
+    	rm -rf "${build_path:?}"/* "$build_path"/.[!.]* "$build_path"/..?*
     }
     
     while [ "$stopping" -eq 0 ]; do
@@ -327,12 +324,16 @@ data:
     	fi
     	docker network prune --force >/dev/null || return 1
     	docker volume prune --all --force >/dev/null || return 1
-    	# Clear the workspace and measure Docker data in the same root container.
+    	# Clear the workspace except cached plugins, and measure Docker data in the
+    	# same root container.
     	# A failed cleanup blocks startup; a failed measurement triggers pruning.
     	# Stay on the data filesystem so du skips the helper's mounted rootfs.
     	before=$(docker run --rm --pull never --network none --user 0 --entrypoint /bin/sh \
     		--volume /buildkite:/buildkite --volume /var/lib/docker:/docker-data:ro "$AGENT_IMAGE" \
-    		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?* || exit 1
+    		-c 'for path in /buildkite/* /buildkite/.[!.]* /buildkite/..?*; do
+    				[ "$path" = /buildkite/plugins ] && continue
+    				rm -rf "$path" || exit 1
+    			done
     			if usage=$(du -skx /docker-data); then
     				printf "%s\n" "${usage%%[[:space:]]*}"
     			else
@@ -504,7 +505,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
 data:
   step-image.sh: |-
     #!/bin/sh
@@ -623,7 +624,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -640,7 +641,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -661,7 +662,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator
 spec:
   type: ClusterIP
@@ -690,7 +691,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator
 spec:
   clusterIP: None
@@ -717,7 +718,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "docker"
 spec:
@@ -738,7 +739,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-chart-0.27.0
+        helm.sh/chart: buildkite-operator-chart-0.28.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "docker"
       annotations:
@@ -984,7 +985,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "docker-builds"
 spec:
@@ -1005,7 +1006,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-chart-0.27.0
+        helm.sh/chart: buildkite-operator-chart-0.28.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "docker-builds"
       annotations:
@@ -1241,7 +1242,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "linux"
 spec:
@@ -1262,7 +1263,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-chart-0.27.0
+        helm.sh/chart: buildkite-operator-chart-0.28.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "linux"
       annotations:
@@ -1270,7 +1271,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
-        checksum/ephemeral-agent: 5cfe4144e63263c6d7f0ddeb8bd60441ae6a1b3470fd1210072e2769fca6cfd6
+        checksum/ephemeral-agent: 3836e007f821bc13a5ae909efcf563fca2f338aa5b426d497c4c9f8fcaef3023
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost
       automountServiceAccountToken: false
@@ -1399,7 +1400,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: runner
     buildkite.com/runner-pool: "untrusted"
 spec:
@@ -1420,7 +1421,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-chart-0.27.0
+        helm.sh/chart: buildkite-operator-chart-0.28.0
         app.kubernetes.io/component: runner
         buildkite.com/runner-pool: "untrusted"
       annotations:
@@ -1428,7 +1429,7 @@ spec:
         controller.kubernetes.io/pod-deletion-cost: "100"
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/deletion-cost: d934da1013c51e1f0566d497e55f022b8670b9d85b56dc473a2096d77f28bf2e
-        checksum/supervisor: bbaff87999ecfacceadbede5158899186d29654edb80d3087a5e3b9cf9b04a96
+        checksum/supervisor: ef77edd6fdea2474303389e8bc83291e330b52b5032cb0ed6b6911b83a0b34be
         checksum/step-image: 9923493a9d0ee25acaa4580f88cc1c4c81fc2f1d99c1f8edd93c4099c48c68a1
     spec:
       serviceAccountName: buildkite-buildkite-operator-deletion-cost
@@ -1654,7 +1655,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator
 spec:
   replicas: 2
@@ -1671,7 +1672,7 @@ spec:
         app.kubernetes.io/name: buildkite-operator
         app.kubernetes.io/instance: buildkite
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: buildkite-operator-chart-0.27.0
+        helm.sh/chart: buildkite-operator-chart-0.28.0
         app.kubernetes.io/component: oci-accelerator
     spec:
       automountServiceAccountToken: false
@@ -1830,7 +1831,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     buildkite.com/runner-pool: "docker"
 spec:
   scaleTargetRef:
@@ -1892,7 +1893,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     buildkite.com/runner-pool: "docker-builds"
 spec:
   scaleTargetRef:
@@ -1954,7 +1955,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     buildkite.com/runner-pool: "linux"
 spec:
   scaleTargetRef:
@@ -2016,7 +2017,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     buildkite.com/runner-pool: "untrusted"
 spec:
   scaleTargetRef:
@@ -2078,7 +2079,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
 spec:
   secretTargetRef:
     - parameter: apiKey
@@ -2101,7 +2102,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -2148,7 +2149,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
 spec:
   policyName: buildkite-buildkite-buildkite-operator-deletion-cost
   validationActions: [Deny]
@@ -2163,7 +2164,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade,post-delete
@@ -2182,7 +2183,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade,post-delete
@@ -2342,7 +2343,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade,post-delete
@@ -2375,7 +2376,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade,post-delete
@@ -2401,7 +2402,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: pre-install,pre-upgrade
@@ -2529,7 +2530,7 @@ metadata:
     app.kubernetes.io/name: buildkite-operator
     app.kubernetes.io/instance: buildkite
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: buildkite-operator-chart-0.27.0
+    helm.sh/chart: buildkite-operator-chart-0.28.0
     app.kubernetes.io/component: oci-accelerator-ca
   annotations:
     helm.sh/hook: post-delete

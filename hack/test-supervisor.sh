@@ -175,7 +175,8 @@ RUN echo job-cache >/job-cache && mkdir /private && chown 12345 /private && chmo
 EOF
 inner volume create leftover >/dev/null
 inner network create leftover >/dev/null
-docker exec "${ID}-dockerd" touch /buildkite/builds/leftover-file
+inner exec buildkite-agent sh -c 'mkdir -p "$BUILDKITE_PLUGINS_PATH" &&
+	touch "$BUILDKITE_PLUGINS_PATH/cached-plugin" /buildkite/builds/leftover-file /buildkite/.leftover'
 
 docker exec "${ID}-dockerd" touch "/buildkite/release-${first}"
 wait_for "replacement agent" new_agent_running "${first}"
@@ -187,11 +188,15 @@ if inner inspect leftover >/dev/null 2>&1 ||
 	echo "Previous job's container, volume, or network survived" >&2
 	exit 1
 fi
-workspace=$(docker exec "${ID}-dockerd" ls -A /buildkite/builds)
-[[ "${workspace}" == "${second}" ]] || {
-	echo "Workspace was not reset between jobs: ${workspace}" >&2
+inner exec buildkite-agent sh -c 'test -f "$BUILDKITE_PLUGINS_PATH/cached-plugin"' || {
+	echo "Plugin cache did not survive agent replacement" >&2
 	exit 1
 }
+workspace=$(docker exec "${ID}-dockerd" ls -A /buildkite/builds)
+if [[ "${workspace}" != "${second}" ]] || inner exec buildkite-agent test -e /buildkite/.leftover; then
+	echo "Workspace was not reset between jobs: ${workspace}" >&2
+	exit 1
+fi
 for image in busybox:1.37 test-job:1 test-job-build:1 "${job_image}" "${untagged_image}"; do
 	inner image inspect "${image}" >/dev/null || {
 		echo "Cached image was pruned below the threshold: ${image}" >&2

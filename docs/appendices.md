@@ -104,17 +104,20 @@ and [OCI Accelerator CA](#oci-accelerator-ca).
 How each runtime replaces the agent after every job. See
 [Ephemeral agents](../README.md#ephemeral-agents).
 
-- `standard`: a small loop in the agent container empties the build and plugin
-  directories, then runs `buildkite-agent start --disconnect-after-job` again.
+- `standard`: a small loop in the agent container empties the build directory,
+  then runs `buildkite-agent start --disconnect-after-job` again.
   The container never restarts, so restart backoff doesn't delay the next job.
   The agent image needs `/bin/sh`.
 - `dind`, `kata`, `sysbox`: a supervisor starts each agent as a fresh container
   in the Pod's Docker daemon. After each job it removes the job's containers,
-  networks and volumes, and clears the `/buildkite` workspace. Image and build
-  caches persist until the [cache pruning](#cache-pruning) threshold is reached.
+  networks and volumes, and clears `/buildkite` except for `/buildkite/plugins`.
+  Image and build caches persist until the [cache pruning](#cache-pruning)
+  threshold is reached.
 
 Ephemeral agents also behave as follows:
 
+- Replacement agents reuse `/buildkite/plugins` on the same Pod. New Pods start
+  without that cache.
 - If cleanup fails, no new agent starts until it succeeds.
 - On SIGTERM, from scale-in, upgrades or node scale-down, the current agent
   finishes its job within `terminationGracePeriodSeconds`, and no further agent

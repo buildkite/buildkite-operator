@@ -2,13 +2,12 @@
 # Runs ephemeral agents for the standard runtime: each agent disconnects after
 # one job, then this loop clears the workspace and starts a newly registered
 # agent. The container itself keeps running, so the kubelet's restart backoff
-# never applies. Only the build and plugin directories are reset; the rest of
-# the container's filesystem persists across jobs.
+# never applies. Only the build directory is reset, so cached plugins and the
+# rest of the container's filesystem persist across jobs.
 set -u
 
 base_name="${BUILDKITE_AGENT_NAME:?}"
 build_path="${BUILDKITE_BUILD_PATH:?}"
-plugins_path="${BUILDKITE_PLUGINS_PATH:?}"
 stopping=0
 agent_pid=""
 
@@ -38,9 +37,7 @@ random_suffix() {
 }
 
 clean_workspace() {
-	for dir in "$build_path" "$plugins_path"; do
-		rm -rf "${dir:?}"/* "$dir"/.[!.]* "$dir"/..?* || return 1
-	done
+	rm -rf "${build_path:?}"/* "$build_path"/.[!.]* "$build_path"/..?*
 }
 
 while [ "$stopping" -eq 0 ]; do

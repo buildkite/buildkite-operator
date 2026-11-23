@@ -185,8 +185,8 @@ runnerPools:
 ```
 
 - Each Pod runs a fresh agent for every job, with no Docker daemon.
-- Between jobs: the workspace is emptied, but files outside it carry over
-  because the container keeps running.
+- Between jobs: the build directory is emptied, but cached plugins and other
+  files outside it carry over because the container keeps running.
 - Use it for jobs that don't need Docker.
 
 ### Persistent Sysbox agents
@@ -233,9 +233,10 @@ runnerPools:
 
 - Each Pod runs a fresh agent container for every job, in a Docker daemon
   inside a VM.
-- Between jobs: containers, networks, volumes and the workspace are removed.
-  Unused images and build cache are pruned when Docker data reaches 80% of its
-  storage budget. The configured agent images stay cached.
+- Between jobs: containers, networks, volumes and workspace files other than
+  cached plugins are removed. Unused images and build cache are pruned when
+  Docker data reaches 80% of its storage budget. The configured agent images
+  stay cached.
 - Each Pod runs in its own VM, which separates jobs from the node more strongly
   than the other runtimes.
 
@@ -286,7 +287,8 @@ By default (`ephemeralAgent: false`), one agent registers when its Pod starts
 and runs job after job, so whatever a job leaves behind is there for the next.
 
 With `ephemeralAgent: true`, the agent disconnects after each job, and a newly
-registered agent named `<pod>-<suffix>` replaces it with a clean workspace. On
+registered agent named `<pod>-<suffix>` replaces it with a clean checkout.
+Cached plugins carry over between jobs on the same Pod, not across Pods. On
 SIGTERM, the current agent finishes its job and no further agent starts. See
 [Ephemeral agents](docs/appendices.md#ephemeral-agents) in the appendices.
 
@@ -298,14 +300,14 @@ SIGTERM, the current agent finishes its job and no further agent starts. See
 <tr>
 <th>Reset</th>
 <td>The agent process and its registration, and the contents of
-<code>/buildkite/builds</code> (checkouts) and
-<code>/buildkite/plugins</code>.</td>
+<code>/buildkite/builds</code> (checkouts).</td>
 </tr>
 <tr>
 <th>Persist</th>
 <td>The Pod, its node and the agent container, with the rest of its filesystem:
-<code>/tmp</code>, the home directory, packages or tools a job installed, caches
-outside <code>/buildkite</code>, and any processes a job left running.</td>
+cached plugins in <code>/buildkite/plugins</code>, <code>/tmp</code>, the home
+directory, and packages or tools a job installed. Processes a job left running
+also persist.</td>
 </tr>
 </table>
 
@@ -315,14 +317,15 @@ outside <code>/buildkite</code>, and any processes a job left running.</td>
 <tr>
 <th>Reset</th>
 <td>The agent container, recreated from the image, every Docker container,
-network and volume, and the <code>/buildkite</code> workspace (checkouts,
-plugins and sockets).</td>
+network and volume, and all workspace files under <code>/buildkite</code>
+except cached plugins.</td>
 </tr>
 <tr>
 <th>Persist</th>
-<td>The Pod, its node, the Docker daemon, image and build caches, and the Docker
-client configuration (<code>DOCKER_CONFIG</code>, including logins). Caches are
-pruned at <code>docker.pruneThresholdPercent</code> of
+<td>The Pod, its node, the Docker daemon, cached plugins in
+<code>/buildkite/plugins</code>, and the Docker client configuration
+(<code>DOCKER_CONFIG</code>, including logins). Docker image and build caches
+persist until pruning at <code>docker.pruneThresholdPercent</code> of
 <code>docker.storage.data</code>, retaining the configured agent images.</td>
 </tr>
 </table>
@@ -330,8 +333,8 @@ pruned at <code>docker.pruneThresholdPercent</code> of
 ### Isolation between jobs
 
 Ephemeral agents keep jobs' state apart, but they aren't a security boundary.
-Anything that persists, such as files outside the workspace in a `standard`
-container or the Docker client configuration, stays available to later jobs.
+Later jobs can use state that a previous job left behind, including changes to
+cached plugin code or the Docker client configuration.
 
 ## Job images
 
@@ -672,7 +675,7 @@ Each runner pool takes these settings, directly or from `defaults`:
 | `maxReplicas` | (required) Upper bound on runners. |
 | `minReplicas` | (default `1`) Runners kept when the queue is idle. |
 | `runtime` | (default `standard`) `standard`, `dind`, `kata` or `sysbox`. See [Runtimes](#runtimes). |
-| `ephemeralAgent` | (default `false`) Replace the agent after every job, with a clean workspace. The Pod persists. See [Ephemeral agents](#ephemeral-agents). |
+| `ephemeralAgent` | (default `false`) Replace the agent after every job, with a clean checkout. The Pod and its plugin cache persist. See [Ephemeral agents](#ephemeral-agents). |
 | `terminationGracePeriodSeconds` | (default `3600`) Longest time an agent may take to drain its job. |
 | `rollingUpdate.maxUnavailable` | (default `0`) Maximum unavailable runner Pods during a rollout, as a nonnegative count or percentage string from `"0%"` to `"100%"`. |
 | `rollingUpdate.maxSurge` | (default `1`) Maximum extra non-terminating runner Pods above the desired replica count during a rollout, as a nonnegative count or percentage string. |
