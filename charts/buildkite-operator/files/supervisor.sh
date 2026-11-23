@@ -77,17 +77,27 @@ clean_job_state() {
 	fi
 	docker network prune --force >/dev/null || return 1
 	docker volume prune --all --force >/dev/null || return 1
-	# Clear the workspace and measure Docker data in the same root container.
+	# Clear the workspace except cached plugins, and measure Docker data in the
+	# same root container.
 	# A failed cleanup blocks startup; a failed measurement triggers pruning.
 	# Stay on the data filesystem so du skips the helper's mounted rootfs.
 	before=$(docker run --rm --pull never --network none --user 0 --entrypoint /bin/sh \
 		--volume /buildkite:/buildkite --volume /var/lib/docker:/docker-data:ro "$AGENT_IMAGE" \
-		-c 'rm -rf /buildkite/* /buildkite/.[!.]* /buildkite/..?* || exit 1
+		-c 'for path in /buildkite/* /buildkite/.[!.]* /buildkite/..?*; do
+				[ "$path" = /buildkite/plugins ] && continue
+				rm -rf "$path" || exit 1
+			done
+			# The previous agent is gone. Move its cache to the new lookup path.
+			for cache in "/buildkite/plugins/$1"-????; do
+				[ -d "$cache" ] || continue
+				[ "$cache" = "/buildkite/plugins/$2" ] || mv -T "$cache" "/buildkite/plugins/$2" || exit 1
+				break
+			done
 			if usage=$(du -skx /docker-data); then
 				printf "%s\n" "${usage%%[[:space:]]*}"
 			else
 				echo unknown
-			fi') || return 1
+			fi' cleanup "$POD_NAME" "$1") || return 1
 	log "Cleaned job state"
 	case "$before" in
 	''|*[!0-9]*)
@@ -134,7 +144,8 @@ start_agent() {
 		fi
 	done
 
-	clean_job_state || return 1
+	agent_name="${POD_NAME}-$(random_suffix)"
+	clean_job_state "$agent_name" || return 1
 
 	# With step images, each agent runs jobs through the step-image script,
 	# which the Docker daemon's container has at the same path.
@@ -168,7 +179,6 @@ start_agent() {
 		set -- "$@" --mount "type=image,source=$AGENT_IMAGE,target=/opt/buildkite-agent-source,readonly"
 	fi
 
-	agent_name="${POD_NAME}-$(random_suffix)"
 	log "Starting agent $agent_name"
 	# DOCKER_CONFIG is at the same path in the Docker daemon's container, so
 	# every agent shares the Pod's registry credentials and logins. The daemon
